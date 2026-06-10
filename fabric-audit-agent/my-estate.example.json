@@ -1,0 +1,24 @@
+{
+  "_HOW_TO": "TEMPLATE. Step 1: copy this file to 'my-estate.json' (that copy is gitignored, so your real numbers are NEVER pushed to GitHub). Step 2: replace the values below with YOUR real numbers (from your Capacity Metrics export, DAX Studio / Vertipaq Analyzer, or refresh history). Delete any section you don't have data for. Keep the JSON structure (commas, brackets). Step 3: run  node mytest.js",
+
+  "capacity": {
+    "tenant": "MyCompany",
+    "capacityId": "F64",
+    "sku": "F64",
+    "memoryGB": 64,
+    "peakCuPct": 0,
+    "peakAt": "2026-06-10T09:00:00.000Z",
+    "throttleMinutes": 0,
+    "refreshes": [
+      { "workspace": "REPLACE", "dataset": "REPLACE", "scheduledAt": "06:00", "durationMin": 0, "sizeGB": 0 }
+    ]
+  },
+
+  "models": [
+    { "workspace": "REPLACE", "name": "REPLACE", "sizeGB": 0, "bidirectionalRels": 0, "autoDateTime": false, "refreshFailRatePct": 0 }
+  ],
+
+  "reports": [
+    { "workspace": "REPLACE", "name": "REPLACE", "visuals": 0, "mode": "Import", "slowestVisualMs": 0 }
+  ]
+}

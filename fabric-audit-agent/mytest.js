@@ -2,6 +2,7 @@
 // and print the diagnosis. 100% local: no network, no API key, nothing leaves this machine.
 // Run from this folder:  node mytest.js
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { detectAll } from './core/detectors/index.js';
@@ -12,7 +13,17 @@ import { buildCapacityVerdict } from './core/verdict.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const facts = JSON.parse(await readFile(join(__dirname, 'my-estate.json'), 'utf-8'));
+const target = join(__dirname, 'my-estate.json');
+if (!existsSync(target)) {
+  console.log('\n  my-estate.json not found yet.');
+  console.log('  Copy the template first (your copy stays private — it is gitignored):');
+  console.log('     terminal:  cp my-estate.example.json my-estate.json');
+  console.log('     VS Code:   right-click my-estate.example.json -> Copy, then Paste & rename to my-estate.json');
+  console.log('  Then fill in your real numbers and re-run:  node mytest.js\n');
+  process.exit(0);
+}
+
+const facts = JSON.parse(await readFile(target, 'utf-8'));
 const flags = detectAll(facts);
 const findings = await createStubReasoner().reason(facts, flags);
 

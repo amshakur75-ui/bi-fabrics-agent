@@ -24,5 +24,11 @@ npm run audit     # sample run on mock data
 - Permissions + deployment: `fabric-audit-agent/DEPLOYMENT.md`
 
 **Validate on real data (local, nothing leaves the machine):**
-edit `fabric-audit-agent/my-estate.json` with your real numbers, then `node mytest.js`.
-(`my-estate.json` is gitignored so real company data is never pushed.)
+```
+cd fabric-audit-agent
+cp my-estate.example.json my-estate.json   # your private copy
+# edit my-estate.json with your real numbers, then:
+node mytest.js
+```
+`my-estate.json` is gitignored, so your real company numbers are **never** pushed —
+only the blank `my-estate.example.json` template is tracked.
