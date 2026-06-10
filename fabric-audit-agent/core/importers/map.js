@@ -31,7 +31,6 @@ const MATCHERS = {
   capacityName: (h) => h.includes('capacity') && (h.includes('name') || h.includes('id') || h === 'capacity'),
   tenant:       (h) => h.includes('tenant'),
   memoryGB:     (h) => h.includes('capacitymemory') || h === 'memory' || h === 'memorygb' || h === 'ram' || h === 'ramgb',
-  cuPct:        (h) => (h.includes('cu') && (h.includes('%') || h.includes('pct') || h.includes('percent'))) || h.includes('utiliz') || h.includes('%ofbase') || h.includes('ofbasecapacity'),
   throttle:     (h) => h.includes('throttl') || h.includes('overload') || h.includes('reject') || h.includes('interactivedelay'),
   time:         (h) => h.includes('timepoint') || h.includes('timestamp') || h.includes('datetime') || h === 'time' || h === 'date',
   workspace:    (h) => h.includes('workspace'),
@@ -50,6 +49,28 @@ const MATCHERS = {
 /** find the first header matching `key`, returns the ORIGINAL header text or null */
 function find(headers, key) {
   for (const h of headers) if (MATCHERS[key](norm(h))) return h;
+  return null;
+}
+
+/**
+ * Find the capacity *utilization %* column, in priority order. Capacity Metrics
+ * exports contain look-alikes that are NOT utilization: "100% in CU(s)" is the
+ * baseline (CU-seconds == 100%), "CU % Limit" is the limit line, and
+ * "Background %/Interactive %" are component splits. Prefer the real overall-usage
+ * column ("Total CU Usage %", "% of base capacity", "Utilization") over those.
+ * @param {string[]} headers
+ * @returns {string|null}
+ */
+export function findCuPct(headers) {
+  const tagged = headers.map(h => [h, norm(h)]);
+  const tiers = [
+    ([, h]) => h.includes('totalcuusage') || (h.includes('usage') && h.includes('cu') && h.includes('%')) || h.includes('utiliz'),
+    ([, h]) => h.includes('%ofbase') || h.includes('ofbasecapacity'),
+    ([, h]) => h.includes('cu') && (h.includes('%') || h.includes('pct') || h.includes('percent'))
+      && !h.includes('limit') && !h.includes('100%in') && !h.includes('nonbillable')
+      && !h.startsWith('background') && !h.startsWith('interactive') && !h.includes('autoscale'),
+  ];
+  for (const pred of tiers) { const hit = tagged.find(pred); if (hit) return hit[0]; }
   return null;
 }
 
@@ -73,6 +94,7 @@ export function mapTable(headers, rows = []) {
   const cov = [];
   const cols = {};
   for (const key of Object.keys(MATCHERS)) cols[key] = find(headers, key);
+  cols.cuPct = findCuPct(headers);
 
   const firstNonEmpty = (col) => {
     if (!col) return '';
@@ -91,8 +113,8 @@ export function mapTable(headers, rows = []) {
         const v = num(r[cols.cuPct]);
         if (Number.isFinite(v) && v > peakCuPct) { peakCuPct = v; peakAt = cols.time ? String(r[cols.time] ?? '').trim() : ''; }
       }
-      cov.push({ field: 'peakCuPct', source: cols.cuPct, value: peakCuPct });
-    } else cov.push({ field: 'peakCuPct', source: null, value: 0, note: note('CU %, utilization, % of base') });
+      cov.push({ field: 'peakCuPct', source: cols.cuPct, value: `${peakCuPct}%`, note: peakCuPct > 1000 ? 'that looks like CU-seconds, not a %, double-check the column' : undefined });
+    } else cov.push({ field: 'peakCuPct', source: null, value: 0, note: note('Total CU Usage %, utilization, % of base') });
 
     let throttleMinutes = 0;
     if (cols.throttle) {
@@ -101,7 +123,7 @@ export function mapTable(headers, rows = []) {
     } else cov.push({ field: 'throttleMinutes', source: null, value: 0, note: note('throttling, overloaded, rejected') });
 
     const sku = firstNonEmpty(cols.sku);
-    const capacityId = firstNonEmpty(cols.capacityName) || sku || 'capacity';
+    const capacityId = firstNonEmpty(cols.capacityName) || sku || 'unnamed';
     const memoryGB = num(firstNonEmpty(cols.memoryGB));
     cov.push({ field: 'sku', source: cols.sku, value: sku || '(none)' });
     cov.push({ field: 'capacityId', source: cols.capacityName, value: capacityId });
@@ -109,7 +131,7 @@ export function mapTable(headers, rows = []) {
     capacity = {
       tenant: firstNonEmpty(cols.tenant) || 'tenant',
       capacityId,
-      sku: sku || 'F64',
+      sku: sku || '',
       memoryGB: Number.isFinite(memoryGB) ? memoryGB : 0,
       peakCuPct,
       peakAt,
@@ -193,8 +215,7 @@ export function mergeFacts(parts) {
       capacity.throttleMinutes += c.throttleMinutes || 0;
       capacity.refreshes.push(...(c.refreshes || []));
     }
-    capacity.sku ||= 'F64';
-    capacity.capacityId ||= 'capacity';
+    capacity.capacityId ||= 'unnamed';
     capacity.peakCuPct = round3(capacity.peakCuPct);
     facts.capacity = capacity;
   }

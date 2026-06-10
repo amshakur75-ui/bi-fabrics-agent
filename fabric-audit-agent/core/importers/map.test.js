@@ -28,6 +28,19 @@ test('maps a capacity-metrics items export to capacity scalars + refreshes', () 
   assert.ok(coverage.find(c => c.field === 'peakCuPct' && c.source === 'CU % of base capacity'));
 });
 
+test('real Capacity Metrics timepoint export: picks "Total CU Usage %", not "100% in CU(s)" or "CU % Limit"', () => {
+  const headers = ['Background %', 'Interactive %', 'Background non-billable %', 'Interactive non-billable %', 'Interactive non-billable CU(s)', 'Background non-billable CU(s)', 'Interactive CU(s)', 'Background CU(s)', '100% in CU(s)', 'Autoscale %', 'Timepoint', 'Total CU Usage %', 'Total CU(s)', 'CU % Limit', 'Capacity State Change From Previous Window'];
+  const rows = [
+    { 'Total CU Usage %': '42', '100% in CU(s)': '30720', 'CU % Limit': '100', Timepoint: '2026-06-09T09:00' },
+    { 'Total CU Usage %': '118', '100% in CU(s)': '30720', 'CU % Limit': '100', Timepoint: '2026-06-09T13:30' },
+  ];
+  const { capacity, coverage } = mapTable(headers, rows);
+  assert.equal(coverage.find(c => c.field === 'peakCuPct').source, 'Total CU Usage %');
+  assert.equal(capacity.peakCuPct, 118);          // not 30720
+  assert.equal(capacity.peakAt, '2026-06-09T13:30');
+  assert.equal(capacity.sku, '');                 // no SKU column -> not invented
+});
+
 test('records a coverage note when a needed capacity column is missing', () => {
   const { coverage } = mapTable(['SKU', 'CU %'], [{ SKU: 'F32', 'CU %': '50' }]);
   const throttle = coverage.find(c => c.field === 'throttleMinutes');

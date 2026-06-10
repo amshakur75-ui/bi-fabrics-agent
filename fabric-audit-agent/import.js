@@ -69,8 +69,10 @@ for (const r of report) {
   if (r.note) console.log(`   ! ${r.note}`);
   if (r.headers) console.log(`   columns: ${r.headers.join(' | ')}`);
   for (const c of r.coverage ?? []) {
-    if (c.source) console.log(`   ok  ${c.field}  <-  "${c.source}"  =  ${c.value}`);
-    else console.log(`   --  ${c.field}: ${c.note ?? 'not found'}`);
+    if (c.source) {
+      console.log(`   ok  ${c.field}  <-  "${c.source}"  =  ${c.value}`);
+      if (c.note) console.log(`       ! ${c.note}`);
+    } else console.log(`   --  ${c.field}: ${c.note ?? 'not found'}`);
   }
   console.log('');
 }
@@ -89,3 +91,13 @@ console.log(`Open it to sanity-check a value, then re-run anytime with:  node my
 
 // ---- run the diagnosis ----
 console.log(formatDiagnosis(await diagnose(facts)));
+
+// ---- honesty caveat: capacity-level data alone can't decide optimize-vs-size-up ----
+if (facts.capacity && !(facts.capacity.refreshes?.length) && !(facts.models?.length)) {
+  console.log('NOTE: this is capacity-level data only (no per-item / refresh rows were found).');
+  console.log('The verdict reflects raw utilization. A real "optimize vs. size-up" answer needs item');
+  console.log('detail — also export the Capacity Metrics *Items* table (per-item CU + refreshes) and');
+  console.log('merge it:   node import.js data.csv items.csv');
+  if (!facts.capacity.sku) console.log('(Tip: this file had no SKU column — add "sku":"F64" etc. to my-estate.json for a sizing recommendation.)');
+  console.log('');
+}
