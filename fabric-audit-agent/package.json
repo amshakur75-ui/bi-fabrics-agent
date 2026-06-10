@@ -1,0 +1,18 @@
+{
+  "name": "fabric-audit-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Microsoft Fabric / Power BI capacity & performance audit agent. Self-contained; deploy into any Microsoft tenant.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test \"**/*.test.js\"",
+    "audit": "node audit.js",
+    "eval": "node eval.js",
+    "whatif": "node whatif.js",
+    "triggers": "node triggers.js",
+    "lifecycle": "node lifecycle.js",
+    "dax": "node dax.js"
+  },
+  "dependencies": { "@anthropic-ai/sdk": "latest" }
+}

@@ -1,0 +1,6 @@
+node_modules/
+**/runs/
+my-estate.json
+*.log
+.DS_Store
+.env
