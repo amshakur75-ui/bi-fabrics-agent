@@ -24,10 +24,19 @@ npm run audit     # sample run on mock data
 - Permissions + deployment: `fabric-audit-agent/DEPLOYMENT.md`
 
 **Validate on real data (local, nothing leaves the machine):**
+
+_Easiest — feed your actual export(s); no hand-typing:_
 ```
 cd fabric-audit-agent
+node import.js "Capacity Metrics export.csv"   # also reads .vpax; pass several files to merge
+```
+It auto-maps your columns (and prints exactly which column fed which field), writes
+`my-estate.json`, then prints the diagnosis. Excel? do **File → Save As → CSV** first.
+
+_Or fill the template by hand:_
+```
 cp my-estate.example.json my-estate.json   # your private copy
-# edit my-estate.json with your real numbers, then:
+# edit my-estate.json, then:
 node mytest.js
 ```
 `my-estate.json` is gitignored, so your real company numbers are **never** pushed —

@@ -8,6 +8,8 @@
   "scripts": {
     "test": "node --test \"**/*.test.js\"",
     "audit": "node audit.js",
+    "import": "node import.js",
+    "mytest": "node mytest.js",
     "eval": "node eval.js",
     "whatif": "node whatif.js",
     "triggers": "node triggers.js",

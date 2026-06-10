@@ -1,5 +1,5 @@
 {
-  "_HOW_TO": "TEMPLATE. Step 1: copy this file to 'my-estate.json' (that copy is gitignored, so your real numbers are NEVER pushed to GitHub). Step 2: replace the values below with YOUR real numbers (from your Capacity Metrics export, DAX Studio / Vertipaq Analyzer, or refresh history). Delete any section you don't have data for. Keep the JSON structure (commas, brackets). Step 3: run  node mytest.js",
+  "_HOW_TO": "EASIEST: don't edit this by hand — run  node import.js yourfile.csv  (or .vpax) to build my-estate.json straight from your real export. ALTERNATIVELY, fill it manually: Step 1 copy this file to 'my-estate.json' (that copy is gitignored, so your real numbers are NEVER pushed to GitHub). Step 2 replace the values below with YOUR real numbers (Capacity Metrics export, DAX Studio / Vertipaq Analyzer, or refresh history). Delete any section you don't have data for; keep the JSON structure. Step 3 run  node mytest.js",
 
   "capacity": {
     "tenant": "MyCompany",
