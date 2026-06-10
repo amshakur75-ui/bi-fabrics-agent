@@ -30,6 +30,16 @@ test('returns no flags for a healthy capacity', () => {
   assert.deepEqual(detectCapacity(healthy), []);
 });
 
+test('does not fabricate contention from refreshes with no known time', () => {
+  const f = {
+    capacity: {
+      tenant: 'C', capacityId: 'F64', sku: 'F64', memoryGB: 64, peakCuPct: 50, peakAt: '', throttleMinutes: 0,
+      refreshes: Array.from({ length: 10 }, (_, i) => ({ workspace: 'W', dataset: `D${i}`, scheduledAt: '', durationMin: 1, sizeGB: 0 })),
+    },
+  };
+  assert.equal(detectCapacity(f).filter(x => x.type === 'capacity.contention').length, 0);
+});
+
 test('tolerates missing capacity facts', () => {
   assert.deepEqual(detectCapacity({}), []);
 });

@@ -26,9 +26,14 @@ export function detectCapacity(facts, config = DEFAULT_CONFIG) {
     });
   }
 
-  // 2. Refresh contention (>=3 refreshes share a start time)
+  // 2. Refresh contention (>=3 refreshes share a start time).
+  //    A blank/unknown time can't prove simultaneity, so skip those.
   const byTime = {};
-  for (const r of c.refreshes ?? []) (byTime[r.scheduledAt] ??= []).push(r);
+  for (const r of c.refreshes ?? []) {
+    const t = String(r.scheduledAt ?? '').trim();
+    if (!t) continue;
+    (byTime[t] ??= []).push(r);
+  }
   for (const [time, group] of Object.entries(byTime)) {
     if (group.length >= config.capacity.contentionMin) {
       flags.push({

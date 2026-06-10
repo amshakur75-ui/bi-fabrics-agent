@@ -31,7 +31,7 @@ const MATCHERS = {
   capacityName: (h) => h.includes('capacity') && (h.includes('name') || h.includes('id') || h === 'capacity'),
   tenant:       (h) => h.includes('tenant'),
   memoryGB:     (h) => h.includes('capacitymemory') || h === 'memory' || h === 'memorygb' || h === 'ram' || h === 'ramgb',
-  throttle:     (h) => h.includes('throttl') || h.includes('overload') || h.includes('reject') || h.includes('interactivedelay'),
+  throttle:     (h) => h.includes('throttl') || h.includes('overload') || h.includes('interactivedelay'),
   time:         (h) => h.includes('timepoint') || h.includes('timestamp') || h.includes('datetime') || h === 'time' || h === 'date',
   workspace:    (h) => h.includes('workspace'),
   itemName:     (h) => h.includes('itemname') || h === 'item' || h.includes('datasetname') || h === 'dataset' || h.includes('semanticmodel') || (h.includes('model') && h.includes('name')) || h === 'name' || h.includes('reportname'),
