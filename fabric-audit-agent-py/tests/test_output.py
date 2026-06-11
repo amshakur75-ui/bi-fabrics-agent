@@ -87,9 +87,38 @@ def test_build_teams_card():
 
 def test_teams_card_default_summary_and_no_fix():
     assert build_teams_card({})["summary"] == "Fabric audit"
+    assert build_teams_card(None)["summary"] == "Fabric audit"
     card = build_teams_card({"data": {"findings": [{"score": {"level": "Critical"}, "what": "no-fix"}]}})
     crit = next(s for s in card["sections"] if s["heading"].startswith("Critical"))
     assert crit["items"] == ["no-fix — Fix: see report"]
+
+
+def test_teams_card_no_verdict_omits_section():
+    card = build_teams_card({"summary": "s", "data": {"findings": []}})
+    assert "Capacity verdict" not in [s["heading"] for s in card["sections"]]
+
+
+def test_teams_card_partial_verdict_renders_like_js_string():
+    # Node String(undefined).toUpperCase() -> "UNDEFINED"; missing reason -> "undefined" (never throws).
+    card = build_teams_card({"data": {"verdict": {"reason": "r"}, "findings": []}})
+    v = next(s for s in card["sections"] if s["heading"] == "Capacity verdict")
+    assert v["text"] == "UNDEFINED — r"
+    card2 = build_teams_card({"data": {"verdict": {"decision": "optimize"}, "findings": []}})
+    v2 = next(s for s in card2["sections"] if s["heading"] == "Capacity verdict")
+    assert v2["text"] == "OPTIMIZE — undefined"
+
+
+def test_teams_card_missing_what_renders_undefined():
+    card = build_teams_card({"data": {"findings": [{"score": {"level": "Critical"}, "fix": ["f"]}]}})
+    crit = next(s for s in card["sections"] if s["heading"].startswith("Critical"))
+    assert crit["items"] == ["undefined — Fix: f"]
+
+
+def test_teams_card_caps_criticals_at_10():
+    findings = [{"score": {"level": "Critical"}, "what": f"c{i}", "fix": ["x"]} for i in range(15)]
+    card = build_teams_card({"data": {"findings": findings}})
+    crit = next(s for s in card["sections"] if s["heading"].startswith("Critical"))
+    assert crit["heading"] == "Critical findings (15)" and len(crit["items"]) == 10
 
 
 # ---- coaching ----
