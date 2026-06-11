@@ -163,3 +163,36 @@ def test_cost_unused_and_idle_including_zero_cu():
 
 def test_cost_missing_avg_defaults_to_100_not_idle():
     assert detect_cost({"usage": {"capacities": [{"id": "F64", "sku": "F64"}]}}) == []   # no avgCuPct -> 100 -> not idle
+
+
+def test_cost_busy_capacity_not_idle():
+    assert detect_cost({"usage": {"capacities": [{"id": "F64", "sku": "F64", "avgCuPct": 60}]}}) == []
+
+
+# ---- review-driven edge coverage ----
+def test_reports_clean_and_empty_source_kept():
+    assert detect_reports({"reports": [{"workspace": "S", "name": "ok", "visuals": 5, "mode": "Import", "slowestVisualMs": 100}]}) == []
+    dq = detect_reports({"reports": [{"workspace": "S", "name": "X", "visuals": 1, "mode": "DirectQuery", "source": ""}]})
+    assert len(dq) == 1 and dq[0]["type"] == "report.directquery"
+    assert dq[0]["evidence"]["source"] == ""   # empty-string source kept (nullish, not falsy)
+
+
+def test_concentration_evidence_sharePct_is_int_when_whole():
+    ev = detect_concentration({"items": [{"name": "X", "workspace": "W", "sharePct": 70.0, "users": 1}]})[0]["evidence"]
+    assert ev["sharePct"] == 70 and isinstance(ev["sharePct"], int)
+
+
+def test_blast_radius_edges_null_and_isolated_node():
+    iso = {"lineage": {"nodes": [{"id": "a", "name": "A", "type": "Dataset", "status": "Failed", "workspace": "W"}], "edges": None}}
+    flags = detect_blast_radius(iso)
+    assert len(flags) == 1 and flags[0]["evidence"]["affectedCount"] == 0 and flags[0]["evidence"]["affected"] == []
+
+
+def test_blast_radius_no_failures_returns_empty():
+    ok = {"lineage": {"nodes": [{"id": "a", "name": "A", "type": "Dataset", "status": "OK", "workspace": "W"}], "edges": []}}
+    assert detect_blast_radius(ok) == []
+
+
+def test_security_non_sensitive_admin_not_flagged():
+    facts = {"access": {"adminGrants": [{"workspace": "Fin", "principal": "u@x.com", "role": "Admin", "sensitive": False}]}}
+    assert detect_security(facts) == []

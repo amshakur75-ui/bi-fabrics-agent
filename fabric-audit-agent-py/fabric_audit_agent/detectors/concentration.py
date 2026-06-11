@@ -26,6 +26,7 @@ def detect_concentration(facts, config=None):
             continue
         if not math.isfinite(share) or share < min_share:
             continue
+        share_out = int(share) if share == int(share) else share   # 70.0 -> 70 for clean JSON parity
 
         ws = it.get("workspace") or "unknown workspace"
         tu = it.get("topUsers")
@@ -55,7 +56,7 @@ def detect_concentration(facts, config=None):
             "resource": f"{it.get('workspace') or '(unknown ws)'} / {it.get('name')}",
             "when": it.get("observedAt") or "",
             "evidence": {
-                "sharePct": share, "cuSeconds": it.get("cuSeconds"), "kind": it.get("kind"),
+                "sharePct": share_out, "cuSeconds": it.get("cuSeconds"), "kind": it.get("kind"),
                 "users": it.get("users"), "userCount": it.get("userCount"), "topUsers": named,
                 "background": it.get("background") or False, "owner": it.get("owner"),
                 "attributionMode": it.get("attributionMode"),

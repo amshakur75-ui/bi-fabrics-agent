@@ -16,10 +16,11 @@ def detect_reports(facts, config=None):
                 "what": f"Report \"{r.get('name')}\" has {r.get('visuals')} visuals on its busiest page.",
             })
         if r.get("mode") == "DirectQuery":
+            src = r.get("source")   # nullish (?? ), not falsy: an empty-string source is kept
             flags.append({
                 "type": "report.directquery", "resource": where, "when": "",
-                "evidence": {"source": r.get("source") or "unknown"},
-                "what": f"Report \"{r.get('name')}\" uses DirectQuery against {r.get('source') or 'an unknown source'}.",
+                "evidence": {"source": src if src is not None else "unknown"},
+                "what": f"Report \"{r.get('name')}\" uses DirectQuery against {src if src is not None else 'an unknown source'}.",
             })
         if (r.get("slowestVisualMs") or 0) >= rep["slowVisualMs"]:
             flags.append({
