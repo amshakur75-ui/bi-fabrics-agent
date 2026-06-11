@@ -37,3 +37,26 @@ def test_no_model_json_raises():
 def test_not_a_zip_raises():
     with pytest.raises(ValueError, match="not a ZIP"):
         vpax_to_models(b"this is not a zip at all")
+
+
+def test_reads_deflated_vpax():
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("DaxModel.json", json.dumps({
+            "ModelName": "M",
+            "Tables": [{"TableName": "T", "Columns": [{"TotalSize": 2_000_000_000}]}],
+            "Relationships": [],
+        }))
+    assert vpax_to_models(bio.getvalue())["models"][0]["sizeGB"] == 2.0
+
+
+def test_daxvpaview_fallback_filterdirection_and_bidirectional_flag():
+    vpax = _make_vpax("DaxVpaView.json", {
+        "Name": "ViewModel",
+        "Tables": [{"Name": "T", "Columns": [{"ColumnSize": 1_000_000_000}]}],
+        "Relationships": [{"FilterDirection": 2}, {"Bidirectional": True}, {"CrossFilteringBehavior": "OneDirection"}],
+    })
+    m = vpax_to_models(vpax)["models"][0]
+    assert m["name"] == "ViewModel"
+    assert m["sizeGB"] == 1.0
+    assert m["bidirectionalRels"] == 2   # FilterDirection==2 + Bidirectional:true; OneDirection excluded
