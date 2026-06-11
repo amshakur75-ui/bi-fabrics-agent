@@ -1,0 +1,25 @@
+import { buildMarkdownReport } from './core/report-md.js';
+import { execNarrative } from './core/narrative.js';
+import { buildTeamsCard } from './core/teams-card.js';
+import { viewFor } from './core/audience.js';
+
+console.log('EDGE1', JSON.stringify(buildMarkdownReport({ data: { healthScore: { overall: 0, byDomain: {} }, findings: [] } })));
+console.log('EDGE2', JSON.stringify(buildMarkdownReport({ data: { verdict: { decision: 'optimize', reason: '' }, findings: [] } })));
+console.log('EDGE3', JSON.stringify(buildMarkdownReport({ data: { findings: [{ what: 'x', score: { level: '' } }] } })));
+console.log('EDGE4', JSON.stringify(buildMarkdownReport({ data: { roadmap: [{ rank: 1, level: 'Critical', what: 'X', fix: '' }], findings: [] } })));
+console.log('EDGE5', JSON.stringify(buildMarkdownReport({ summary: '', data: { findings: [] } })));
+console.log('EDGE6', JSON.stringify(buildMarkdownReport({ data: { narrative: '', findings: [] } })));
+console.log('EDGE7', JSON.stringify(buildMarkdownReport({ data: { healthScore: { overall: 5, byDomain: { capacity: 0 } }, findings: [] } })));
+console.log('EDGE8', JSON.stringify(execNarrative({ health: 0, critical: 0, warning: 0, verdict: 'healthy' })));
+console.log('EDGE9', JSON.stringify(execNarrative({ health: 5, critical: 1, warning: 0, verdict: 'optimize', topFindings: [] })));
+console.log('EDGE10', JSON.stringify(execNarrative({ health: 5, critical: 1, warning: 0, verdict: 'optimize', accountability: 0 })));
+console.log('EDGE11', JSON.stringify(buildTeamsCard({ summary: '', data: { findings: [] } })));
+console.log('EDGE12', JSON.stringify(buildTeamsCard({ data: { findings: [{ what: 'Y', fix: [], score: { level: 'Critical' } }] } })));
+console.log('EDGE13', JSON.stringify(buildTeamsCard({ data: { findings: [{ what: 'Z', fix: [''], score: { level: 'Critical' } }] } })));
+console.log('EDGE14', JSON.stringify(buildTeamsCard({ data: { verdict: { decision: 'optimize' }, findings: [] } })));
+console.log('EDGE15', JSON.stringify(viewFor({ data: { healthScore: { overall: 0 }, accountability: { ignoredCount: 0 }, findings: [] } }, 'exec')));
+console.log('EDGE16', JSON.stringify(viewFor({ data: { sla: 0, findings: [] } }, 'team')));
+console.log('EDGE17', JSON.stringify(buildMarkdownReport({ data: { roadmap: [{ rank: 1, level: 'Critical', what: 'X', fix: 0 }], findings: [] } })));
+console.log('EDGE18', JSON.stringify(buildMarkdownReport({ data: { correlations: [], findings: [] } })));
+console.log('EDGE19', JSON.stringify(buildMarkdownReport({ data: { roadmap: [], findings: [] } })));
+console.log('EDGE20', JSON.stringify(execNarrative({ health: 5, critical: 1, warning: 0, verdict: 'optimize', topFindings: [{ what: '' }] })));
