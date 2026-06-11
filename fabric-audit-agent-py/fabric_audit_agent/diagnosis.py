@@ -40,7 +40,7 @@ def format_diagnosis(result):
             lines.append("")
         lines.append("-----------------------------------------------------------")
         lines.append(f"Findings: {len(findings)}   Health: {health['overall']}/100")
-        lines.append(f"By domain: {json.dumps(health['byDomain'])}")
+        lines.append(f"By domain: {json.dumps(health['byDomain'], separators=(',', ':'))}")  # JS JSON.stringify style (no spaces)
         lines.append(f"Capacity verdict: {verdict['decision'].upper()} — {verdict['reason']}")
         lines.append("")
         lines.append("Do these first:")
