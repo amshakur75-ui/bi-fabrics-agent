@@ -50,3 +50,28 @@ def test_build_digest_totals_new_and_recurring():
     assert d["byDomain"]["capacity"] == 1 and d["byDomain"]["model"] == 1
     assert d["newCount"] == 1
     assert [r["key"] for r in d["recurring"]] == ["capacity.throttle::a"]   # recurringRuns 4 >= 3
+
+
+def test_dedupe_preserves_first_appearance_order_and_is_pure():
+    findings = [_f("a"), _f("b"), _f("a")]
+    assert [f["key"] for f in dedupe(findings)] == ["a", "b"]
+    assert len(findings) == 3   # input untouched
+
+
+def test_escalate_does_not_mutate_input_on_escalation():
+    history = [{"findings": [{"key": "x"}]}, {"findings": [{"key": "x"}]}]
+    src = [_f("x", "Warning")]
+    assert apply_escalation(src, history)[0]["score"]["level"] == "Critical"
+    assert src[0]["score"]["level"] == "Warning"   # escalated branch made a NEW score
+
+
+def test_escalate_empty_history_passthrough():
+    assert apply_escalation([_f("x", "Warning")], [])[0]["score"]["level"] == "Warning"
+
+
+def test_trend_no_history_is_one():
+    assert annotate_recurring([_f("x")], [])[0]["recurringRuns"] == 1
+
+
+def test_digest_newcount_all_when_history_empty():
+    assert build_digest([_f("capacity.x::a", "Warning")], [])["newCount"] == 1

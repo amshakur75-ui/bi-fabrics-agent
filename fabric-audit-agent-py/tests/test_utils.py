@@ -62,3 +62,21 @@ def test_run_log_summarizes_run():
     assert "lineage" not in log["collectedDomains"]
     assert log["findingCount"] == 2 and log["suppressedCount"] == 1
     assert log["readOnly"] is True
+
+
+def test_run_log_missing_data_counts_zero():
+    log = build_run_log({}, {})
+    assert log["findingCount"] == 0 and log["suppressedCount"] == 0 and log["readOnly"] is True
+
+
+def test_sanitize_empty_and_sensitive_false_edges():
+    assert sanitize_evidence({}) == {}
+    assert sanitize_evidence(None) == {}
+    assert sanitize([]) == []
+    # sensitive:false does NOT redact (only ===true does); the bool itself is kept (matches Node)
+    assert sanitize_evidence({"sensitive": False, "peakCuPct": 5}) == {"sensitive": False, "peakCuPct": 5}
+
+
+def test_validate_well_formed_estate_ok():
+    facts = {"capacity": {"capacityId": "c", "sku": "F64", "memoryGB": 64, "peakCuPct": 50, "refreshes": []}, "models": [], "reports": []}
+    assert validate_facts(facts) == {"ok": True, "issues": []}
