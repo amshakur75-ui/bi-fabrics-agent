@@ -4,10 +4,13 @@ from .key_utils import domain_of
 
 def build_ticket(finding=None):
     finding = finding or {}
-    level = (finding.get("score") or {}).get("level") or "Info"
+    lvl = (finding.get("score") or {}).get("level")
+    level = lvl if lvl is not None else "Info"   # nullish (?? 'Info'), not falsy
+    what = finding.get("what")
+    what = what if what is not None else "Fabric audit finding"
     fixes = "\n".join(f"- {x}" for x in (finding.get("fix") or []))
     return {
-        "title": f"[{level}] {finding.get('what') or 'Fabric audit finding'}",
+        "title": f"[{level}] {what}",
         "body": "\n\n".join([
             f"Where: {finding.get('where') or ''}",
             f"Why: {finding.get('why') or ''}",

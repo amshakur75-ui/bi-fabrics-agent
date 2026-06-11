@@ -91,3 +91,43 @@ def test_assess_outcomes_resolved_and_metric():
 
 def test_assess_outcomes_no_history():
     assert assess_outcomes([{"key": "a"}], []) == {"resolvedSinceLast": [], "metricDelta": None}
+
+
+# ---- review-driven coverage ----
+def test_accountability_missing_lifecycle_treated_open():
+    out = annotate_accountability([{"key": "a", "recurringRuns": 3}], [{"runAt": "d1", "findings": [{"key": "a"}]}])
+    assert "accountability" in out[0]   # no lifecycle -> default open -> annotated
+
+
+def test_accountability_empty_state_not_open_and_pure():
+    src = [{"key": "a", "recurringRuns": 3, "lifecycle": {"state": ""}}]
+    out = annotate_accountability(src, [])
+    assert "accountability" not in out[0]   # "" is not open (nullish parity)
+    assert "accountability" not in src[0]   # input untouched
+
+
+def test_sla_malformed_runat_unmodified():
+    out = assess_sla([{"key": "a", "score": {"level": "Critical"}}], [{"runAt": "not-a-date", "findings": [{"key": "a"}]}], _ms("2026-06-05T00:00:00Z"))
+    assert "sla" not in out[0]
+
+
+def test_route_custom_routes_override():
+    assert route_findings([{"key": "cost.idle::a"}], {"cost": "finops"})["finops"] == ["cost.idle::a"]
+
+
+def test_ticket_empty_level_and_what_preserved():
+    t = build_ticket({"score": {"level": ""}, "what": ""})
+    assert t["title"] == "[] " and t["severity"] == ""   # nullish: empty strings preserved (matches Node)
+
+
+def test_triggers_boundary_and_sensitive_false():
+    assert evaluate_threshold_triggers({"capacity": {"capacityId": "F", "peakCuPct": 90}}) != []   # 90 >= 90 crit
+    assert evaluate_threshold_triggers({"capacity": {"capacityId": "F", "peakCuPct": 89}}) == []
+    assert evaluate_threshold_triggers({"access": {"adminGrants": [{"role": "Admin", "sensitive": False, "workspace": "W"}]}}) == []
+
+
+def test_outcomes_not_improved_and_same_value():
+    up = assess_outcomes([], [{"metrics": {"peakCuPct": 80}, "findings": []}], current_metric=90)
+    assert up["metricDelta"]["change"] == 10 and up["metricDelta"]["improved"] is False
+    same = assess_outcomes([], [{"metrics": {"peakCuPct": 80}, "findings": []}], current_metric=80)
+    assert same["metricDelta"]["change"] == 0 and same["metricDelta"]["improved"] is False

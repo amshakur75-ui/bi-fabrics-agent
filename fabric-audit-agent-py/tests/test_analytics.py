@@ -81,3 +81,18 @@ def test_dax_detects_patterns():
 def test_dax_slow_no_pattern_fallback():
     s = analyze_dax("SUM(Sales[Amount])", {"durationMs": 8000})
     assert len(s) == 1 and s[0]["pattern"] == "slow-no-obvious-cause" and "8000 ms" in s[0]["suggestion"]
+
+
+def test_dax_divide_url_and_below_threshold_not_flagged():
+    assert analyze_dax("DIVIDE(a, b)") == []            # DIVIDE is the recommended fix, not flagged
+    assert analyze_dax("http://example.com") == []      # '://' is not raw division
+    assert analyze_dax("SUM(x)", {"durationMs": 4000}) == []   # < 5000 -> no fallback
+
+
+def test_whatif_oversized_only_is_safe():
+    r = assess_what_if({"capacity": {"capacityId": "F", "peakCuPct": 40, "refreshes": []}}, {"kind": "model", "sizeGB": 10, "refreshAt": "03:00"})
+    assert r["riskScore"] == 1 and r["verdict"] == "safe"   # +1 only -> safe (< 2)
+
+
+def test_correlate_throttle_alone_no_pressure():
+    assert correlate([{"key": "capacity.throttle::x"}]) == []   # no drivers -> no capacity-pressure theme

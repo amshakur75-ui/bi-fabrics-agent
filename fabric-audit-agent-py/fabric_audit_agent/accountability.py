@@ -18,7 +18,8 @@ def annotate_accountability(findings, history=None, threshold=3):
     out = []
     for f in findings:
         runs = f.get("recurringRuns") if f.get("recurringRuns") is not None else 1
-        open_ = ((f.get("lifecycle") or {}).get("state") or "open") == "open"
+        state = (f.get("lifecycle") or {}).get("state")
+        open_ = (state if state is not None else "open") == "open"   # nullish (?? 'open'), not falsy
         if runs >= threshold and open_:
             out.append({**f, "accountability": {
                 "openRuns": runs,
