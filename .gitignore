@@ -4,3 +4,12 @@ my-estate.json
 *.log
 .DS_Store
 .env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
