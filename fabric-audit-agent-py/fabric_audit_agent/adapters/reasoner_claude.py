@@ -61,7 +61,7 @@ def create_claude_reasoner(client, model=DEFAULT_MODEL, config=None, max_flags=5
                 model=model,
                 max_tokens=1024,
                 system=_SYSTEM,
-                messages=[{"role": "user", "content": json.dumps(sanitized)}],
+                messages=[{"role": "user", "content": json.dumps(sanitized, ensure_ascii=False)}],
             )
             enriched = json.loads(_extract_json_array(_first_text(resp)))
         except Exception:

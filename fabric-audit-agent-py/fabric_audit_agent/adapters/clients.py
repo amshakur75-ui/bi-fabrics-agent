@@ -50,6 +50,31 @@ class EntraHttp:
             return None
 
 
+class PlainJsonHttp:
+    """Unauthenticated JSON HTTP client — for Teams *incoming webhooks*, which take no auth
+    (the authed Bot Service path uses ``EntraHttp`` instead). Inject a fake session in tests."""
+
+    def __init__(self, session=None, timeout=30):
+        if session is None:
+            import requests  # lazy
+            session = requests.Session()
+        self._session = session
+        self._timeout = timeout
+
+    def get_json(self, url):
+        r = self._session.get(url, headers={"Accept": "application/json"}, timeout=self._timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def post_json(self, url, body):
+        r = self._session.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=self._timeout)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except Exception:
+            return None
+
+
 def build_entra_token_provider(tenant_id, client_id, client_secret, scope=POWERBI_SCOPE):
     """Client-credentials token provider via MSAL. MSAL caches tokens internally, so the
     returned callable is cheap to call per request."""

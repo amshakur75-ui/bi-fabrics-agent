@@ -7,6 +7,11 @@ dependencies = []   # anthropic / msal / databricks-sdk added as their adapters 
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+prod = ["requests>=2", "msal>=1.24", "anthropic>=0.39"]   # collector_rest / clients / reasoner_claude
+mcp = ["mcp>=1.2"]                                          # mcp_server (pull surface)
+
+[project.scripts]
+fabric-audit = "fabric_audit_agent.__main__:_console"
 
 [build-system]
 requires = ["setuptools>=68"]
