@@ -66,3 +66,25 @@ def test_ignores_events_with_no_user():
     r = attribute_users([{"cpuMs": 100, "interactive": True}, {"user": "", "interactive": True}])
     assert r["userCount"] == 0
     assert r["topUsers"] == []
+
+
+def test_non_finite_cost_does_not_crash():
+    # NaN/Infinity must behave like JS Number.isFinite (ignored), not crash round()
+    r = attribute_users([{"user": "a@x.com", "cpuMs": float("inf"), "interactive": True}])
+    assert r["userCount"] == 1
+    assert r["mode"] == "frequency"          # inf is not finite -> not treated as a cost
+    assert r["topUsers"][0]["cpuMs"] == 0    # non-finite cost coerced to 0
+
+
+def test_enrich_owner_nullish_keeps_empty_string():
+    out = enrich_items(
+        [{"name": "X", "sharePct": 50, "owner": ""}],
+        {"X": [{"user": "u@x.com", "cpuMs": 1, "interactive": True}]},
+        owner="fallback@x.com",
+    )
+    assert out[0]["owner"] == ""             # present-but-empty owner kept (nullish, not falsy)
+
+
+def test_cpuMs_rounds_half_up_like_js():
+    r = attribute_users([{"user": "a@x.com", "cpuMs": 2.5, "interactive": True}])
+    assert r["topUsers"][0]["cpuMs"] == 3    # JS Math.round(2.5)=3 (not banker's-rounding 2)

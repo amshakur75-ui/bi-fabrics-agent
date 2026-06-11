@@ -12,11 +12,14 @@ single heavy refresh (high cost, low op-count) is still flagged background -> th
 owner/initiator is named instead of an interactive "consumer".
 """
 
+import math
+
 DEFAULT_TOP_N = 3
 
 
 def _is_num(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    # mirrors JS Number.isFinite: rejects bool, NaN, and Infinity
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def attribute_users(events=None, *, top_n=DEFAULT_TOP_N, owner=None):
@@ -50,7 +53,7 @@ def attribute_users(events=None, *, top_n=DEFAULT_TOP_N, owner=None):
 
     users = [
         {
-            "user": u["user"], "ops": u["ops"], "cpuMs": round(u["cpuMs"]),
+            "user": u["user"], "ops": u["ops"], "cpuMs": int(math.floor(u["cpuMs"] + 0.5)),  # JS Math.round (half-up); cpuMs >= 0
             "interactive": u["interactiveOps"] > 0,
             "score": u["cpuMs"] if mode == "cost" else u["ops"],
         }
@@ -84,13 +87,14 @@ def enrich_items(items=None, events_by_item=None, *, top_n=DEFAULT_TOP_N, owner=
         if not events:
             out.append(it)
             continue
-        a = attribute_users(events, top_n=top_n, owner=it.get("owner") or owner)
+        item_owner = it.get("owner") if it.get("owner") is not None else owner  # nullish, not falsy
+        a = attribute_users(events, top_n=top_n, owner=item_owner)
         out.append({
             **it,
             "topUsers": a["topUsers"],
             "userCount": a["userCount"],
             "background": a["background"],
-            "owner": a["owner"] or it.get("owner"),
+            "owner": a["owner"] if a["owner"] is not None else it.get("owner"),
             "attributionMode": a["mode"],
         })
     return out

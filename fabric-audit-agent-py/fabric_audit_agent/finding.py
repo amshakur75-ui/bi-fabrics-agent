@@ -26,5 +26,5 @@ def wrap_envelope(*, agent_id, findings, summary):
         "agent_id": agent_id,
         "data": {"findings": findings},
         "summary": summary,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),  # JS toISOString style
     }
