@@ -36,8 +36,9 @@ export function mapItems(headers, rows) {
 
   const totalCu = items.reduce((s, it) => s + it.cuSeconds, 0);
   const rejectedTotal = items.reduce((s, it) => s + it.rejected, 0);
+  for (const it of items) it.sharePct = totalCu ? round1(it.cuSeconds / totalCu * 100) : 0;
   const top = [...items].sort((a, b) => b.cuSeconds - a.cuSeconds).slice(0, 10)
-    .map(it => ({ ...it, pctOfTotal: totalCu ? round1(it.cuSeconds / totalCu * 100) : 0 }));
+    .map(it => ({ ...it, pctOfTotal: it.sharePct }));
   const rejectedItems = items.filter(it => it.rejected > 0).sort((a, b) => b.rejected - a.rejected);
 
   return { items, itemCount: items.length, totalCu, rejectedTotal, top, rejectedItems, columns: { ws, kind, name, cu, dur, users, rej } };

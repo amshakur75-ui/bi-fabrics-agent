@@ -1,5 +1,6 @@
 import { DEFAULT_CONFIG } from '../config.js';
 import { detectCapacity } from './capacity.js';
+import { detectConcentration } from './concentration.js';
 import { detectModels } from './model.js';
 import { detectReports } from './report.js';
 import { detectPipelines } from './pipeline.js';
@@ -7,7 +8,7 @@ import { detectBlastRadius } from './blast-radius.js';
 import { detectSecurity } from './security.js';
 import { detectCost } from './cost.js';
 
-const DETECTORS = [detectCapacity, detectModels, detectReports, detectPipelines, detectBlastRadius, detectSecurity, detectCost];
+const DETECTORS = [detectCapacity, detectConcentration, detectModels, detectReports, detectPipelines, detectBlastRadius, detectSecurity, detectCost];
 
 /**
  * Run every registered detector and flatten the flags.

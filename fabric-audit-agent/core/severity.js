@@ -27,6 +27,10 @@ export function scoreSeverity(flag, config = DEFAULT_CONFIG) {
       }
       return { level: 'Warning', reason: `model ${e.sizeGB}GB on ${e.memoryGB}GB capacity` };
 
+    case 'capacity.concentration':
+      if (e.sharePct >= config.capacity.concentrationCritPct) return { level: 'Critical', reason: `${e.sharePct}% of capacity CU in one item` };
+      return { level: 'Warning', reason: `${e.sharePct}% of capacity CU in one item` };
+
     case 'model.bidirectional':
       if (e.count >= config.model.bidirectionalCritMin) return { level: 'Critical', reason: `${e.count} bidirectional relationships` };
       return { level: 'Warning', reason: `${e.count} bidirectional relationships` };

@@ -11,6 +11,8 @@ function impactFor(flag) {
       return `Downstream reports for ${flag.evidence.datasets.join(', ')} show stale data until refreshes drain.`;
     case 'capacity.oversized-model':
       return 'Long refreshes consume capacity memory and CU, compounding contention.';
+    case 'capacity.concentration':
+      return 'One item monopolizing CU can slow or throttle every other workload on the same capacity.';
     case 'model.bidirectional':
     case 'model.auto-datetime':
       return 'Slower queries and a larger model that consumes more capacity memory.';

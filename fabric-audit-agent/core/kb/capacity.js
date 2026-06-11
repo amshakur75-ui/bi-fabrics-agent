@@ -28,6 +28,16 @@ export const CAPACITY_PLAYBOOKS = {
     ],
     owner: 'Report author + Power BI team',
   },
+  'capacity.concentration': {
+    rootCause: "A single item is consuming a large share of the capacity's CU — a 'noisy neighbor' that can starve other workloads on the same capacity.",
+    fixes: [
+      'Identify the user(s) and workload driving it — interactive queries vs a scheduled refresh.',
+      'If interactive: review the report/model with the user (fewer visuals, avoid DirectQuery, add aggregations).',
+      'If a refresh: enable incremental refresh, stagger it out of the peak window, or isolate the item on its own capacity.',
+      'Contact the item owner to confirm the usage is expected.',
+    ],
+    owner: 'Power BI team + item owner',
+  },
 };
 
 /**

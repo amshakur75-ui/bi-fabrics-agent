@@ -1,5 +1,5 @@
 export const DEFAULT_CONFIG = {
-  capacity: { throttleWarnPct: 80, throttleCritPct: 90, throttleCritMinutes: 30, contentionMin: 3, contentionCritCount: 4, oversizedGB: 4, oversizedCritPct: 25 },
+  capacity: { throttleWarnPct: 80, throttleCritPct: 90, throttleCritMinutes: 30, contentionMin: 3, contentionCritCount: 4, oversizedGB: 4, oversizedCritPct: 25, concentrationPct: 30, concentrationCritPct: 50 },
   model:    { bidirectionalMin: 4, bidirectionalCritMin: 8, refreshFailPct: 10, refreshFailCritPct: 25 },
   report:   { visualsMin: 20, visualsCritMin: 40, slowVisualMs: 5000, slowVisualCritMs: 10000 },
   pipeline: { failRatePct: 10 },

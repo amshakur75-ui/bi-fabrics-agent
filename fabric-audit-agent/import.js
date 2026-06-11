@@ -90,6 +90,7 @@ for (const f of files) {
 }
 
 const facts = mergeFacts(parts);
+if (itemsAnalyses.length) facts.items = itemsAnalyses.flatMap(a => a.items);
 const peak = facts.capacity?.peakCuPct ?? 0;
 const utilizationUnreadable = peak > 1000;
 
@@ -141,7 +142,7 @@ if (!facts.capacity && !(facts.models?.length) && !(facts.reports?.length) && !i
 const factsForDiag = JSON.parse(JSON.stringify(facts));
 if (utilizationUnreadable && factsForDiag.capacity) factsForDiag.capacity.peakCuPct = 0;
 
-if (facts.capacity || facts.models?.length || facts.reports?.length) {
+if (facts.capacity || facts.models?.length || facts.reports?.length || facts.items?.length) {
   await writeFile(join(__dirname, 'my-estate.json'), JSON.stringify(factsForDiag, null, 2));
   console.log('Wrote combined numbers to my-estate.json (gitignored — never pushed). Tweak + re-run: node mytest.js');
   const diag = await diagnose(factsForDiag);
