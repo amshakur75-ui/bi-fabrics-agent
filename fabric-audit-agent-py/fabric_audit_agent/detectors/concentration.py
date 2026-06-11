@@ -44,10 +44,10 @@ def detect_concentration(facts, config=None):
         elif named:
             names = ", ".join(u.get("user") for u in named)
             more = max(0, total_users - len(named)) if total_users is not None else 0
-            suffix = f" + {more} more" if more > 0 else ""
+            suffix = f" + {_fmt(more)} more" if more > 0 else ""   # int-valued floats render as "10" not "10.0"
             what = f"{names}{suffix} are driving {_fmt(share)}% of capacity CU via \"{it.get('name')}\" ({ws})."
         else:
-            who = f"{it.get('users')} user(s)" if it.get("users") else "unknown users"
+            who = f"{_fmt(it['users'])} user(s)" if it.get("users") else "unknown users"
             what = (f"\"{it.get('name')}\" ({ws}) is using {_fmt(share)}% of capacity CU across {who} "
                     f"— specific users pending activity-log correlation.")
 

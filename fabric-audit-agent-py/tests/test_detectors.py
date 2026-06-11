@@ -80,6 +80,16 @@ def test_concentration_integer_share_no_decimal():
     assert "70%" in what and "70.0%" not in what
 
 
+def test_concentration_formats_integer_valued_float_counts():
+    # the importer produces float counts (12.0); display must read "12", not "12.0"
+    w1 = detect_concentration({"items": [{"name": "X", "workspace": "W", "sharePct": 70.0, "users": 12.0}]})[0]["what"]
+    assert "12 user(s)" in w1 and "12.0" not in w1
+    # named branch "+ N more" with a float userCount
+    w2 = detect_concentration({"items": [{"name": "Y", "workspace": "W", "sharePct": 40.0, "userCount": 5.0,
+                                          "topUsers": [{"user": "a@x.com"}, {"user": "b@x.com"}]}]})[0]["what"]
+    assert "+ 3 more" in w2 and "3.0" not in w2
+
+
 # ---------------- model ----------------
 def test_models_all_three_then_clean():
     dirty = {"models": [{"workspace": "Fin", "name": "GL", "bidirectionalRels": 6, "autoDateTime": True, "refreshFailRatePct": 12}]}
