@@ -16,6 +16,9 @@ from .store_local import create_local_store
 from .lifecycle_store import create_lifecycle_store
 from .ticketing import create_ticketing_delivery
 from .collector_rest import create_rest_collector, fetch_all_pages
+from .collector_activity import (
+    create_activity_collector, fetch_activity_events, map_activity_event, fetch_log_analytics,
+)
 from .reasoner_claude import create_claude_reasoner
 from .delivery_teams import create_teams_delivery
 
@@ -28,6 +31,10 @@ __all__ = [
     "create_ticketing_delivery",
     "create_rest_collector",
     "fetch_all_pages",
+    "create_activity_collector",
+    "fetch_activity_events",
+    "map_activity_event",
+    "fetch_log_analytics",
     "create_claude_reasoner",
     "create_teams_delivery",
 ]
