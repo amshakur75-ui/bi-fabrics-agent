@@ -37,6 +37,11 @@ def _json(obj):
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
+def _num(x):
+    """JS ``Number``->string: drop the trailing ``.0`` for whole floats (1.0 -> '1', 0.67 -> '0.67')."""
+    return str(int(x)) if isinstance(x, float) and x.is_integer() else str(x)
+
+
 # ---- audit (port of audit.js) ----
 def run_audit_cli(base_dir=None):
     base = _base(base_dir)
@@ -121,8 +126,8 @@ def run_eval_cli(base_dir=None, cases_path=None):
     for r in results:
         sc = r["score"]
         miss = (" missing: " + ",".join(sc["missing"])) if sc["missing"] else ""
-        out.append(f'{"PASS" if sc["pass"] else "FAIL"} {r["name"]} (recall {sc["recall"]}, precision {sc["precision"]}){miss}')
-    out.append(f'Suite: {suite["passed"]}/{suite["cases"]} passed, avgRecall {suite["avgRecall"]}, avgPrecision {suite["avgPrecision"]}')
+        out.append(f'{"PASS" if sc["pass"] else "FAIL"} {r["name"]} (recall {_num(sc["recall"])}, precision {_num(sc["precision"])}){miss}')
+    out.append(f'Suite: {suite["passed"]}/{suite["cases"]} passed, avgRecall {_num(suite["avgRecall"])}, avgPrecision {_num(suite["avgPrecision"])}')
     return "\n".join(out)
 
 
@@ -130,6 +135,8 @@ def run_eval_cli(base_dir=None, cases_path=None):
 def run_whatif_cli(kind=None, size_gb=0, refresh_at=None, base_dir=None):
     base = _base(base_dir)
     facts = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))["collect"]()
+    if isinstance(size_gb, float) and size_gb.is_integer():
+        size_gb = int(size_gb)   # JS Number("5") -> 5 (prints "5", not "5.0")
     res = assess_what_if(facts, {"kind": kind, "sizeGB": size_gb, "refreshAt": refresh_at})
     out = [f'What-if verdict: {str(res["verdict"]).upper()} (risk {res["riskScore"]})']
     for i in res["impacts"]:

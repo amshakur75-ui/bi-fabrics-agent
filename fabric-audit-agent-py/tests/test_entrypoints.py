@@ -38,13 +38,16 @@ def test_audit_cli_writes_outputs(tmp_path):
 # ---- eval ----
 def test_eval_cli_scores_golden_suite(tmp_path):
     out = run_eval_cli(base_dir=_temp_base(tmp_path))
-    assert "Suite:" in out and ("PASS" in out or "FAIL" in out)
+    assert "Suite:" in out and "PASS" in out
+    assert "recall 1," in out and "avgRecall 1," in out   # JS-style integers, not 1.0
+    assert "1.0" not in out
 
 
 # ---- whatif ----
 def test_whatif_cli(tmp_path):
     out = run_whatif_cli("model", 5.0, "06:00", base_dir=_temp_base(tmp_path))
     assert out.startswith("What-if verdict:")
+    assert "5 GB" in out and "5.0 GB" not in out   # whole sizeGB renders JS-style
 
 
 # ---- triggers ----

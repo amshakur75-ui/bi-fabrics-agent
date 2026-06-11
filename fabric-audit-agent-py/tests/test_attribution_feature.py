@@ -1,8 +1,7 @@
 """A2b + A3 — the 30% concentration feature: live user-attribution collector and the Teams
 two-way conversation surface. Built on the ported attribution + concentration engine."""
 from fabric_audit_agent.adapters.collector_activity import (
-    map_activity_event, fetch_activity_events, map_log_analytics_rows, group_events_by_item,
-    create_activity_collector,
+    map_activity_event, fetch_activity_events, map_log_analytics_rows, create_activity_collector,
 )
 from fabric_audit_agent.detectors.concentration import detect_concentration
 from fabric_audit_agent.conversation import build_concentration_alert, answer_question
@@ -45,17 +44,33 @@ def test_fetch_activity_events_pages_continuation():
     assert len(http.calls) == 2
 
 
-def test_map_log_analytics_rows():
+def test_map_log_analytics_rows_preserves_zero_cost():
     resp = {"tables": [{"columns": [{"name": "ExecutingUser"}, {"name": "DatasetName"}, {"name": "CpuTimeMs"}],
-                        "rows": [["alice", "Sales", 1200], ["bob", "Sales", 300]]}]}
+                        "rows": [["alice", "Sales", 1200], ["bob", "Sales", 0]]}]}
     ev = map_log_analytics_rows(resp)
-    assert ev[0] == {"user": "alice", "item": "Sales", "cpuMs": 1200, "durationMs": None, "interactive": True}
+    assert ev[0] == {"user": "alice", "item": "Sales", "workspace": None, "operation": "",
+                     "cpuMs": 1200, "durationMs": None, "interactive": True}
+    assert ev[1]["cpuMs"] == 0   # falsy-zero preserved, not collapsed to None
     assert map_log_analytics_rows({}) == []
 
 
-def test_group_events_by_item_merges_sources():
-    by = group_events_by_item([{"item": "A", "user": "u"}], [{"item": "A", "user": "v", "cpuMs": 5}])
-    assert len(by["A"]) == 2
+def test_activity_collector_workspace_collision_isolated():
+    # two items both named "Sales" in different workspaces must not cross-contaminate
+    base = {"collect": lambda: {"items": [
+        {"name": "Sales", "workspace": "Fin", "sharePct": 35},
+        {"name": "Sales", "workspace": "Ops", "sharePct": 33},
+    ]}}
+    http = _Http(default={"activityEventEntities": [
+        {"Operation": "ViewReport", "UserId": "fin_user", "ArtifactName": "Sales", "WorkspaceName": "Fin"},
+        {"Operation": "ViewReport", "UserId": "ops_user", "ArtifactName": "Sales", "WorkspaceName": "Ops"},
+    ]})
+    items = create_activity_collector(
+        http, config={"windowStart": "s", "windowEnd": "e", "activityUrl": "u"}, base_collector=base,
+    )["collect"]()["items"]
+    fin = next(i for i in items if i["workspace"] == "Fin")
+    ops = next(i for i in items if i["workspace"] == "Ops")
+    assert [u["user"] for u in fin["topUsers"]] == ["fin_user"]
+    assert [u["user"] for u in ops["topUsers"]] == ["ops_user"]
 
 
 def test_activity_collector_names_user_driving_concentration():
@@ -116,6 +131,31 @@ def test_build_concentration_alert_owner_when_background():
     finding = {"key": "k", "what": "background-driven", "evidence": {"sharePct": 50, "topUsers": None, "owner": "svc@x"}}
     card = build_concentration_alert(finding)
     assert any("Contact svc@x" in a["title"] for a in card["actions"])
+
+
+def test_concentration_flag_to_alert_end_to_end_names_user():
+    # realistic path: enriched item -> detector FLAG (carries evidence) -> rich alert
+    facts = {"items": [{"name": "Sales", "workspace": "Fin", "sharePct": 35, "observedAt": "t",
+                        "topUsers": [{"user": "alice@x", "ops": 5}], "userCount": 1, "attributionMode": "frequency"}]}
+    flags = detect_concentration(facts)
+    assert flags and "alice@x" in flags[0]["what"]
+    alert = build_concentration_alert(flags[0])
+    assert alert["sections"][0]["text"] == flags[0]["what"]
+    fm = {f["name"]: f["value"] for f in alert["sections"][0]["facts"]}
+    assert fm["Share of CU"] == "35%" and fm["Driver"] == "alice@x"
+    assert any("Contact alice@x" in a["title"] for a in alert["actions"])
+
+
+def test_concentration_alert_degrades_on_bare_finding():
+    # a real pipeline finding carries NO evidence; the alert must not render "None%" or crash
+    finding = {"key": "capacity.concentration::Fin / Sales",
+               "what": "alice@x is driving 35% of capacity CU via \"Sales\" (Fin)."}
+    alert = build_concentration_alert(finding)
+    assert alert["sections"][0]["text"] == finding["what"]
+    names = [f["name"] for f in alert["sections"][0]["facts"]]
+    assert "Share of CU" not in names and "Driver" not in names   # omitted, not "None%"
+    assert any("Acknowledge" in a["title"] for a in alert["actions"])
+    assert not any("Contact" in a["title"] for a in alert["actions"])
 
 
 def _env():

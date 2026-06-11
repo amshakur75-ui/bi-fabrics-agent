@@ -2,8 +2,9 @@
 
 NEW (no Node reference): builds on the ported attribution engine. Pulls per-user activity
 for the audit window from the Power BI **Activity Events** admin API (and optionally Azure
-**Log Analytics** for CU-cost-weighted ranking), groups events per item, and enriches
-``facts["items"]`` so ``detectors.concentration`` can name **User -> Item -> Owner**.
+**Log Analytics** for CU-cost-weighted ranking), matches events to items by
+**(workspace, name)**, and enriches ``facts["items"]`` so ``detectors.concentration`` can name
+**User -> Item -> Owner**.
 
 The http client is injected (``get_json`` / ``post_json``) so it's testable offline and swaps
 to ``adapters.clients.EntraHttp`` at deploy. Read-only.
@@ -17,7 +18,7 @@ No single source has CU + user together, so we correlate by item + time window.
 
 Field names below are representative — verify exact casing against the live APIs at deploy.
 """
-from ..attribution import enrich_items, DEFAULT_TOP_N
+from ..attribution import attribute_users, DEFAULT_TOP_N
 
 _ACTIVITY_URL = "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
 
@@ -27,6 +28,18 @@ _BACKGROUND_OPS = {
     "scheduleddatasetrefresh", "refreshpipeline", "runpipeline", "executenotebook",
     "datamartrefresh", "refreshsqlendpoint",
 }
+
+
+def _first(*vals):
+    """First value that ``is not None`` (so a real ``0`` cost survives, unlike ``a or b``)."""
+    for v in vals:
+        if v is not None:
+            return v
+    return None
+
+
+def _is_background(operation):
+    return bool(operation) and operation.lower() in _BACKGROUND_OPS
 
 
 def map_activity_event(entity):
@@ -44,7 +57,7 @@ def map_activity_event(entity):
         "item": item,
         "workspace": entity.get("WorkspaceName") or entity.get("WorkSpaceName"),
         "operation": op,
-        "interactive": op.lower() not in _BACKGROUND_OPS,
+        "interactive": not _is_background(op),
         "time": entity.get("CreationTime"),
     }
 
@@ -52,14 +65,15 @@ def map_activity_event(entity):
 def fetch_activity_events(http, start_iso, end_iso, base_url=None):
     """Page the Activity Events admin API over ``[start, end)`` and return mapped events.
 
-    The API returns ``continuationUri`` until the window is exhausted (and requires the
-    window to sit within a single UTC day). Guarded against runaway paging.
+    Follows ``continuationUri`` until exhausted; de-dupes seen URIs (so a server returning a
+    self-referential link can't loop) and guards against runaway paging.
     """
     base = base_url or _ACTIVITY_URL
     url = f"{base}?startDateTime='{start_iso}'&endDateTime='{end_iso}'"
-    events = []
+    events, seen = [], set()
     guard = 0
-    while url and guard < 1000:
+    while url and url not in seen and guard < 1000:
+        seen.add(url)
         guard += 1
         page = http.get_json(url)
         entities = (page.get("activityEventEntities") or []) if isinstance(page, dict) else []
@@ -71,25 +85,38 @@ def fetch_activity_events(http, start_iso, end_iso, base_url=None):
 
 def map_log_analytics_rows(resp):
     """Map an Azure Monitor / Log Analytics query response (tables/columns/rows) to cost
-    events carrying ``cpuMs``/``durationMs`` (so attribution ranks by CU cost). Pure."""
+    events carrying ``cpuMs``/``durationMs`` (so attribution ranks by CU cost). Pure.
+
+    Uses first-non-None column lookups so a real ``0`` cost is preserved; classifies
+    ``interactive`` from an ``Operation``/``OperationName`` column when present.
+    """
     tables = (resp or {}).get("tables") or []
     if not tables:
         return []
     cols = [c.get("name") for c in (tables[0].get("columns") or [])]
     idx = {name: i for i, name in enumerate(cols)}
 
-    def col(row, name):
-        i = idx.get(name)
-        return row[i] if (i is not None and i < len(row)) else None
+    def col(row, *names):
+        for name in names:
+            i = idx.get(name)
+            if i is not None and i < len(row):
+                v = row[i]
+                if v is not None:
+                    return v
+        return None
 
     out = []
     for row in (tables[0].get("rows") or []):
+        op = str(col(row, "OperationName", "Operation") or "").strip()
         out.append({
-            "user": col(row, "ExecutingUser") or col(row, "User") or "",
-            "item": col(row, "ArtifactName") or col(row, "DatasetName") or col(row, "Item"),
-            "cpuMs": col(row, "CpuTimeMs") or col(row, "cpuTimeMs"),
-            "durationMs": col(row, "DurationMs") or col(row, "durationMs"),
-            "interactive": True,   # LA query targets interactive ops; refine by Operation at deploy
+            "user": col(row, "ExecutingUser", "User") or "",
+            "item": col(row, "ArtifactName", "DatasetName", "Item"),
+            "workspace": col(row, "WorkspaceName", "Workspace"),
+            "operation": op,
+            "cpuMs": col(row, "CpuTimeMs", "cpuTimeMs"),
+            "durationMs": col(row, "DurationMs", "durationMs"),
+            # LA query may omit Operation; default to interactive only when it's truly unknown.
+            "interactive": (not _is_background(op)) if op else True,
         })
     return out
 
@@ -103,26 +130,22 @@ def fetch_log_analytics(http, workspace_id, kql, timespan=None):
     return map_log_analytics_rows(http.post_json(url, body))
 
 
-def group_events_by_item(events, log_events=None):
-    """Group attribution events by item name (Activity Events + optional Log Analytics)."""
-    by_item = {}
-    for e in (events or []):
-        item = e.get("item")
-        if item:
-            by_item.setdefault(item, []).append(e)
-    for e in (log_events or []):
-        item = e.get("item")
-        if item:
-            by_item.setdefault(item, []).append(e)
-    return by_item
+def _events_for_item(item, events):
+    """Events whose item name matches and whose workspace matches (or is unknown).
+
+    Workspace-aware: two items with the same name in different workspaces don't cross-
+    contaminate. Events with no workspace (e.g. Log Analytics rows) match by name only.
+    """
+    name, ws = item.get("name"), item.get("workspace")
+    return [e for e in events if e.get("item") == name and e.get("workspace") in (None, ws)]
 
 
 def create_activity_collector(http, config=None, base_collector=None, top_n=DEFAULT_TOP_N):
     """Wrap a base collector and enrich ``facts["items"]`` with user attribution.
 
     ``config`` keys: ``windowStart`` / ``windowEnd`` (ISO, same UTC day), ``activityUrl``
-    (override), ``logAnalyticsEvents`` (pre-fetched LA cost events, optional). Items without
-    activity are left untouched (so the detector falls back to "pending correlation").
+    (override), ``logAnalyticsEvents`` (pre-fetched LA cost events, optional). Items with no
+    matching activity are left untouched (so the detector falls back to "pending correlation").
     """
     config = config or {}
 
@@ -133,8 +156,23 @@ def create_activity_collector(http, config=None, base_collector=None, top_n=DEFA
             return facts
         start, end = config.get("windowStart"), config.get("windowEnd")
         events = fetch_activity_events(http, start, end, config.get("activityUrl")) if (start and end) else []
-        log_events = config.get("logAnalyticsEvents") or []
-        by_item = group_events_by_item(events, log_events)
-        return {**facts, "items": enrich_items(items, by_item, top_n=top_n)}
+        all_events = [*events, *(config.get("logAnalyticsEvents") or [])]
+
+        out = []
+        for it in items:
+            matched = _events_for_item(it, all_events)
+            if not matched:
+                out.append(it)
+                continue
+            a = attribute_users(matched, top_n=top_n, owner=it.get("owner"))
+            out.append({
+                **it,
+                "topUsers": a["topUsers"],
+                "userCount": a["userCount"],
+                "background": a["background"],
+                "owner": a["owner"] if a["owner"] is not None else it.get("owner"),
+                "attributionMode": a["mode"],
+            })
+        return {**facts, "items": out}
 
     return {"collect": collect}

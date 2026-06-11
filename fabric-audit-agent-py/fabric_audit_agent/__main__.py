@@ -18,6 +18,13 @@ from . import entrypoints as ep
 
 
 def main(argv=None):
+    # UTF-8 stdout so the em-dash/arrow glyphs in findings print on a stock Windows console
+    # (cp1252) instead of crashing with UnicodeEncodeError. Linux/Databricks: effectively a no-op.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(run_import([]))   # prints usage
