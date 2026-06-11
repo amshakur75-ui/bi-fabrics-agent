@@ -12,9 +12,9 @@ def _types_of(findings):
         k = f.get("key")
         if isinstance(k, str):
             t = k.split("::")[0]
-            if t not in seen:
+            if t and t not in seen:   # `t and`: JS .filter(Boolean) drops an empty-string type (e.g. a "::res" key); ordered-unique like JS Set
                 seen.add(t)
-                out.append(t)   # ordered unique (mirrors JS Set insertion order)
+                out.append(t)
     return out
 
 

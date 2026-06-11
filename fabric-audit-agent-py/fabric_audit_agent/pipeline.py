@@ -61,6 +61,9 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
     config = config or DEFAULT_CONFIG
     run_at = now if now is not None else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     now_ms = _parse_ms(run_at)
+    # Unparseable run_at -> 0 (JS gets NaN). Both disable snooze-expiry (nowMs>0 is false for
+    # 0 and NaN alike); the only divergence is an unreachable SLA branch where JS would attach
+    # a useless ageDays:NaN — we omit it. Intentional. (7f review NIT-1.)
     now_ms = now_ms if now_ms is not None else 0
 
     facts = collector["collect"]()

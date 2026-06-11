@@ -45,6 +45,12 @@ def test_eval_score_case():
     assert sc["recall"] == 0.67 and sc["precision"] == 1
 
 
+def test_eval_skips_empty_string_type():
+    # a "::orphan" key -> empty type; JS .filter(Boolean) drops it, so it is neither matched nor extra.
+    sc = score_case([{"key": "::orphan"}, {"key": "capacity.throttle::a"}], {"types": ["capacity.throttle"]})
+    assert sc["extra"] == [] and sc["matched"] == 1 and sc["precision"] == 1
+
+
 def test_eval_perfect_and_suite():
     perfect = score_case([{"key": "capacity.throttle::a"}], {"types": ["capacity.throttle"]})
     assert perfect["pass"] is True and perfect["recall"] == 1 and perfect["precision"] == 1
