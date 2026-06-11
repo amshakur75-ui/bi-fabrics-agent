@@ -18,16 +18,34 @@ test('flags an item at or over 30% of capacity CU (default threshold)', () => {
   assert.match(flags[0].what, /70%/);
 });
 
-test('leads with named users when activity-log correlation is present', () => {
+test('leads with named users (top-3 + count) when correlation is present', () => {
   const facts = {
     items: [
-      { workspace: 'Finance', name: 'GL Model', sharePct: 40, users: 3, topUsers: [{ user: 'jdoe@contoso.com' }, { user: 'asmith@contoso.com' }] },
+      {
+        workspace: 'Finance', name: 'GL Model', sharePct: 40, userCount: 5,
+        topUsers: [{ user: 'jdoe@contoso.com' }, { user: 'asmith@contoso.com' }],
+      },
     ],
   };
   const [flag] = detectConcentration(facts);
-  assert.match(flag.what, /jdoe@contoso\.com/);     // user-first
-  assert.match(flag.what, /\+ 1 more/);
-  assert.deepEqual(flag.evidence.topUsers.map(u => u.user), ['jdoe@contoso.com', 'asmith@contoso.com']);
+  assert.match(flag.what, /jdoe@contoso\.com/);          // user-first
+  assert.match(flag.what, /asmith@contoso\.com/);
+  assert.match(flag.what, /\+ 3 more/);                  // userCount 5 - 2 named
+});
+
+test('background-dominated: names the owner, not an interactive consumer', () => {
+  const facts = {
+    items: [
+      {
+        workspace: 'Finance', name: 'GL Model', sharePct: 60, background: true, owner: 'owner@contoso.com',
+        topUsers: [{ user: 'svc@contoso.com' }], userCount: 1,
+      },
+    ],
+  };
+  const [flag] = detectConcentration(facts);
+  assert.match(flag.what, /background/);
+  assert.match(flag.what, /owner@contoso\.com/);
+  assert.equal(flag.evidence.background, true);
 });
 
 test('without named users, says specific users are pending correlation', () => {

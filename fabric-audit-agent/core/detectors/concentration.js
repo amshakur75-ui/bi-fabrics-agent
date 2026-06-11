@@ -4,13 +4,14 @@ import { DEFAULT_CONFIG } from '../config.js';
 
 /**
  * Noisy-neighbor detector: flag any single item consuming >= threshold% of the
- * capacity's CU. Reads `facts.items` (per-item CU share, populated by the
- * Capacity Metrics items importer). Pure: facts in, flags out.
+ * capacity's CU. Reads `facts.items` (per-item CU share from the Capacity Metrics
+ * items importer); when activity-log attribution has been attached (see
+ * core/attribution.js) the flag is USER-FIRST. Pure: facts in, flags out.
  *
- * The flag is intentionally USER-FIRST: if activity-log correlation has attached
- * `topUsers` (see the user-attribution increment), the message leads with who is
- * driving the consumption so the team can reach out. Until then it reports the
- * distinct-user count and notes that named users are pending correlation.
+ * Message degrades honestly:
+ *   - named interactive users present  -> "U1, U2 + N more are driving X% via <item>"
+ *   - background-dominated load         -> "<item> is using X% — background ops, owner: O (not a consumer)"
+ *   - no attribution yet                -> "<item> is using X% across N users — specific users pending correlation"
  *
  * @param {{items?:object[]}} facts
  * @param {object} [config]
@@ -27,13 +28,20 @@ export function detectConcentration(facts, config = DEFAULT_CONFIG) {
 
     const ws = it.workspace || 'unknown workspace';
     const named = Array.isArray(it.topUsers) && it.topUsers.length ? it.topUsers : null;
-    const who = named
-      ? `${named[0].user}${named.length > 1 ? ` + ${named.length - 1} more` : ''}`
-      : (it.users ? `${it.users} user(s)` : 'unknown users');
+    const totalUsers = it.userCount ?? it.users ?? (named ? named.length : null);
 
-    const what = named
-      ? `${who} are driving ${share}% of capacity CU via "${it.name}" (${ws}).`
-      : `"${it.name}" (${ws}) is using ${share}% of capacity CU across ${who} — specific users pending activity-log correlation.`;
+    let what;
+    if (named && it.background) {
+      const owner = it.owner || named[0].user;
+      what = `"${it.name}" (${ws}) is using ${share}% of capacity CU — driven mainly by background operations (owner/initiator: ${owner}), not interactive users.`;
+    } else if (named) {
+      const names = named.map(u => u.user).join(', ');
+      const more = totalUsers != null ? Math.max(0, totalUsers - named.length) : 0;
+      what = `${names}${more > 0 ? ` + ${more} more` : ''} are driving ${share}% of capacity CU via "${it.name}" (${ws}).`;
+    } else {
+      const who = it.users ? `${it.users} user(s)` : 'unknown users';
+      what = `"${it.name}" (${ws}) is using ${share}% of capacity CU across ${who} — specific users pending activity-log correlation.`;
+    }
 
     flags.push({
       type: 'capacity.concentration',
@@ -44,8 +52,11 @@ export function detectConcentration(facts, config = DEFAULT_CONFIG) {
         cuSeconds: it.cuSeconds ?? null,
         kind: it.kind ?? null,
         users: it.users ?? null,
+        userCount: it.userCount ?? null,
         topUsers: named,
+        background: it.background ?? false,
         owner: it.owner ?? null,
+        attributionMode: it.attributionMode ?? null,
       },
       what,
     });
