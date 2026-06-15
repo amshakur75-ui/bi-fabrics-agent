@@ -12,6 +12,11 @@ sweep and a **Python MCP server** for the conversational pull surface. It is sel
 > field names below as the current shape; confirm against Microsoft Learn at setup, and tune the
 > representative URLs/field mappings in `collector_rest.py` / `collector_activity.py`.
 
+> **New here (or a fresh session)? Start with [STATUS.md](STATUS.md)** — current state, the 4-phase
+> rollout, and where everything lives. This file is the deploy *reference*; the per-phase runbooks
+> ([PHASE2-SP-TEST.md](PHASE2-SP-TEST.md), [PHASE3-DATABRICKS.md](PHASE3-DATABRICKS.md)) are the
+> step-by-step.
+
 ---
 
 ## 1. What you deploy (swap mocks → real)
@@ -146,7 +151,8 @@ connection · any ITSM token. Nothing hardcoded.
   then run `python -m fabric_audit_agent.connectivity <workspaceId>` to prove authentication +
   workspace read — **no Databricks yet.** See **PHASE2-SP-TEST.md**.
 - **Phase 3 — Databricks deployment (scheduled sweep):** secret scope, wheel, Job (`job:main`),
-  Teams delivery — still scoped to the pilot workspace(s). See §§1, 3, 5.
+  Teams delivery — still scoped to the pilot workspace(s). See **PHASE3-DATABRICKS.md** (step-by-step)
+  and §§1, 3, 5.
 - **Phase 4 — widen + interactive:** read-only admin APIs (estate-wide) + Azure Monitor/Log
   Analytics (cost-weighted attribution) + OneLake read; the MCP/Copilot pull surface + Bot Service
   two-way; ITSM ticketing.

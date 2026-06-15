@@ -11,6 +11,19 @@ gives an evidence-backed capacity verdict, and runs the **30% concentration aler
 **Read-only posture is absolute.** No writes, no refreshes, no scale actions. The only outward
 actions are delivering findings and sending notifications.
 
+## Status & rollout (new session: start here)
+
+Build is **complete & verified** (`python -m pytest -q` → **258 passed, 1 skipped**; byte-identical
+to the Node reference). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 next**:
+
+1. **Phase 1 — local CSV test** (done): `python run.py import data.csv [Items.csv]`.
+2. **Phase 2 — single-workspace connectivity test** (built): `python -m fabric_audit_agent.connectivity <wsId> [--auth user|sp]` → **PHASE2-SP-TEST.md**.
+3. **Phase 3 — Databricks deployment** (next): **PHASE3-DATABRICKS.md**.
+4. **Phase 4 — widen estate-wide + interactive/two-way**: **DEPLOYMENT.md** §§2, 4.
+
+**[STATUS.md](STATUS.md) is the single source of truth** — current state, Phase 1 findings, open
+inputs (need `Items.csv` + the SKU), and key decisions. Deploy reference: **DEPLOYMENT.md**.
+
 ## Entry Points
 
 `python -m fabric_audit_agent <command>` (or `python run.py <command>`, or the `fabric-audit`
