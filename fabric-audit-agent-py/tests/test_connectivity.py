@@ -1,6 +1,6 @@
 """Phase 2 SP connectivity test — offline (fake http + fake token provider; no msal/requests)."""
 from fabric_audit_agent.connectivity import (
-    check_connectivity, workspace_probe_url, format_report,
+    check_connectivity, workspace_probe_url, format_report, _parse_args, main,
 )
 
 
@@ -60,3 +60,35 @@ def test_format_report_pass_and_fail_with_hint():
     assert "PASS" in ok
     bad = format_report({"ok": False, "steps": [{"step": "workspace_read", "ok": False, "detail": "403"}]})
     assert "FAIL" in bad and "Power BI APIs" in bad
+
+
+# ---- --auth arg parsing + main env guards (offline: missing-env short-circuits before msal) ----
+def test_parse_args_defaults_to_sp_and_reads_workspace():
+    assert _parse_args(["ws-1"]) == ("sp", "ws-1")
+
+
+def test_parse_args_auth_flag_forms():
+    assert _parse_args(["ws", "--auth", "user"]) == ("user", "ws")
+    assert _parse_args(["--auth=user", "ws"]) == ("user", "ws")
+    assert _parse_args(["-a", "sp", "ws"]) == ("sp", "ws")
+
+
+def test_main_unknown_auth(capsys):
+    assert main(["ws", "--auth", "bogus"], env={}) == {"ok": False, "steps": []}
+    assert "Unknown --auth" in capsys.readouterr().out
+
+
+def test_main_no_workspace_prints_usage(capsys):
+    assert main([], env={}) == {"ok": False, "steps": []}
+    assert "Usage" in capsys.readouterr().out
+
+
+def test_main_sp_mode_requires_secret(capsys):
+    assert main(["ws"], env={})["ok"] is False
+    assert "FABRIC_CLIENT_SECRET" in capsys.readouterr().out
+
+
+def test_main_user_mode_needs_no_secret(capsys):
+    assert main(["ws", "--auth", "user"], env={})["ok"] is False
+    out = capsys.readouterr().out
+    assert "FABRIC_TENANT_ID" in out and "FABRIC_CLIENT_SECRET" not in out

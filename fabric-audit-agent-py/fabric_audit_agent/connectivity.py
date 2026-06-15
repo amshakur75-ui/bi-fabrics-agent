@@ -10,10 +10,13 @@ isolates the two failure modes so you know exactly which knob is wrong:
                                isn't a Viewer on this workspace (a Power BI authorization problem)
   * workspace-read OK       -> identity + gate + scope all good; ready for Phase 3 (Databricks)
 
-Run:
+Run (default = SP client-credentials):
     python -m fabric_audit_agent.connectivity <workspaceId | full-url>
-with FABRIC_TENANT_ID / FABRIC_CLIENT_ID / FABRIC_CLIENT_SECRET in the environment (needs the
-``.[prod]`` extras: requests + msal). Read-only: the only call is a GET of the workspace datasets.
+Or as yourself (delegated device-code sign-in — no SP secret, no tenant setting):
+    python -m fabric_audit_agent.connectivity <workspaceId> --auth user
+SP mode needs FABRIC_TENANT_ID / FABRIC_CLIENT_ID / FABRIC_CLIENT_SECRET; user mode needs just
+FABRIC_TENANT_ID / FABRIC_CLIENT_ID. Needs the ``.[prod]`` extras (requests + msal). Read-only:
+the only call is a GET of the workspace datasets.
 """
 import os
 import sys
@@ -86,24 +89,60 @@ def format_report(result):
     return "\n".join(lines) + "\n"
 
 
-def main(argv=None):
+def _parse_args(argv):
+    """Return ``(auth_mode, workspace)``. ``--auth sp|user`` (default sp); first positional = workspace."""
+    auth, workspace = "sp", None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--auth", "-a") and i + 1 < len(argv):
+            auth = argv[i + 1].lower(); i += 2; continue
+        if a.startswith("--auth="):
+            auth = a.split("=", 1)[1].lower(); i += 1; continue
+        if not a.startswith("-") and workspace is None:
+            workspace = a
+        i += 1
+    return auth, workspace
+
+
+_USAGE = (
+    "Usage: python -m fabric_audit_agent.connectivity <workspaceId | full-url> [--auth sp|user]\n"
+    "  --auth sp   (default) one service principal -> one workspace; needs FABRIC_TENANT_ID /\n"
+    "              FABRIC_CLIENT_ID / FABRIC_CLIENT_SECRET + the SP API tenant setting + Viewer.\n"
+    "  --auth user your own login (device-code), no SP/secret/tenant-setting; needs FABRIC_TENANT_ID\n"
+    "              / FABRIC_CLIENT_ID (public-client app) and that you're a member of the workspace.\n"
+    "  (workspace also reads from FABRIC_TEST_WORKSPACE.)"
+)
+
+
+def main(argv=None, env=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    env = os.environ
-    workspace = argv[0] if argv else env.get("FABRIC_TEST_WORKSPACE")
+    env = env if env is not None else os.environ
+    auth, workspace = _parse_args(argv)
+    workspace = workspace or env.get("FABRIC_TEST_WORKSPACE")
     url = workspace_probe_url(workspace)
+
+    if auth not in ("sp", "user"):
+        print(f'Unknown --auth "{auth}" (use: sp | user)')
+        return {"ok": False, "steps": []}
     if not url:
-        print("Usage: python -m fabric_audit_agent.connectivity <workspaceId | full-url>\n"
-              "  (or set FABRIC_TEST_WORKSPACE). Needs FABRIC_TENANT_ID / FABRIC_CLIENT_ID / "
-              "FABRIC_CLIENT_SECRET in the environment.")
+        print(_USAGE)
         return {"ok": False, "steps": []}
 
-    missing = [k for k in ("FABRIC_TENANT_ID", "FABRIC_CLIENT_ID", "FABRIC_CLIENT_SECRET") if not env.get(k)]
+    need = ("FABRIC_TENANT_ID", "FABRIC_CLIENT_ID", "FABRIC_CLIENT_SECRET") if auth == "sp" \
+        else ("FABRIC_TENANT_ID", "FABRIC_CLIENT_ID")
+    missing = [k for k in need if not env.get(k)]
     if missing:
-        print(f"Missing required env: {', '.join(missing)} — set the SP credentials and re-run.")
+        print(f"Missing required env for --auth {auth}: {', '.join(missing)} — set and re-run.")
         return {"ok": False, "steps": []}
 
-    from .adapters.clients import EntraHttp, build_entra_token_provider
-    token = build_entra_token_provider(env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"], env["FABRIC_CLIENT_SECRET"])
+    from .adapters.clients import EntraHttp, build_entra_token_provider, build_user_token_provider
+    if auth == "sp":
+        token = build_entra_token_provider(env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"], env["FABRIC_CLIENT_SECRET"])
+    else:
+        token = build_user_token_provider(env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"])
+
+    print(f"(auth mode: {auth})")
     result = check_connectivity(EntraHttp(token), url, token_provider=token)
     print(format_report(result))
     return result

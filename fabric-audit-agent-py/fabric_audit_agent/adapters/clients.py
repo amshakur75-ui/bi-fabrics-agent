@@ -98,6 +98,38 @@ def build_entra_token_provider(tenant_id, client_id, client_secret, scope=POWERB
     return get_token
 
 
+def build_user_token_provider(tenant_id, client_id, scope=POWERBI_SCOPE, prompt=print):
+    """Delegated (user) token via MSAL **device-code** flow — signs in as YOU, with **no client
+    secret** and **no "service principals can use APIs" tenant setting**. The app registration must
+    have "Allow public client flows" enabled. Ideal for a hands-on single-workspace test; not for an
+    unattended job (it requires interactive sign-in). ``prompt`` receives the device-code message."""
+    import msal  # lazy
+
+    app = msal.PublicClientApplication(
+        client_id, authority=f"https://login.microsoftonline.com/{tenant_id or 'organizations'}"
+    )
+
+    def get_token():
+        accounts = app.get_accounts()
+        if accounts:
+            cached = app.acquire_token_silent([scope], account=accounts[0])
+            if cached and "access_token" in cached:
+                return cached["access_token"]
+        flow = app.initiate_device_flow(scopes=[scope])
+        if "user_code" not in flow:
+            raise RuntimeError(f"Device flow init failed: {flow.get('error_description') or flow}")
+        prompt(flow["message"])   # "To sign in, open https://microsoft.com/devicelogin and enter CODE"
+        result = app.acquire_token_by_device_flow(flow)   # blocks until you finish signing in
+        if "access_token" not in result:
+            raise RuntimeError(
+                "Device-code sign-in failed: "
+                f"{result.get('error_description') or result.get('error')}"
+            )
+        return result["access_token"]
+
+    return get_token
+
+
 def build_anthropic_client(api_key=None, base_url=None):
     """Return an Anthropic SDK client (``.messages.create`` already matches the adapter).
 
