@@ -137,13 +137,19 @@ connection · any ITSM token. Nothing hardcoded.
 
 ---
 
-## 6. Phased access request (easier approval)
+## 6. Rollout phases (smallest first)
 
-- **Phase 1 (prove it):** SP + Viewer on 1–2 workspaces + Capacity Metrics read + Anthropic key +
-  a Teams webhook. Validate diagnoses on one real incident.
-- **Phase 2 (estate-wide):** read-only admin APIs + Azure Monitor/Log Analytics + OneLake read.
-- **Phase 3 (interactive + ops):** MCP / Copilot Studio pull surface; Bot Service two-way; ITSM
-  ticketing.
+- **Phase 1 — local engine test (no cloud):** run `import`/`inspect` on a real Capacity Metrics
+  CSV export. No SP, no tenant changes — validates the engine on real numbers.
+- **Phase 2 — single-workspace SP connectivity test (local, read-only):** register the SP, scope
+  it to **one** workspace (tenant setting for a 1-SP security group + Viewer on that workspace),
+  then run `python -m fabric_audit_agent.connectivity <workspaceId>` to prove authentication +
+  workspace read — **no Databricks yet.** See **PHASE2-SP-TEST.md**.
+- **Phase 3 — Databricks deployment (scheduled sweep):** secret scope, wheel, Job (`job:main`),
+  Teams delivery — still scoped to the pilot workspace(s). See §§1, 3, 5.
+- **Phase 4 — widen + interactive:** read-only admin APIs (estate-wide) + Azure Monitor/Log
+  Analytics (cost-weighted attribution) + OneLake read; the MCP/Copilot pull surface + Bot Service
+  two-way; ITSM ticketing.
 
 Never request Contributor/Owner, write/delete, or infra-modification permissions. One SP, scoped,
 read-only — that is what gets enterprise sign-off.
