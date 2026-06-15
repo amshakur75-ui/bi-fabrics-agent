@@ -19,6 +19,10 @@ from .collector_rest import create_rest_collector, fetch_all_pages
 from .collector_activity import (
     create_activity_collector, fetch_activity_events, map_activity_event, fetch_log_analytics,
 )
+from .collector_csv import create_csv_collector, build_facts_from_files
+from .collector_list_usages import create_list_usages_collector
+from .collector_workspace_monitoring import create_workspace_monitoring_collector
+from .collector_merge import create_merged_collector, merge_facts_list
 from .reasoner_claude import create_claude_reasoner
 from .delivery_teams import create_teams_delivery
 
@@ -35,6 +39,12 @@ __all__ = [
     "fetch_activity_events",
     "map_activity_event",
     "fetch_log_analytics",
+    "create_csv_collector",
+    "build_facts_from_files",
+    "create_list_usages_collector",
+    "create_workspace_monitoring_collector",
+    "create_merged_collector",
+    "merge_facts_list",
     "create_claude_reasoner",
     "create_teams_delivery",
 ]

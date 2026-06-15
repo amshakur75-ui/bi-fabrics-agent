@@ -14,6 +14,7 @@ Managed Identity cannot. ``build_entra_token_provider`` uses the client-credenti
 """
 
 POWERBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
+ARM_SCOPE = "https://management.azure.com/.default"   # Azure Resource Manager (Fabric capacity List Usages)
 
 
 class EntraHttp:
@@ -144,3 +145,24 @@ def build_anthropic_client(api_key=None, base_url=None):
     if base_url is not None:
         kwargs["base_url"] = base_url
     return anthropic.Anthropic(**kwargs)
+
+
+def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret):
+    """Return a ``query(kql) -> list[dict]`` callable against a Fabric Eventhouse / Kusto cluster
+    (Workspace Monitoring). Lazy-imports ``azure-kusto-data``; service-principal app-key auth.
+    Inject a fake ``query`` in tests — this builder is only used at deploy."""
+    from azure.kusto.data import KustoClient, KustoConnectionStringBuilder  # lazy
+
+    kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
+        cluster_uri, client_id, client_secret, tenant_id
+    )
+    client = KustoClient(kcsb)
+
+    def query(kql):
+        resp = client.execute(database, kql)
+        table = resp.primary_results[0]
+        cols = [c.column_name for c in table.columns]
+        return [dict(zip(cols, row)) for row in table.rows]
+
+    return query
+
