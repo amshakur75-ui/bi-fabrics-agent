@@ -167,3 +167,67 @@ def inspect_columns(headers, rows):
         else:
             out.append({"column": h, "type": "text", "distinct": distinct})
     return out
+
+
+# ──────────── capacity facts from a timepoints table (robust to raw-% spikes) ────────────
+from datetime import datetime  # noqa: E402 - local to this helper
+
+
+def _parse_ts(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:  # noqa: BLE001 - any unparseable timestamp is simply skipped
+        return None
+
+
+def _percentile(sorted_vals, p):
+    if not sorted_vals:
+        return None
+    i = min(len(sorted_vals) - 1, int(round(p / 100 * (len(sorted_vals) - 1))))
+    return sorted_vals[i]
+
+
+def capacity_signal_from_timepoints(headers, rows):
+    """Trustworthy capacity signal from a Capacity Metrics *timepoints* table.
+
+    The raw "Total CU Usage %" column holds pre-smoothing spikes (e.g. 23000%+), so instead we
+    compute utilization per row as ``Total CU(s) / 100% in CU(s) * 100`` (using each row's own
+    baseline — it can change mid-window on a resize) and take the **p95** as a spike-robust peak.
+    Throttle is read from the **Capacity State** column's ``Overloaded`` windows, converted to
+    minutes via the median timepoint interval. Returns ``{peakCuPct, throttleMinutes, overloadedCount}``.
+    """
+    total_cu = _find_h(headers, lambda n: "totalcus" in n or ("total" in n and "cus" in n))
+    base_hdr = _find_h(headers, lambda n: "100%in" in n)
+    state_hdr = _find_h(headers, lambda n: "state" in n)
+    time = _find_h(headers, lambda n: "timepoint" in n or n == "time")
+
+    utils, times, overloaded = [], [], 0
+    for r in rows:
+        if total_cu and base_hdr:
+            cu, base = num(r.get(total_cu)), num(r.get(base_hdr))
+            if math.isfinite(cu) and math.isfinite(base) and base > 0:
+                utils.append(cu / base * 100)
+        if state_hdr and _cell(r, state_hdr).lower() == "overloaded":
+            overloaded += 1
+        if time:
+            t = _parse_ts(_cell(r, time))
+            if t:
+                times.append(t)
+
+    utils.sort()
+    p95 = _percentile(utils, 95)
+
+    window_min = None
+    if len(times) >= 2:
+        ts = sorted(times)
+        diffs = sorted((ts[i + 1] - ts[i]).total_seconds() for i in range(len(ts) - 1))
+        med = diffs[len(diffs) // 2]
+        if med > 0:
+            window_min = med / 60
+    throttle_min = math.floor(overloaded * window_min + 0.5) if (overloaded and window_min) else overloaded
+
+    return {
+        "peakCuPct": _round1(p95) if p95 is not None else 0,
+        "throttleMinutes": throttle_min,
+        "overloadedCount": overloaded,
+    }

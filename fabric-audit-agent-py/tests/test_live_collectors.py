@@ -34,7 +34,26 @@ def test_csv_collector_sanitizes_raw_spike_percent(tmp_path):
     cap = tmp_path / "data.csv"
     cap.write_text("Timepoint,Total CU Usage %\n2026-06-01T00:00:00,23069.72\n", encoding="utf-8")
     facts = create_csv_collector([str(cap)])["collect"]()
-    assert facts["capacity"]["peakCuPct"] == 0   # > 1000 raw spike sanitized
+    assert facts["capacity"]["peakCuPct"] == 0   # > 1000 raw spike, no usable timepoints signal -> sanitized
+
+
+def test_csv_collector_uses_timepoints_signal_when_percent_is_raw(tmp_path):
+    # Raw "%" column is a pre-smoothing spike (>1000); the real signal is Total CU(s)/baseline + Overloaded states.
+    p = tmp_path / "data.csv"
+    lines = ["Timepoint,Total CU Usage %,Total CU(s),100% in CU(s),Capacity State Change From Previous Window,SKU"]
+    for i in range(10):
+        lines.append(f"2026-06-01T00:0{i}:00,30,300,1000,,F64")          # ~30% normal load
+    lines.append("2026-06-01T00:10:00,23069,1100,1000,Overloaded,F64")   # raw-% spike + overload
+    lines.append("2026-06-01T00:10:30,150,1050,1000,Overloaded,F64")     # over the limit + overload
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    facts = create_csv_collector([str(p)])["collect"]()
+    cap = facts["capacity"]
+    assert 0 < cap["peakCuPct"] < 1000          # computed p95, not the 23069 raw spike
+    assert cap["throttleMinutes"] >= 1          # Overloaded windows counted
+
+    from fabric_audit_agent.detectors.capacity import detect_capacity
+    assert "capacity.throttle" in [f["type"] for f in detect_capacity(facts)]   # now correctly flagged
 
 
 # ---------- List Usages collector ----------
