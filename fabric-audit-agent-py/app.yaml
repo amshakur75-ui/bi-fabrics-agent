@@ -1,0 +1,20 @@
+# Databricks App — hosts the read-only Fabric Audit MCP server (the run_audit tool) at /mcp.
+# Deploy per: https://learn.microsoft.com/azure/databricks/generative-ai/mcp/custom-mcp
+# Databricks installs requirements.txt, then runs this command; apps listen on port 8000.
+
+command: ["fabric-audit-mcp"]
+
+env:
+  - name: MCP_TRANSPORT
+    value: "streamable-http"        # serve HTTP at /mcp (not stdio)
+  - name: MCP_PORT
+    value: "8000"
+  # Point the tool at real data + in-tenant Claude (leave unset → it runs the offline mock):
+  # - name: FABRIC_CSV_PATHS
+  #   value: "/Volumes/main/bi_fabrics_agent/raw/capacity_metrics/data.csv"
+  # - name: FABRIC_OUT_DIR
+  #   value: "/Volumes/main/bi_fabrics_agent/reports/current"
+  # - name: AUDIT_HISTORY_PATH
+  #   value: "/Volumes/main/bi_fabrics_agent/reports/history/history.json"
+  # - name: DATABRICKS_CLAUDE_ENDPOINT
+  #   value: "databricks-claude-3-7-sonnet"

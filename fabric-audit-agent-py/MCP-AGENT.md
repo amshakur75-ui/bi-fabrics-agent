@@ -1,0 +1,38 @@
+# MCP server + agent on Databricks
+
+Three connected planes, all in Databricks:
+
+```
+Sweep Job   ── scheduled audit → writes report to a Volume                [push]      (job.py / databricks.yml)
+MCP server  ── exposes run_audit at https://<app-url>/mcp                  [tool/pull] (mcp_server.py, hosted as a Databricks App)
+Mosaic AI   ── your Databricks Claude + the MCP tool → chat "audit it"     [chat]      (AI Playground / Agent Framework)
+```
+
+The MCP tool runs the **real** audit when `FABRIC_CSV_PATHS` / live env is set (else an offline mock,
+so it always responds). Read-only throughout.
+
+## 1. Host the MCP server as a Databricks App
+The server is the console entry **`fabric-audit-mcp`** (`mcp_server:main`), served over HTTP at
+**`/mcp`** on **port 8000** when `MCP_TRANSPORT=streamable-http`. The repo root has the App config:
+- **`app.yaml`** — command + env (transport/port; optionally `FABRIC_CSV_PATHS`, `DATABRICKS_CLAUDE_ENDPOINT`).
+- **`requirements.txt`** — installs `.[mcp]` + `openai` + `databricks-sdk`.
+
+Deploy (per the [custom-MCP docs](https://learn.microsoft.com/azure/databricks/generative-ai/mcp/custom-mcp)):
+- **UI:** Compute → Apps → Create app → point at this folder → Deploy.
+- **CLI:** `databricks apps deploy fabric-audit-mcp --source-code-path .`
+
+After deploy, the tool endpoint is **`https://<app-url>/mcp`**.
+
+## 2. Connect a Mosaic AI agent
+In the **AI Playground** (or the Agent Framework), per the
+[agent-tool docs](https://learn.microsoft.com/azure/databricks/generative-ai/agent-framework/agent-tool):
+1. Pick your **Databricks Claude** model as the LLM.
+2. **Add tools → MCP server →** the App's `https://<app-url>/mcp`.
+3. Chat: *"Audit the Fabric capacity"* → the agent calls `run_audit` → returns the verdict + findings.
+
+The agent is the conversational surface; the MCP App is the tool; the Job is the scheduled sweep.
+All three call the same read-only pipeline.
+
+## Read-only posture
+`run_audit` only reads telemetry and writes its own report/findings. No estate is modified, by any
+plane. The Databricks App + agent inherit that — the tool has no write path.

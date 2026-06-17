@@ -1,0 +1,5 @@
+# Dependencies for the Databricks App that hosts the MCP server (installed at app build).
+# Installs this package with the MCP extra, plus the in-tenant Claude client deps.
+.[mcp]
+openai>=1.0
+databricks-sdk>=0.20

@@ -15,20 +15,29 @@ from .pipeline import run_audit
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _run_real_or_mock(base, env):
+    """Run the REAL audit when a source is configured (CSV / live), else the offline mock so the
+    tool always works (e.g. in the AI Playground before data is wired). Read-only either way."""
+    if env.get("FABRIC_CSV_PATHS") or env.get("FABRIC_CLIENT_ID") or env.get("FABRIC_KUSTO_CLUSTER"):
+        from .job import run_unified_job
+        return run_unified_job(env=env)
+    collector = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
+    delivery = create_file_delivery(os.path.join(base, "runs", "latest.json"))
+    store = create_local_store(os.path.join(base, "runs", "history.json"))
+    return run_audit(collector, create_stub_reasoner(), delivery, store=store, agent_id="fabric-audit-agent")
+
+
 def create_tool_definitions(base_dir=None):
     base = base_dir if base_dir is not None else _BASE
 
     def run_audit_handler(_input=None):
-        collector = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
-        reasoner = create_stub_reasoner()
-        store = create_local_store(os.path.join(base, "runs", "history.json"))
-        delivery = create_file_delivery(os.path.join(base, "runs", "latest.json"))
-        envelope = run_audit(collector, reasoner, delivery, store=store, agent_id="fabric-audit-agent")
+        envelope = _run_real_or_mock(base, os.environ)
+        d = envelope["data"]
         return {
             "summary": envelope["summary"],
-            "verdict": envelope["data"]["verdict"],
-            "digest": envelope["data"].get("digest"),
-            "findings": envelope["data"]["findings"],
+            "verdict": d["verdict"],
+            "digest": d.get("digest"),
+            "findings": d["findings"],
         }
 
     return [{
