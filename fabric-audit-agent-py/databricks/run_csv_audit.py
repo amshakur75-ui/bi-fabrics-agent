@@ -33,10 +33,10 @@ from fabric_audit_agent.job import run_csv_job
 # Export from the Fabric Capacity Metrics app, upload to a Volume, then point here.
 # Pass both data.csv (capacity timepoints) + Items.csv (per-item CU) to name top consumers.
 csv_paths = [
-    "/Volumes/main/default/fabric/data.csv",
-    # "/Volumes/main/default/fabric/Items.csv",
+    "/Volumes/main/bi_fabrics_agent/raw/capacity_metrics/data.csv",
+    # "/Volumes/main/bi_fabrics_agent/raw/capacity_metrics/Items.csv",
 ]
-out_dir = "/Volumes/main/default/fabric/out"
+out_dir = "/Volumes/main/bi_fabrics_agent/reports/current"
 
 # Optional (uncomment + install ...whl[prod] above):
 # os.environ["TEAMS_WEBHOOK_URL"] = dbutils.secrets.get("fabric-audit", "TEAMS_WEBHOOK_URL")

@@ -14,14 +14,11 @@ bundle:
 
 variables:
   catalog:
-    description: Unity Catalog catalog holding the fabric Volume (CSV input + outputs).
+    description: Unity Catalog catalog holding the bi_fabrics_agent schema. CHANGE to your catalog.
     default: main
   schema:
-    description: Schema holding the fabric Volume.
-    default: default
-  csv_paths:
-    description: Comma-separated Capacity Metrics export path(s) on a Volume.
-    default: /Volumes/main/default/fabric/data.csv
+    description: Schema holding the raw + reports Volumes.
+    default: bi_fabrics_agent
   schedule_cron:
     description: Quartz cron for the scheduled sweep (default daily 06:00 UTC).
     default: "0 0 6 * * ?"
@@ -47,9 +44,9 @@ resources:
             num_workers: 0                 # single node
             data_security_mode: SINGLE_USER   # required for Unity Catalog Volume access
             spark_env_vars:
-              FABRIC_CSV_PATHS: ${var.csv_paths}
-              FABRIC_OUT_DIR: /Volumes/${var.catalog}/${var.schema}/fabric/out
-              AUDIT_HISTORY_PATH: /Volumes/${var.catalog}/${var.schema}/fabric/history.json
+              FABRIC_CSV_PATHS: /Volumes/${var.catalog}/${var.schema}/raw/capacity_metrics/data.csv
+              FABRIC_OUT_DIR: /Volumes/${var.catalog}/${var.schema}/reports/current
+              AUDIT_HISTORY_PATH: /Volumes/${var.catalog}/${var.schema}/reports/history/history.json
               # --- Uncomment each line AFTER you create the matching secret (see PHASE3-DATABRICKS.md) ---
               # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
               # ANTHROPIC_API_KEY: "{{secrets/fabric-audit/ANTHROPIC_API_KEY}}"
