@@ -6,6 +6,28 @@ posts findings to Teams. Still scoped to the pilot workspace(s); estate-wide is 
 
 > Read-only throughout: a GET-only collector + a Teams notification. No writes to the estate.
 
+## Phase 3a — CSV hosting (no permissions; start here)
+
+While you wait on the service principal + tenant settings, host the audit on Databricks **today**
+using a **Capacity Metrics CSV export** — no SP, no tenant access.
+
+1. **Export** from the Fabric Capacity Metrics app: main view → `data.csv` (and the Items tab →
+   `Items.csv` to name top consumers).
+2. **Upload** to a Unity Catalog Volume, e.g. `/Volumes/main/default/fabric/`.
+3. **Build + upload the wheel** (Step 2 below).
+4. **Run the notebook** [`databricks/run_csv_audit.py`](databricks/run_csv_audit.py) (in this repo).
+   It calls `fabric_audit_agent.job.run_csv_job(...)`, writes `latest.json` + `report.md` to the
+   Volume, and posts a Teams card if `TEAMS_WEBHOOK_URL` is set. Base install is **stdlib-only**;
+   add the `[prod]` extra for Teams, set `ANTHROPIC_API_KEY` for Claude reasoning (else the offline
+   stub runs).
+5. **Schedule** it as a Notebook job (Step 4 below).
+
+`run_csv_job` also reads `FABRIC_CSV_PATHS` (comma/semicolon list) + `FABRIC_OUT_DIR` if you prefer
+env over args. When the SP lands, swap the collector for the live sources (`collector_list_usages`
++ `collector_workspace_monitoring` + `collector_merge`) — the pipeline and outputs stay identical.
+
+---
+
 ## Identity (recap from Phase 2)
 One Entra SP — `FABRIC_TENANT_ID` / `FABRIC_CLIENT_ID` / `FABRIC_CLIENT_SECRET` — in
 `sg-fabric-audit-readonly`, with "Service principals can use Power BI APIs" enabled for that group,
