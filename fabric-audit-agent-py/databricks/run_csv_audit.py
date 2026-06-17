@@ -7,8 +7,19 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install "/Volumes/main/default/wheels/fabric_audit_agent-1.0.0-py3-none-any.whl"
-# MAGIC # add the [prod] extra if you set TEAMS_WEBHOOK_URL / ANTHROPIC_API_KEY:  ...whl[prod]
+# MAGIC %md
+# MAGIC **Install** — pick ONE. Quickest for testing is installing straight from the cloned Git folder.
+
+# COMMAND ----------
+
+# MAGIC # A) Quick test: install from this cloned repo (needs cluster internet for build deps).
+# MAGIC #    Replace <you> with your workspace user/repo path (see the Git folder location).
+# MAGIC %pip install /Workspace/Users/<you>/bi-fabrics-agent/fabric-audit-agent-py
+# MAGIC
+# MAGIC # B) Production: install a pre-built wheel uploaded to a Volume (works on offline clusters).
+# MAGIC # %pip install "/Volumes/main/default/wheels/fabric_audit_agent-1.0.0-py3-none-any.whl"
+# MAGIC #
+# MAGIC # For Teams/Claude add the [prod] extra:  .../fabric-audit-agent-py[prod]  or  ...whl[prod]
 
 # COMMAND ----------
 
