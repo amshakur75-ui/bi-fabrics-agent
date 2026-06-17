@@ -1,0 +1,86 @@
+# Databricks Asset Bundle — Fabric Audit Agent
+# Deploys the read-only capacity-audit sweep as a scheduled job. The task runs `fabric-audit-job`
+# (job:run_unified_job), which auto-composes whatever sources are configured: CSV today, and
+# List Usages / Workspace Monitoring / REST automatically once their secrets + env vars exist.
+#
+#   databricks bundle validate
+#   databricks bundle deploy -t dev
+#   databricks bundle run fabric_audit_sweep -t dev
+#
+# Adjust spark_version / node_type_id / Volume paths to your workspace before deploying.
+
+bundle:
+  name: fabric-audit-agent
+
+variables:
+  catalog:
+    description: Unity Catalog catalog holding the fabric Volume (CSV input + outputs).
+    default: main
+  schema:
+    description: Schema holding the fabric Volume.
+    default: default
+  csv_paths:
+    description: Comma-separated Capacity Metrics export path(s) on a Volume.
+    default: /Volumes/main/default/fabric/data.csv
+  schedule_cron:
+    description: Quartz cron for the scheduled sweep (default daily 06:00 UTC).
+    default: "0 0 6 * * ?"
+  node_type_id:
+    description: Driver/worker node type (Azure default shown; change for AWS/GCP).
+    default: Standard_DS3_v2
+
+artifacts:
+  default:
+    type: whl
+    build: python -m build
+    path: .
+
+resources:
+  jobs:
+    fabric_audit_sweep:
+      name: fabric-audit-sweep
+      job_clusters:
+        - job_cluster_key: audit
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: ${var.node_type_id}
+            num_workers: 0                 # single node
+            data_security_mode: SINGLE_USER   # required for Unity Catalog Volume access
+            spark_env_vars:
+              FABRIC_CSV_PATHS: ${var.csv_paths}
+              FABRIC_OUT_DIR: /Volumes/${var.catalog}/${var.schema}/fabric/out
+              AUDIT_HISTORY_PATH: /Volumes/${var.catalog}/${var.schema}/fabric/history.json
+              # --- Uncomment each line AFTER you create the matching secret (see PHASE3-DATABRICKS.md) ---
+              # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
+              # ANTHROPIC_API_KEY: "{{secrets/fabric-audit/ANTHROPIC_API_KEY}}"
+              # --- When permissions land, add the SP + live-source config and redeploy ---
+              # FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
+              # FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
+              # FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
+              # FABRIC_KUSTO_CLUSTER: "https://<eventhouse>.kusto.fabric.microsoft.com"
+              # FABRIC_KUSTO_DB: "<monitoring-db>"
+              # FABRIC_USAGES_URL: "https://management.azure.com/.../usages?api-version=..."
+      tasks:
+        - task_key: audit
+          job_cluster_key: audit
+          python_wheel_task:
+            package_name: fabric_audit_agent
+            entry_point: fabric-audit-job
+          libraries:
+            - whl: ./dist/*.whl
+            # Add these PyPI libs when you enable the matching feature:
+            # - pypi: { package: "requests" }            # Teams push / List Usages
+            # - pypi: { package: "anthropic" }           # Claude reasoner
+            # - pypi: { package: "msal" }                # SP auth (REST / KQL / ARM)
+            # - pypi: { package: "azure-kusto-data" }    # Workspace Monitoring
+      schedule:
+        quartz_cron_expression: ${var.schedule_cron}
+        timezone_id: UTC
+        pause_status: PAUSED              # unpause after a successful manual run
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production

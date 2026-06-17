@@ -28,6 +28,42 @@ env over args. When the SP lands, swap the collector for the live sources (`coll
 
 ---
 
+## Production deploy — Databricks Asset Bundle (one command, grows with access)
+
+`databricks.yml` defines the whole thing as code: the wheel build, the scheduled sweep job, its
+compute, and secret-wired env. The task runs `fabric-audit-job` (`job:run_unified_job`), which
+**auto-composes whatever sources are configured** — CSV today; List Usages / Workspace Monitoring /
+REST switch on automatically once their env + secrets exist. **The deployed job never changes as
+access lands** — you just add secrets and redeploy.
+
+1. Install + authenticate the Databricks CLI: `databricks auth login --host <workspace-url>`.
+2. Upload your CSV export to the Volume in `var.csv_paths` (default `/Volumes/main/default/fabric/`).
+3. (Optional now) create the secret scope + any secrets you have, then uncomment the matching lines
+   in `databricks.yml`:
+   ```
+   databricks secrets create-scope fabric-audit
+   databricks secrets put-secret fabric-audit TEAMS_WEBHOOK_URL     # optional
+   databricks secrets put-secret fabric-audit ANTHROPIC_API_KEY     # optional
+   # later, when permissions land: FABRIC_TENANT_ID / FABRIC_CLIENT_ID / FABRIC_CLIENT_SECRET ...
+   ```
+4. Deploy + run:
+   ```
+   cd fabric-audit-agent-py
+   databricks bundle validate
+   databricks bundle deploy -t dev
+   databricks bundle run fabric_audit_sweep -t dev
+   ```
+   It builds the wheel, creates the (paused) scheduled job, runs one sweep, writes `report.md` +
+   `latest.json` to the output Volume, and posts Teams if that secret is set.
+5. **Iterate:** edit code/config → `databricks bundle deploy` again. Unpause the schedule once a
+   manual run looks right. Promote with `-t prod`.
+
+Adjust `spark_version` / `node_type_id` / Volume paths in `databricks.yml` to your workspace. When
+permissions land, create the SP secrets, uncomment the live env + PyPI libraries, and redeploy — the
+unified job picks them up with no code change.
+
+---
+
 ## Identity (recap from Phase 2)
 One Entra SP — `FABRIC_TENANT_ID` / `FABRIC_CLIENT_ID` / `FABRIC_CLIENT_SECRET` — in
 `sg-fabric-audit-readonly`, with "Service principals can use Power BI APIs" enabled for that group,

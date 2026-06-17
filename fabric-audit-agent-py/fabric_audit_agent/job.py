@@ -155,5 +155,94 @@ def csv_main():
     return envelope
 
 
+# ---- unified production sweep (CSV now; live sources auto-included once configured) ----
+
+def build_collector_from_env(env):
+    """Compose the collector from whatever is configured — the SAME deployment grows as access lands.
+
+    CSV (no permissions) is included whenever ``FABRIC_CSV_PATHS`` is set; the live sources switch on
+    automatically once their env + SP secrets exist. CSV is listed first so its authoritative CU
+    share wins on merge (see ``collector_merge``).
+    """
+    collectors = []
+
+    paths = _csv_paths_from_env(env)
+    if paths:
+        from .adapters.collector_csv import create_csv_collector
+        collectors.append(create_csv_collector(paths))
+
+    # Full estate metadata over the Admin REST API (Entra SP) — when permissions land.
+    if env.get("FABRIC_CLIENT_ID") and build_rest_config(env):
+        collectors.append(_default_collector(env))
+
+    # Per-user attribution from Workspace Monitoring (KQL Eventhouse) — when permissions land.
+    if env.get("FABRIC_KUSTO_CLUSTER") and env.get("FABRIC_KUSTO_DB") and env.get("FABRIC_CLIENT_ID"):
+        from .adapters.clients import build_kusto_query
+        from .adapters.collector_workspace_monitoring import create_workspace_monitoring_collector
+        query = build_kusto_query(
+            env["FABRIC_KUSTO_CLUSTER"], env["FABRIC_KUSTO_DB"],
+            _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        )
+        wm_cfg = {"window": env.get("FABRIC_KUSTO_WINDOW", "1d")}
+        if env.get("FABRIC_KUSTO_KQL"):
+            wm_cfg["kql"] = env["FABRIC_KUSTO_KQL"]
+        collectors.append(create_workspace_monitoring_collector(query, wm_cfg))
+
+    # Capacity sku/quota over Azure ARM List Usages — when permissions land.
+    if env.get("FABRIC_USAGES_URL") or env.get("FABRIC_CAPACITIES_URL"):
+        from .adapters.clients import EntraHttp, build_entra_token_provider, ARM_SCOPE
+        from .adapters.collector_list_usages import create_list_usages_collector
+        token = build_entra_token_provider(
+            _require(env, "FABRIC_TENANT_ID"), _require(env, "FABRIC_CLIENT_ID"),
+            _require(env, "FABRIC_CLIENT_SECRET"), scope=ARM_SCOPE,
+        )
+        collectors.append(create_list_usages_collector(EntraHttp(token), {
+            "capacitiesUrl": env.get("FABRIC_CAPACITIES_URL"),
+            "usagesUrl": env.get("FABRIC_USAGES_URL"),
+            "capacity": env.get("FABRIC_CAPACITY"),
+        }))
+
+    if not collectors:
+        raise RuntimeError("build_collector_from_env: no sources configured — set FABRIC_CSV_PATHS "
+                           "and/or the live-source env (FABRIC_*_URL / FABRIC_KUSTO_*).")
+    if len(collectors) == 1:
+        return collectors[0]
+    from .adapters.collector_merge import create_merged_collector
+    return create_merged_collector(collectors)
+
+
+def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=None,
+                    config=None, agent_id="fabric-audit-agent", tenant=None, now=None):
+    """Production sweep: audit whatever sources are configured, end to end.
+
+    Composes the collector via ``build_collector_from_env`` (CSV now; live sources auto-included as
+    permissions land), runs the read-only pipeline, writes ``latest.json`` + ``report.md`` to
+    ``out_dir`` (a Volume), and posts a Teams card if ``TEAMS_WEBHOOK_URL`` is set. Ports are
+    injectable for tests. The deployed job is unchanged as access grows.
+    """
+    env = env if env is not None else os.environ
+    out_dir = out_dir if out_dir is not None else env.get("FABRIC_OUT_DIR", "/tmp/fabric-audit")
+    if config is None:
+        raw = env.get("FABRIC_AUDIT_CONFIG")
+        config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
+    collector = build_collector_from_env(env)
+    if reasoner is None:
+        reasoner = _default_reasoner(env, config) if env.get("ANTHROPIC_API_KEY") else create_stub_reasoner(config)
+    if delivery is None:
+        delivery = _csv_delivery(env)
+    if store is None:
+        store = _default_store(env)
+    envelope = run_audit(collector, reasoner, delivery, store=store, config=config,
+                         agent_id=agent_id, tenant=tenant, now=now)
+    _write_outputs(out_dir, envelope)
+    return envelope
+
+
+def job_main():
+    envelope = run_unified_job()
+    print(envelope["summary"])
+    return envelope
+
+
 if __name__ == "__main__":
     main()
