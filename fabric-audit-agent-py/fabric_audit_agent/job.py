@@ -53,9 +53,21 @@ def _default_collector(env):
     return create_rest_collector(EntraHttp(token), build_rest_config(env))
 
 
+def _wants_llm(env):
+    """True if any LLM reasoner is configured; else the offline stub is used."""
+    return bool(env.get("ANTHROPIC_API_KEY") or env.get("DATABRICKS_CLAUDE_ENDPOINT")
+                or env.get("FABRIC_REASONER", "").lower() == "databricks")
+
+
 def _default_reasoner(env, config):
-    from .adapters.clients import build_anthropic_client
     from .adapters.reasoner_claude import create_claude_reasoner
+    endpoint = env.get("DATABRICKS_CLAUDE_ENDPOINT")
+    if endpoint or env.get("FABRIC_REASONER", "").lower() == "databricks":
+        # Databricks-hosted Claude (in-tenant; no external key). Confirm the endpoint name under Serving.
+        from .adapters.clients import build_databricks_claude_client
+        endpoint = endpoint or "databricks-claude-3-7-sonnet"
+        return create_claude_reasoner(build_databricks_claude_client(endpoint), model=endpoint, config=config)
+    from .adapters.clients import build_anthropic_client
     return create_claude_reasoner(build_anthropic_client(api_key=env.get("ANTHROPIC_API_KEY")), config=config)
 
 
@@ -130,7 +142,7 @@ def run_csv_job(csv_paths=None, out_dir=None, env=None, reasoner=None, delivery=
         raw = env.get("FABRIC_AUDIT_CONFIG")
         config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
     if reasoner is None:
-        reasoner = _default_reasoner(env, config) if env.get("ANTHROPIC_API_KEY") else create_stub_reasoner(config)
+        reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
     if delivery is None:
         delivery = _csv_delivery(env)
     if store is None:
@@ -227,7 +239,7 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
         config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
     collector = build_collector_from_env(env)
     if reasoner is None:
-        reasoner = _default_reasoner(env, config) if env.get("ANTHROPIC_API_KEY") else create_stub_reasoner(config)
+        reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
     if delivery is None:
         delivery = _csv_delivery(env)
     if store is None:

@@ -166,3 +166,48 @@ def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret
 
     return query
 
+
+def build_databricks_claude_client(endpoint="databricks-claude-3-7-sonnet", openai_client=None):
+    """Use a Databricks-hosted Claude serving endpoint as the reasoner, exposed in the Anthropic
+    shape the reasoner expects (``.messages.create(...) -> resp.content[0].text``) so
+    ``create_claude_reasoner`` works unchanged. Internally it calls the OpenAI-compatible Databricks
+    serving API (``chat.completions``).
+
+    On a Databricks cluster, with no ``openai_client`` passed, it auto-builds one via the Databricks
+    SDK (``WorkspaceClient().serving_endpoints.get_open_ai_client()`` — auto-authenticated; needs the
+    ``openai`` package). ``endpoint`` is the serving-endpoint name — confirm yours under Serving / the
+    AI Playground. Inject a fake ``openai_client`` in tests. Keeps everything in-tenant (no external key).
+    """
+    if openai_client is None:
+        from databricks.sdk import WorkspaceClient  # lazy
+        openai_client = WorkspaceClient().serving_endpoints.get_open_ai_client()
+
+    def _system_text(system):
+        if isinstance(system, str):
+            return system
+        return " ".join(b.get("text", "") for b in (system or []) if isinstance(b, dict)).strip()
+
+    class _Block:
+        def __init__(self, text):
+            self.text = text
+
+    class _Resp:
+        def __init__(self, text):
+            self.content = [_Block(text)]
+
+    class _Messages:
+        def create(self, model=None, max_tokens=1024, system=None, messages=None):
+            chat = []
+            sys_text = _system_text(system)
+            if sys_text:
+                chat.append({"role": "system", "content": sys_text})
+            for m in (messages or []):
+                chat.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+            resp = openai_client.chat.completions.create(model=model or endpoint, messages=chat, max_tokens=max_tokens)
+            return _Resp(resp.choices[0].message.content)
+
+    class _Client:
+        messages = _Messages()
+
+    return _Client()
+

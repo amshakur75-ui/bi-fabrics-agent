@@ -38,7 +38,11 @@ csv_paths = [
 ]
 out_dir = "/Volumes/main/bi_fabrics_agent/reports/current"
 
-# Optional (uncomment + install ...whl[prod] above):
+# Optional — richer reasoning via an in-tenant Databricks-hosted Claude model.
+# Confirm the endpoint name under Serving / the AI Playground, and `%pip install openai` above.
+# os.environ["DATABRICKS_CLAUDE_ENDPOINT"] = "databricks-claude-3-7-sonnet"
+#
+# Optional — Teams push / external Anthropic key instead (uncomment + install ...[prod] above):
 # os.environ["TEAMS_WEBHOOK_URL"] = dbutils.secrets.get("fabric-audit", "TEAMS_WEBHOOK_URL")
 # os.environ["ANTHROPIC_API_KEY"] = dbutils.secrets.get("fabric-audit", "ANTHROPIC_API_KEY")
 
