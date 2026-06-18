@@ -72,6 +72,18 @@ def test_list_usages_collector_empty_when_unconfigured():
     assert create_list_usages_collector(_FakeHttp({}), {})["collect"]() == {}
 
 
+def test_list_usages_collector_uses_separate_clients_per_scope():
+    # Fabric capacities (Power BI scope) and ARM usages (ARM scope) must use DIFFERENT tokens.
+    # Regression guard: one ARM-scoped client for both 401s the Fabric capacities call.
+    cap_http = _FakeHttp({"caps": {"value": [{"displayName": "PROD", "sku": "F64"}]}})
+    arm_http = _FakeHttp({"usages": {"value": [{"name": {"value": "CU"}, "currentValue": 40, "limit": 64}]}})
+    facts = create_list_usages_collector(cap_http, {"capacitiesUrl": "caps", "usagesUrl": "usages"},
+                                         usages_http=arm_http)["collect"]()
+    c = facts["capacity"]
+    assert c["sku"] == "F64"        # capacities resolved via the Power BI client
+    assert c["cuQuotaUsed"] == 40   # usages resolved via the ARM client; a shared client would miss this
+
+
 # ---------- Workspace Monitoring collector ----------
 def test_workspace_monitoring_ranks_users_per_item():
     rows = [

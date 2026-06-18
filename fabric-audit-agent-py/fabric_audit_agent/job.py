@@ -204,15 +204,19 @@ def build_collector_from_env(env):
     if env.get("FABRIC_USAGES_URL") or env.get("FABRIC_CAPACITIES_URL"):
         from .adapters.clients import EntraHttp, build_entra_token_provider, ARM_SCOPE
         from .adapters.collector_list_usages import create_list_usages_collector
-        token = build_entra_token_provider(
-            _require(env, "FABRIC_TENANT_ID"), _require(env, "FABRIC_CLIENT_ID"),
-            _require(env, "FABRIC_CLIENT_SECRET"), scope=ARM_SCOPE,
-        )
-        collectors.append(create_list_usages_collector(EntraHttp(token), {
+        tenant = _require(env, "FABRIC_TENANT_ID")
+        client = _require(env, "FABRIC_CLIENT_ID")
+        secret = _require(env, "FABRIC_CLIENT_SECRET")
+        # Fabric REST (api.fabric.microsoft.com) uses the Power BI token audience; only the Azure ARM
+        # "List Usages" endpoint (management.azure.com) needs the ARM scope — one token per audience.
+        capacities_http = EntraHttp(build_entra_token_provider(tenant, client, secret))   # Power BI scope (default)
+        usages_http = (EntraHttp(build_entra_token_provider(tenant, client, secret, scope=ARM_SCOPE))
+                       if env.get("FABRIC_USAGES_URL") else None)
+        collectors.append(create_list_usages_collector(capacities_http, {
             "capacitiesUrl": env.get("FABRIC_CAPACITIES_URL"),
             "usagesUrl": env.get("FABRIC_USAGES_URL"),
             "capacity": env.get("FABRIC_CAPACITY"),
-        }))
+        }, usages_http=usages_http))
 
     if not collectors:
         raise RuntimeError("build_collector_from_env: no sources configured — set FABRIC_CSV_PATHS "

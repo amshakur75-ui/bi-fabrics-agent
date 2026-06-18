@@ -5,8 +5,12 @@ region) and **CU quota** consumption (provisioned vs limit) — NOT the utilizat
 timeline, which still comes from Capacity Metrics (CSV / semantic model). The HTTP client is
 injected, so this is unit-testable offline and swaps to a real authed client at deploy:
 
-  http.get_json(capacitiesUrl) -> {"value":[{id,displayName,sku,state,region}, ...]}   (Fabric Core, Power BI scope)
-  http.get_json(usagesUrl)     -> {"value":[{name:{value:"CU"}, currentValue, limit}, ...]}  (Azure ARM scope)
+  http        (Power BI scope) -> capacitiesUrl  (Fabric Core /v1/capacities, api.fabric.microsoft.com)
+  usages_http (ARM scope)      -> usagesUrl       (Azure ARM List Usages, management.azure.com); falls back to http
+
+The two endpoints need DIFFERENT token audiences — passing one ARM-scoped client for both 401s the
+Fabric capacities call. ``build_collector_from_env`` wires a Power BI client for capacities and an
+ARM client for usages.
 """
 
 
@@ -22,8 +26,9 @@ def _match_capacity(rows, want):
     return rows[0] if rows else None
 
 
-def create_list_usages_collector(http, config):
+def create_list_usages_collector(http, config, usages_http=None):
     cfg = config or {}
+    usages_client = usages_http or http   # ARM-scoped client for the ARM usages endpoint; defaults to http
 
     def collect():
         cap = {}
@@ -37,7 +42,7 @@ def create_list_usages_collector(http, config):
                     if chosen.get(src) is not None:
                         cap[dst] = chosen[src]
         if cfg.get("usagesUrl"):
-            page = http.get_json(cfg["usagesUrl"])
+            page = usages_client.get_json(cfg["usagesUrl"])
             for u in ((page.get("value") if isinstance(page, dict) else page) or []):
                 nm = u.get("name")
                 unit = nm.get("value") if isinstance(nm, dict) else nm
