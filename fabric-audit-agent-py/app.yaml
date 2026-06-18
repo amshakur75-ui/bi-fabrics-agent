@@ -1,6 +1,10 @@
 # Databricks App — hosts the read-only Fabric Audit MCP server (the run_audit tool) at /mcp.
 # Deploy per: https://learn.microsoft.com/azure/databricks/generative-ai/mcp/custom-mcp
 # Databricks installs requirements.txt, then runs this command; apps listen on port 8000.
+#
+# The tool is READ-AND-RETURN: it audits live sources and returns findings to the agent. It writes
+# NOTHING — a Databricks App can't write /Volumes, and it doesn't need to. History + report files
+# are the scheduled Job's role (databricks.yml), which runs on a cluster and persists to the catalog.
 
 command: ["fabric-audit-mcp"]
 
@@ -9,12 +13,25 @@ env:
     value: "streamable-http"        # serve HTTP at /mcp (not stdio)
   - name: MCP_PORT
     value: "8000"
-  # Point the tool at real data + in-tenant Claude (leave unset → it runs the offline mock):
-  # - name: FABRIC_CSV_PATHS
-  #   value: "/Volumes/main/bi_fabrics_agent/raw/capacity_metrics/data.csv"
-  # - name: FABRIC_OUT_DIR
-  #   value: "/Volumes/main/bi_fabrics_agent/reports/current"
-  # - name: AUDIT_HISTORY_PATH
-  #   value: "/Volumes/main/bi_fabrics_agent/reports/history/history.json"
-  # - name: DATABRICKS_CLAUDE_ENDPOINT
-  #   value: "databricks-claude-3-7-sonnet"
+
+  # --- Live Fabric audit (no CSV, no mock). Creds come from App secrets — add three named
+  #     tenant_id / client_id / client_secret (public repo: never inline real IDs/secrets here). ---
+  - name: FABRIC_TENANT_ID
+    valueFrom: tenant_id
+  - name: FABRIC_CLIENT_ID
+    valueFrom: client_id
+  - name: FABRIC_CLIENT_SECRET
+    valueFrom: client_secret
+  - name: FABRIC_CAPACITIES_URL
+    value: "https://api.fabric.microsoft.com/v1/capacities"
+  - name: DATABRICKS_CLAUDE_ENDPOINT
+    value: "databricks-claude-opus-4-7"   # confirm this exact endpoint name under Serving
+
+  # NOTE: do NOT set FABRIC_OUT_DIR / AUDIT_HISTORY_PATH here — the App can't write /Volumes.
+  #       Those belong to the scheduled Job (databricks.yml), which persists history to the catalog.
+
+  # --- Real CU% / per-user (30%) findings need Workspace Monitoring; set once the Eventhouse is up: ---
+  # - name: FABRIC_KUSTO_CLUSTER
+  #   value: "https://<eventhouse>.kusto.fabric.microsoft.com"
+  # - name: FABRIC_KUSTO_DB
+  #   value: "<monitoring-database-name>"
