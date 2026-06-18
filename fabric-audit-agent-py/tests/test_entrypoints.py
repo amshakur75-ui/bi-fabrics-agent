@@ -89,7 +89,8 @@ def test_tool_definitions_handler_runs_audit(tmp_path):
     assert defs[0]["input_schema"] == {"type": "object", "properties": {}, "required": []}
     res = defs[0]["handler"]()
     assert "summary" in res and "verdict" in res and "findings" in res
-    assert os.path.exists(os.path.join(base, "runs", "latest.json"))
+    # read-and-return: the tool writes no files (history/reports are the scheduled Job's role)
+    assert not os.path.exists(os.path.join(base, "runs", "latest.json"))
 
 
 def test_mcp_manifest_is_read_only_and_strips_handler(tmp_path):
