@@ -11,9 +11,8 @@ def test_run_audit_tool_runs_real_audit_when_csv_configured(tmp_path, monkeypatc
     cap = tmp_path / "data.csv"
     cap.write_text("Timepoint,Total CU Usage %,SKU\n2026-06-01T00:00:00,96,F64\n", encoding="utf-8")
     monkeypatch.setenv("FABRIC_CSV_PATHS", str(cap))
-    monkeypatch.setenv("FABRIC_OUT_DIR", str(tmp_path / "out"))
-    monkeypatch.setenv("AUDIT_HISTORY_PATH", str(tmp_path / "h.json"))
 
-    out = create_tool_definitions()[0]["handler"]()   # real path: CSV collector -> pipeline
+    out = create_tool_definitions()[0]["handler"]()   # real path: CSV collector -> pipeline, read-and-return
     assert out["summary"] and out["verdict"]["decision"] and isinstance(out["findings"], list)
-    assert (tmp_path / "out" / "report.md").exists()
+    # write-free: the tool returns the envelope and writes no files/Volumes (the App can't write /Volumes)
+    assert not (tmp_path / "out").exists()

@@ -5,26 +5,34 @@ READ-ONLY — the handler only reads (mock) telemetry and writes findings to loc
 mutating any estate. ``data_agent.build_data_agent_manifest`` strips the handler for the
 published manifest (keeps name/description/input_schema).
 """
+import json
 import os
 
-from .adapters import (
-    create_mock_collector, create_stub_reasoner, create_file_delivery, create_local_store,
-)
+from .adapters import create_mock_collector, create_stub_reasoner
 from .pipeline import run_audit
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _run_real_or_mock(base, env):
-    """Run the REAL audit when a source is configured (CSV / live), else the offline mock so the
-    tool always works (e.g. in the AI Playground before data is wired). Read-only either way."""
+    """Run the audit and RETURN the envelope — read-only and **write-free**. A Databricks App
+    container can't write to /Volumes, and the interactive tool doesn't need to persist: history
+    and report files are the scheduled Job's role. Uses live sources when configured
+    (FABRIC_CAPACITIES_URL / FABRIC_KUSTO_* / FABRIC_CSV_PATHS), else the offline mock."""
+    from .config import DEFAULT_CONFIG, merge_config
+    raw = env.get("FABRIC_AUDIT_CONFIG")
+    config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
+
     if env.get("FABRIC_CSV_PATHS") or env.get("FABRIC_CLIENT_ID") or env.get("FABRIC_KUSTO_CLUSTER"):
-        from .job import run_unified_job
-        return run_unified_job(env=env)
-    collector = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
-    delivery = create_file_delivery(os.path.join(base, "runs", "latest.json"))
-    store = create_local_store(os.path.join(base, "runs", "history.json"))
-    return run_audit(collector, create_stub_reasoner(), delivery, store=store, agent_id="fabric-audit-agent")
+        from .job import build_collector_from_env, _default_reasoner, _wants_llm
+        collector = build_collector_from_env(env)
+        reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
+    else:
+        collector = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
+        reasoner = create_stub_reasoner(config)
+
+    return run_audit(collector, reasoner, {"deliver": lambda e: None}, store=None,
+                     config=config, agent_id="fabric-audit-agent")
 
 
 def create_tool_definitions(base_dir=None):
