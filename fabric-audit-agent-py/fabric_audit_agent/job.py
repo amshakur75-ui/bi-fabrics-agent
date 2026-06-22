@@ -200,6 +200,22 @@ def build_collector_from_env(env):
             wm_cfg["kql"] = env["FABRIC_KUSTO_KQL"]
         collectors.append(create_workspace_monitoring_collector(query, wm_cfg))
 
+    # Per-user attribution from Azure Log Analytics — for workspaces wired to LA instead of the
+    # Eventhouse (e.g. capacity-sensitive prod, where the Monitoring Eventhouse's CU cost is undesirable).
+    if env.get("FABRIC_LA_WORKSPACE_ID") and env.get("FABRIC_CLIENT_ID"):
+        from .adapters.clients import build_log_analytics_query
+        from .adapters.collector_log_analytics import create_log_analytics_collector
+        la_query = build_log_analytics_query(
+            env["FABRIC_LA_WORKSPACE_ID"],
+            _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        )
+        la_cfg = {"window": env.get("FABRIC_LA_WINDOW", "1d")}
+        if env.get("FABRIC_LA_KQL"):
+            la_cfg["kql"] = env["FABRIC_LA_KQL"]
+        if env.get("FABRIC_LA_WORKSPACE_LABEL"):
+            la_cfg["workspace"] = env["FABRIC_LA_WORKSPACE_LABEL"]
+        collectors.append(create_log_analytics_collector(la_query, la_cfg))
+
     # Capacity sku/quota over Azure ARM List Usages — when permissions land.
     if env.get("FABRIC_USAGES_URL") or env.get("FABRIC_CAPACITIES_URL"):
         from .adapters.clients import EntraHttp, build_entra_token_provider, ARM_SCOPE

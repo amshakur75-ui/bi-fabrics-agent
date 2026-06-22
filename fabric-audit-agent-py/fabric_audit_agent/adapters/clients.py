@@ -167,6 +167,33 @@ def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret
     return query
 
 
+LOGANALYTICS_SCOPE = "https://api.loganalytics.io/.default"   # Logs query API — NOT the ARM scope
+
+
+def build_log_analytics_query(workspace_id, tenant_id, client_id, client_secret, session=None):
+    """Return a ``query(kql) -> list[dict]`` callable against the Azure Monitor Logs query API
+    (``api.loganalytics.io``), for the Log Analytics attribution collector. Service-principal
+    client-credentials with the ``LOGANALYTICS_SCOPE`` audience (the SP needs the Azure RBAC
+    ``Log Analytics Reader`` role on the workspace). Mirrors ``build_kusto_query``; inject a fake
+    ``query`` in tests — this builder is only used at deploy."""
+    token = build_entra_token_provider(tenant_id, client_id, client_secret, scope=LOGANALYTICS_SCOPE)
+    http = EntraHttp(token, session=session)
+    url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
+
+    def query(kql, timespan=None):
+        body = {"query": kql}
+        if timespan:
+            body["timespan"] = timespan
+        resp = http.post_json(url, body)
+        tables = (resp or {}).get("tables") or []
+        if not tables:
+            return []
+        cols = [c.get("name") for c in (tables[0].get("columns") or [])]
+        return [dict(zip(cols, row)) for row in (tables[0].get("rows") or [])]
+
+    return query
+
+
 def build_databricks_claude_client(endpoint="databricks-claude-3-7-sonnet", openai_client=None):
     """Use a Databricks-hosted Claude serving endpoint as the reasoner, exposed in the Anthropic
     shape the reasoner expects (``.messages.create(...) -> resp.content[0].text``) so
