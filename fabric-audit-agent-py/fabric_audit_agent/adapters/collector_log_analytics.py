@@ -25,13 +25,21 @@ deploy.
 
 # PowerBIDatasetsWorkspace is the LA table for Power BI semantic-model engine logs. PowerBIWorkspaceName
 # carries the real workspace name (confirmed in the live schema), so we group by it for accurate
-# (workspace, item) merge keys; the config "workspace" label is only a fallback if a tenant's table omits it.
-_DEFAULT_KQL = (
-    "PowerBIDatasetsWorkspace\n"
-    "| where TimeGenerated > ago({window})\n"
-    "| where isnotempty(ExecutingUser)\n"
-    "| summarize cpuMs=sum(CpuTimeMs) by PowerBIWorkspaceName, ArtifactName, ExecutingUser"
-)
+# (workspace, item) merge keys. A tenant-wide LA feed carries many workspaces; default is whole-estate.
+# Set ``workspaceFilter`` to scope to one or more named workspaces (e.g. a single-workspace test).
+
+
+def _build_default_kql(window, ws_filter):
+    lines = [
+        "PowerBIDatasetsWorkspace",
+        f"| where TimeGenerated > ago({window})",
+        "| where isnotempty(ExecutingUser)",
+    ]
+    if ws_filter:
+        names = ", ".join('"{}"'.format(str(w).replace('"', "")) for w in ws_filter)
+        lines.append(f"| where PowerBIWorkspaceName in ({names})")
+    lines.append("| summarize cpuMs=sum(CpuTimeMs) by PowerBIWorkspaceName, ArtifactName, ExecutingUser")
+    return "\n".join(lines)
 
 
 def _row(r, *names):
@@ -45,12 +53,16 @@ def _row(r, *names):
 def create_log_analytics_collector(query, config=None):
     """Build a CollectorPort that returns per-item user attribution from Log Analytics.
 
-    ``config`` keys: ``window`` (KQL lookback, default "1d"), ``kql`` (override the query),
-    ``topUsers`` (rank cutoff, default 3), ``workspace`` (label stamped on items when the LA rows
-    carry no workspace column).
+    ``config`` keys: ``window`` (KQL lookback, default "1d"), ``workspaceFilter`` (a workspace name
+    or list/comma-string to scope to specific workspaces; default whole-estate), ``kql`` (override
+    the whole query — disables the built-in filter), ``topUsers`` (rank cutoff, default 3),
+    ``workspace`` (fallback label stamped on items only when the LA rows carry no workspace column).
     """
     cfg = config or {}
-    kql = cfg.get("kql") or _DEFAULT_KQL.format(window=cfg.get("window", "1d"))
+    ws_filter = cfg.get("workspaceFilter")
+    if isinstance(ws_filter, str):
+        ws_filter = [w.strip() for w in ws_filter.split(",") if w.strip()]
+    kql = cfg.get("kql") or _build_default_kql(cfg.get("window", "1d"), ws_filter)
     top_n = cfg.get("topUsers", 3)
     ws_label = cfg.get("workspace") or ""
 

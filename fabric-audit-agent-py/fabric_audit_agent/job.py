@@ -210,6 +210,8 @@ def build_collector_from_env(env):
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
         )
         la_cfg = {"window": env.get("FABRIC_LA_WINDOW", "1d")}
+        if env.get("FABRIC_LA_WORKSPACE_FILTER"):   # comma-string -> scope to named workspaces (else whole-estate)
+            la_cfg["workspaceFilter"] = env["FABRIC_LA_WORKSPACE_FILTER"]
         if env.get("FABRIC_LA_KQL"):
             la_cfg["kql"] = env["FABRIC_LA_KQL"]
         if env.get("FABRIC_LA_WORKSPACE_LABEL"):

@@ -31,6 +31,25 @@ def test_empty():
     assert create_log_analytics_collector(lambda kql: [])["collect"]() == {"items": []}
 
 
+def test_workspace_filter_injects_clause():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    # string form (comma-split) and list form both produce an `in (...)` clause
+    create_log_analytics_collector(capture, {"workspaceFilter": "Workspace A, Workspace B"})["collect"]()
+    assert 'PowerBIWorkspaceName in ("Workspace A", "Workspace B")' in seen["kql"]
+
+    create_log_analytics_collector(capture, {"workspaceFilter": ["Workspace A"]})["collect"]()
+    assert 'PowerBIWorkspaceName in ("Workspace A")' in seen["kql"]
+
+
+def test_no_filter_is_whole_estate():
+    seen = {}
+    create_log_analytics_collector(lambda kql: seen.setdefault("kql", kql) or [], {})["collect"]()
+    assert "PowerBIWorkspaceName in (" not in seen["kql"]   # no filter -> all workspaces
+
+
 def test_rows_without_user_skipped_in_attribution():
     rows = [
         {"ArtifactName": "M", "ExecutingUser": "", "cpuMs": 50},
