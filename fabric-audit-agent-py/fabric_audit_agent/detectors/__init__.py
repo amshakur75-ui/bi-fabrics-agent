@@ -5,6 +5,7 @@ A failing detector emits a ``meta.detector-error`` flag instead of crashing the 
 from ..config import DEFAULT_CONFIG
 from .capacity import detect_capacity
 from .concentration import detect_concentration
+from .user_concentration import detect_user_concentration
 from .model import detect_models
 from .report import detect_reports
 from .pipeline import detect_pipelines
@@ -13,8 +14,8 @@ from .security import detect_security
 from .cost import detect_cost
 
 _DETECTORS = [
-    detect_capacity, detect_concentration, detect_models, detect_reports,
-    detect_pipelines, detect_blast_radius, detect_security, detect_cost,
+    detect_capacity, detect_concentration, detect_user_concentration, detect_models,
+    detect_reports, detect_pipelines, detect_blast_radius, detect_security, detect_cost,
 ]
 
 

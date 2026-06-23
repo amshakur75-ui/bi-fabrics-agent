@@ -69,6 +69,7 @@ def create_log_analytics_collector(query, config=None):
     def collect():
         rows = query(kql) or []
         groups = {}
+        by_user = {}   # user -> {cpu, items{name:cpu}} — the per-user rollup (who, and via what)
         for r in rows:
             name = _row(r, "Item", "item", "name", "ItemName", "ArtifactName")
             if not name:
@@ -81,6 +82,9 @@ def create_log_analytics_collector(query, config=None):
             g["cpu"] += cpu
             if user:
                 g["users"][user] = g["users"].get(user, 0) + cpu
+                u = by_user.setdefault(user, {"user": user, "cpu": 0, "items": {}})
+                u["cpu"] += cpu
+                u["items"][name] = u["items"].get(name, 0) + cpu
 
         total = sum(g["cpu"] for g in groups.values())
         items = []
@@ -92,6 +96,18 @@ def create_log_analytics_collector(query, config=None):
                 "sharePct": (g["cpu"] / total * 100) if total else 0,
                 "topUsers": ranked[:top_n], "userCount": len(ranked), "attributionMode": "cost",
             })
-        return {"items": items}
+
+        # Per-user rollup: each user's share of total CU + the items they drive it through.
+        users = []
+        for u in by_user.values():
+            top_items = sorted(({"name": n, "cuSeconds": c} for n, c in u["items"].items()),
+                               key=lambda x: -x["cuSeconds"])
+            users.append({
+                "user": u["user"], "cuSeconds": u["cpu"],
+                "sharePct": (u["cpu"] / total * 100) if total else 0,
+                "topItems": top_items[:top_n], "itemCount": len(top_items),
+            })
+        users.sort(key=lambda x: -x["cuSeconds"])
+        return {"items": items, "users": users}
 
     return {"collect": collect}

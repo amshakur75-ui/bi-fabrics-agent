@@ -25,7 +25,7 @@ def _item_key(it):
 
 def merge_facts_list(facts_list):
     capacity, items = {}, {}
-    extra = {"models": [], "reports": [], "pipelines": []}
+    extra = {"models": [], "reports": [], "pipelines": [], "users": []}
     for f in facts_list or []:
         _merge_into(capacity, f.get("capacity") or {})
         for it in f.get("items") or []:

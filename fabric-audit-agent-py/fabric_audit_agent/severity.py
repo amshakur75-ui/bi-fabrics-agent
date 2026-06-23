@@ -32,6 +32,13 @@ def score_severity(flag, config=None):
         level = "Critical" if e.get("sharePct", 0) >= config["capacity"]["concentrationCritPct"] else "Warning"
         return {"level": level, "reason": f"{e.get('sharePct')}% of capacity CU in one item"}
 
+    if t == "capacity.user-concentration":
+        level = "Critical" if e.get("sharePct", 0) >= config["capacity"]["concentrationCritPct"] else "Warning"
+        return {"level": level, "reason": f"{e.get('sharePct')}% of monitored CU by one user"}
+
+    if t == "capacity.user-ranking":
+        return {"level": "Info", "reason": "top CU consumers (none over threshold)"}
+
     if t == "model.bidirectional":
         level = "Critical" if e.get("count", 0) >= config["model"]["bidirectionalCritMin"] else "Warning"
         return {"level": level, "reason": f"{e.get('count')} bidirectional relationships"}
