@@ -30,46 +30,67 @@ def _share(u):
     return s if isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s) else None
 
 
+def _cap_pct(facts):
+    """Capacity peak CU% from the capacity-events collector, if present (else None)."""
+    v = (facts.get("capacity") or {}).get("peakCuPct")
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
 def detect_user_concentration(facts, config=None):
     config = config or DEFAULT_CONFIG
-    users = [u for u in ((facts or {}).get("users") or []) if u.get("user")]
+    facts = facts or {}
+    users = [u for u in (facts.get("users") or []) if u.get("user")]
     if not users:
         return []
 
     min_share = config["capacity"]["concentrationPct"]
-    ranked = sorted(users, key=lambda u: -(_share(u) or 0))
+    cap_pct = _cap_pct(facts)
+    # When capacity CU% is known (capacity-events wired), estimate each user's share OF CAPACITY:
+    #   est % of capacity ≈ (user's share of monitored CU) × (capacity utilization %).
+    # An ESTIMATE (window-avg share × peak util; LA covers semantic-model engine load only), not a
+    # direct per-user CU measurement. Without capacity CU%, fall back to share of monitored CU.
+    label = "capacity CU (est.)" if cap_pct is not None else "monitored CU"
+
+    def metric(u):
+        s = _share(u)
+        if s is None:
+            return None
+        return s * cap_pct / 100.0 if cap_pct is not None else s
+
+    ranked = sorted(users, key=lambda u: -(metric(u) or 0))
     flags = []
 
-    over = [u for u in ranked if (_share(u) or 0) >= min_share]
+    over = [u for u in ranked if (metric(u) or 0) >= min_share]
     for u in over:
+        val = metric(u)
         top_item = (u.get("topItems") or [{}])[0].get("name") or "unknown item"
-        share = _share(u)
         flags.append({
             "type": "capacity.user-concentration",
             "resource": u["user"],
             "when": u.get("observedAt") or "",
             "evidence": {
-                "sharePct": int(share) if share == int(share) else round(share, 1),
+                "sharePct": int(val) if val == int(val) else round(val, 1),
+                "monitoredSharePct": round(_share(u), 1),
+                "capacityPeakPct": cap_pct, "estimated": cap_pct is not None,
                 "cuSeconds": u.get("cuSeconds"), "topItems": u.get("topItems"),
                 "itemCount": u.get("itemCount"),
             },
-            "what": f"{u['user']} is driving {_fmt(share)}% of monitored CU — mostly via \"{top_item}\".",
+            "what": f"{u['user']} is driving ~{_fmt(val)}% of {label} — mostly via \"{top_item}\".",
         })
 
     if not over:
         # No single user over threshold — name the top consumers so the question is still answered.
         top = ranked[:3]
-        listed = ", ".join(f"{u['user']} ({_fmt(_share(u) or 0)}%)" for u in top)
+        listed = ", ".join(f"{u['user']} (~{_fmt(metric(u) or 0)}%)" for u in top)
         flags.append({
             "type": "capacity.user-ranking",
             "resource": "top-users",
             "when": "",
             "evidence": {
-                "topUsers": [{"user": u["user"],
-                              "sharePct": round(_share(u) or 0, 1)} for u in top],
-                "userCount": len(users),
+                "topUsers": [{"user": u["user"], "sharePct": round(metric(u) or 0, 1)} for u in top],
+                "userCount": len(users), "capacityPeakPct": cap_pct, "estimated": cap_pct is not None,
             },
-            "what": (f"No single user is over {_fmt(min_share)}% of monitored CU "
+            "what": (f"No single user is over {_fmt(min_share)}% of {label} "
                      f"(load is spread across {len(users)} users). Top consumers: {listed}."),
         })
 

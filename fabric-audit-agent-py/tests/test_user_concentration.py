@@ -13,8 +13,31 @@ def test_flags_user_over_threshold():
     assert [f["type"] for f in flags] == ["capacity.user-concentration"]   # only the over-threshold user
     f = flags[0]
     assert "heavy@x.com" in f["what"] and "Model A" in f["what"]
+    assert "monitored CU" in f["what"]            # no capacity CU% wired -> share of monitored CU
     assert f["evidence"]["sharePct"] == 42
+    assert f["evidence"]["estimated"] is False
     assert f["resource"] == "heavy@x.com"
+
+
+def test_estimates_capacity_share_when_capacity_pct_present():
+    facts = {
+        "capacity": {"peakCuPct": 80.0},
+        "users": [
+            {"user": "heavy@x.com", "sharePct": 50.0, "cuSeconds": 5000,
+             "topItems": [{"name": "Model A"}], "itemCount": 1},
+            {"user": "mid@x.com", "sharePct": 30.0, "cuSeconds": 3000,
+             "topItems": [{"name": "Model B"}], "itemCount": 1},
+        ],
+    }
+    conc = [f for f in detect_user_concentration(facts) if f["type"] == "capacity.user-concentration"]
+    # heavy: 50% of CPU x 80% capacity = 40% of capacity -> over 30 -> flagged
+    # mid:   30% x 80% = 24% -> under 30 -> not flagged
+    assert len(conc) == 1 and conc[0]["resource"] == "heavy@x.com"
+    f = conc[0]
+    assert f["evidence"]["sharePct"] == 40            # 50 * 80/100
+    assert f["evidence"]["estimated"] is True
+    assert f["evidence"]["capacityPeakPct"] == 80.0
+    assert "capacity CU (est.)" in f["what"]
 
 
 def test_ranking_when_none_over_threshold():
@@ -25,7 +48,7 @@ def test_ranking_when_none_over_threshold():
     flags = detect_user_concentration(facts)
     assert len(flags) == 1 and flags[0]["type"] == "capacity.user-ranking"
     assert "No single user" in flags[0]["what"]
-    assert "a@x.com (18%)" in flags[0]["what"]   # top consumer still named
+    assert "a@x.com (~18%)" in flags[0]["what"]   # top consumer still named
     assert flags[0]["evidence"]["userCount"] == 2
 
 
