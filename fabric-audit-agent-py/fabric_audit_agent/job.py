@@ -218,6 +218,23 @@ def build_collector_from_env(env):
             la_cfg["workspace"] = env["FABRIC_LA_WORKSPACE_LABEL"]
         collectors.append(create_log_analytics_collector(la_query, la_cfg))
 
+    # Live capacity CU% / throttle from Real-Time Hub Capacity Overview Events (custom Eventhouse).
+    # Separate plane from the workspace's Log Analytics — they coexist (no monitoring-vs-LA conflict).
+    if (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
+            and env.get("FABRIC_CLIENT_ID")):
+        from .adapters.clients import build_kusto_query
+        from .adapters.collector_capacity_events import create_capacity_events_collector
+        ce_query = build_kusto_query(
+            env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+            _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        )
+        ce_cfg = {"window": env.get("FABRIC_CAPACITY_EVENTS_WINDOW", "1d")}
+        if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
+            ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
+        if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
+            ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
+        collectors.append(create_capacity_events_collector(ce_query, ce_cfg))
+
     # Capacity sku/quota over Azure ARM List Usages — when permissions land.
     if env.get("FABRIC_USAGES_URL") or env.get("FABRIC_CAPACITIES_URL"):
         from .adapters.clients import EntraHttp, build_entra_token_provider, ARM_SCOPE
