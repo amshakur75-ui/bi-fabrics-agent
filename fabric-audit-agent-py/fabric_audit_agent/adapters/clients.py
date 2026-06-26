@@ -206,8 +206,15 @@ def build_databricks_claude_client(endpoint="databricks-claude-3-7-sonnet", open
     AI Playground. Inject a fake ``openai_client`` in tests. Keeps everything in-tenant (no external key).
     """
     if openai_client is None:
-        from databricks.sdk import WorkspaceClient  # lazy
-        openai_client = WorkspaceClient().serving_endpoints.get_open_ai_client()
+        try:
+            from databricks.sdk import WorkspaceClient  # lazy; get_open_ai_client added in SDK 0.28
+            openai_client = WorkspaceClient().serving_endpoints.get_open_ai_client()
+        except AttributeError:
+            import os
+            from openai import OpenAI  # lazy
+            host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+            token = os.environ.get("DATABRICKS_TOKEN", "")
+            openai_client = OpenAI(api_key=token, base_url=f"{host}/serving-endpoints")
 
     def _system_text(system):
         if isinstance(system, str):

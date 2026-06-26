@@ -2,7 +2,7 @@
 # Installs this package with the MCP extra, plus the in-tenant Claude client deps.
 .[mcp]
 openai>=1.0
-databricks-sdk>=0.20
+databricks-sdk>=0.28  # get_open_ai_client added in 0.28
 msal>=1.24        # SP token (build_entra_token_provider) — capacities + Log Analytics auth
 requests>=2       # EntraHttp REST client — capacities + Log Analytics query calls
 azure-kusto-data>=4.0  # Kusto/KQL client — Workspace Monitoring Eventhouse + Capacity Events
