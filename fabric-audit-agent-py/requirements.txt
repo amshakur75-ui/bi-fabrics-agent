@@ -5,3 +5,4 @@ openai>=1.0
 databricks-sdk>=0.20
 msal>=1.24        # SP token (build_entra_token_provider) — capacities + Log Analytics auth
 requests>=2       # EntraHttp REST client — capacities + Log Analytics query calls
+azure-kusto-data>=4.0  # Kusto/KQL client — Workspace Monitoring Eventhouse + Capacity Events
