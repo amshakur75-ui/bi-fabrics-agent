@@ -41,12 +41,15 @@ def create_tool_definitions(base_dir=None):
     def run_audit_handler(_input=None):
         envelope = _run_real_or_mock(base, os.environ)
         d = envelope["data"]
-        return {
+        result = {
             "summary": envelope["summary"],
             "verdict": d["verdict"],
-            "digest": d.get("digest"),
             "findings": d["findings"],
         }
+        for key in ("digest", "narrative", "roadmap", "healthScore", "staggerPlan", "correlations", "forecast"):
+            if d.get(key):
+                result[key] = d[key]
+        return result
 
     return [{
         "name": "run_audit",
