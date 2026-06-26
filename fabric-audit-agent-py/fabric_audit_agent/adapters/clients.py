@@ -206,14 +206,22 @@ def build_databricks_claude_client(endpoint="databricks-claude-3-7-sonnet", open
     AI Playground. Inject a fake ``openai_client`` in tests. Keeps everything in-tenant (no external key).
     """
     if openai_client is None:
+        import os
         try:
             from databricks.sdk import WorkspaceClient  # lazy; get_open_ai_client added in SDK 0.28
             openai_client = WorkspaceClient().serving_endpoints.get_open_ai_client()
-        except AttributeError:
-            import os
+        except Exception:
+            # Fallback: build OpenAI client directly from env vars (Databricks Apps / PAT auth).
+            # Set DATABRICKS_TOKEN in app.yaml to a Databricks PAT if this path is needed.
             from openai import OpenAI  # lazy
             host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
             token = os.environ.get("DATABRICKS_TOKEN", "")
+            if not token or not host:
+                raise RuntimeError(
+                    "Databricks Claude client: no credentials found. "
+                    "Add DATABRICKS_TOKEN (a Databricks PAT) to app.yaml, or ensure the App "
+                    "service principal has serving-endpoint access configured."
+                )
             openai_client = OpenAI(api_key=token, base_url=f"{host}/serving-endpoints")
 
     def _system_text(system):
