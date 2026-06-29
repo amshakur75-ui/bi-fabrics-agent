@@ -49,14 +49,20 @@ def create_merged_collector(collectors):
 
     def collect():
         import logging
-        results = []
+        results, failed = [], []
         for c in cols:
             try:
                 results.append(c["collect"]())
             except Exception as exc:
+                failed.append(str(exc))
                 logging.getLogger(__name__).warning("collector skipped due to error: %s", exc)
         if not results:
             raise RuntimeError("All collectors failed — no data to audit.")
-        return merge_facts_list(results)
+        merged = merge_facts_list(results)
+        if failed:
+            # Surface coverage gaps so the agent can say "a source was unreachable" rather than
+            # silently reporting a partial picture (which would skew CU shares / denominators).
+            merged["sourcesFailed"] = failed
+        return merged
 
     return {"collect": collect}

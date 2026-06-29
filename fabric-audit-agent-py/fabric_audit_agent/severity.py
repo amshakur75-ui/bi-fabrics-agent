@@ -30,7 +30,8 @@ def score_severity(flag, config=None):
 
     if t == "capacity.concentration":
         level = "Critical" if e.get("sharePct", 0) >= config["capacity"]["concentrationCritPct"] else "Warning"
-        return {"level": level, "reason": f"{e.get('sharePct')}% of capacity CU in one item"}
+        share_label = "monitored CU" if e.get("attributionMode") == "cost" else "capacity CU"
+        return {"level": level, "reason": f"{e.get('sharePct')}% of {share_label} in one item"}
 
     if t == "capacity.user-concentration":
         level = "Critical" if e.get("sharePct", 0) >= config["capacity"]["concentrationCritPct"] else "Warning"

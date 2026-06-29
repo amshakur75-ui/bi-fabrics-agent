@@ -29,6 +29,10 @@ def detect_concentration(facts, config=None):
         share_out = int(share) if share == int(share) else share   # 70.0 -> 70 for clean JSON parity
 
         ws = it.get("workspace") or "unknown workspace"
+        # Honest label: Log Analytics / Eventhouse give a CPU-time PROXY over only the MONITORED
+        # subset (the workspaces feeding telemetry), not a true capacity-wide CU share. Only
+        # authoritative sources (CSV / Capacity Metrics) earn the words "capacity CU".
+        label = "monitored CU" if it.get("attributionMode") == "cost" else "capacity CU"
         tu = it.get("topUsers")
         named = tu if isinstance(tu, list) and tu else None
         total_users = it.get("userCount")
@@ -39,16 +43,16 @@ def detect_concentration(facts, config=None):
 
         if named and it.get("background"):
             owner = it.get("owner") or named[0].get("user")
-            what = (f"\"{it.get('name')}\" ({ws}) is using {_fmt(share)}% of capacity CU — "
+            what = (f"\"{it.get('name')}\" ({ws}) is using {_fmt(share)}% of {label} — "
                     f"driven mainly by background operations (owner/initiator: {owner}), not interactive users.")
         elif named:
             names = ", ".join(u.get("user") for u in named)
             more = max(0, total_users - len(named)) if total_users is not None else 0
             suffix = f" + {_fmt(more)} more" if more > 0 else ""   # int-valued floats render as "10" not "10.0"
-            what = f"{names}{suffix} are driving {_fmt(share)}% of capacity CU via \"{it.get('name')}\" ({ws})."
+            what = f"{names}{suffix} are driving {_fmt(share)}% of {label} via \"{it.get('name')}\" ({ws})."
         else:
             who = f"{_fmt(it['users'])} user(s)" if it.get("users") else "unknown users"
-            what = (f"\"{it.get('name')}\" ({ws}) is using {_fmt(share)}% of capacity CU across {who} "
+            what = (f"\"{it.get('name')}\" ({ws}) is using {_fmt(share)}% of {label} across {who} "
                     f"— specific users pending activity-log correlation.")
 
         flags.append({

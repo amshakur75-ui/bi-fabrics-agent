@@ -194,7 +194,7 @@ def build_log_analytics_query(workspace_id, tenant_id, client_id, client_secret,
     return query
 
 
-def build_databricks_claude_client(endpoint="databricks-claude-3-7-sonnet", openai_client=None):
+def build_databricks_claude_client(endpoint="databricks-claude-opus-4-7", openai_client=None):
     """Use a Databricks-hosted Claude serving endpoint as the reasoner, exposed in the Anthropic
     shape the reasoner expects (``.messages.create(...) -> resp.content[0].text``) so
     ``create_claude_reasoner`` works unchanged. Internally it calls the OpenAI-compatible Databricks

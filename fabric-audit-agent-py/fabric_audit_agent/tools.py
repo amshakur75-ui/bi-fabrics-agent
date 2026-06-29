@@ -13,6 +13,18 @@ from .pipeline import run_audit
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Any of these means a real telemetry source is wired; otherwise the offline mock is used.
+_LIVE_SOURCE_VARS = ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+                     "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID")
+
+
+def _has_live_source(env):
+    """True if any real source is configured (CSV / REST / Eventhouse / Log Analytics).
+
+    Single source of truth so ``run_audit`` and ``list_workspaces`` can never disagree about
+    whether to go live or fall back to the mock."""
+    return any(env.get(v) for v in _LIVE_SOURCE_VARS)
+
 
 def _run_real_or_mock(base, env):
     """Run the audit and RETURN the envelope — read-only and **write-free**. A Databricks App
@@ -23,8 +35,7 @@ def _run_real_or_mock(base, env):
     raw = env.get("FABRIC_AUDIT_CONFIG")
     config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
 
-    if (env.get("FABRIC_CSV_PATHS") or env.get("FABRIC_CLIENT_ID")
-            or env.get("FABRIC_KUSTO_CLUSTER") or env.get("FABRIC_CAPACITY_EVENTS_CLUSTER")):
+    if _has_live_source(env):
         from .job import build_collector_from_env, _default_reasoner, _wants_llm
         collector = build_collector_from_env(env)
         reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
@@ -38,9 +49,7 @@ def _run_real_or_mock(base, env):
 
 def _build_collector(env):
     """Return a live collector if any source is configured, else None."""
-    if not (env.get("FABRIC_CSV_PATHS") or env.get("FABRIC_CLIENT_ID")
-            or env.get("FABRIC_KUSTO_CLUSTER") or env.get("FABRIC_CAPACITY_EVENTS_CLUSTER")
-            or env.get("FABRIC_LA_WORKSPACE_ID")):
+    if not _has_live_source(env):
         return None
     from .job import build_collector_from_env
     return build_collector_from_env(env)
@@ -68,8 +77,13 @@ def create_tool_definitions(base_dir=None):
         across the full estate without running the full audit pipeline."""
         collector = _build_collector(os.environ)
         if collector is None:
-            mock_path = os.path.join(base, "fixtures", "estate.json")
-            collector = create_mock_collector(mock_path)
+            # No live source — do NOT return mock workspaces as if they were real (an inventory tool
+            # that invents an estate is worse than one that says it can't see the estate).
+            return {"workspaces": [], "topUsers": [], "totalWorkspaces": 0, "totalItems": 0,
+                    "note": ("No live telemetry source configured. Set FABRIC_LA_WORKSPACE_ID "
+                             "(tenant-wide Log Analytics) or FABRIC_KUSTO_CLUSTER + FABRIC_KUSTO_DB "
+                             "(per-workspace Eventhouse) to inventory real workspaces."),
+                    "source": "none"}
         facts = collector["collect"]()
 
         items = facts.get("items") or []

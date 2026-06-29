@@ -25,3 +25,17 @@ def test_skips_psku_autoscale_rows():
 
 def test_empty():
     assert create_capacity_events_collector(lambda kql: [])["collect"]() == {}
+
+
+def test_reads_nested_data_envelope():
+    # Live Capacity Overview Events nest fields under a ``data`` envelope; read them without an override.
+    rows = [{"data": {"capacityId": "C", "windowStartTime": "t1",
+                      "capacityUnitMs": 96000, "baseCapacityUnits": 2}}]   # budget 60000 -> 160%
+    cap = create_capacity_events_collector(lambda kql: rows)["collect"]()["capacity"]
+    assert cap["peakCuPct"] == 160.0 and cap["capacityId"] == "C"
+
+
+def test_skips_nondict_rows():
+    rows = ["CapacityEvents", None, {"capacityId": "C", "windowStartTime": "t", "baseCapacityUnits": 64, "capacityUnitMs": 960000}]
+    cap = create_capacity_events_collector(lambda kql: rows)["collect"]()["capacity"]
+    assert cap["peakCuPct"] == 50.0

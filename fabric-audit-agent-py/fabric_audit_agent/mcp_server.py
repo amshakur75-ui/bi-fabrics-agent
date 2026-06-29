@@ -16,15 +16,19 @@ def manifest(base_dir=None):
 
 
 def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
-    """Build a FastMCP server registering ``run_audit``. Requires the optional ``mcp`` dep."""
+    """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
+    (``run_audit``, ``list_workspaces``, …). Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
-    run_audit_def = next(d for d in create_tool_definitions(base_dir) if d["name"] == "run_audit")
     server = FastMCP("fabric-audit-agent", host=host, port=port)
 
-    @server.tool(name="run_audit", description=run_audit_def["description"])
-    def run_audit():
-        return run_audit_def["handler"]()
+    for _def in create_tool_definitions(base_dir):
+        def _make(handler):
+            def _tool():
+                return handler()
+            return _tool
+        # register each tool's no-arg handler under its own name/description
+        server.tool(name=_def["name"], description=_def["description"])(_make(_def["handler"]))
 
     return server
 

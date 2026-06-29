@@ -137,3 +137,39 @@ def test_merged_collector_then_concentration_names_the_user():
     f = flags[0]
     assert "alice" in f["what"] and "34%" in f["what"]
     assert f["evidence"]["sharePct"] == 34 and f["evidence"]["attributionMode"] == "cost"
+
+
+# ---------- additions: WM users[], failed-source surfacing, honest labels ----------
+def test_workspace_monitoring_emits_users_for_the_30pct_detector():
+    # Before the shared rollup, WM emitted items[] only — so the per-user concentration detector
+    # (which reads facts["users"]) never fired from Eventhouse data. It must now emit users[].
+    rows = [
+        {"Workspace": "Fin", "Item": "Sales", "ExecutingUser": "alice", "cpuMs": 900},
+        {"Workspace": "Fin", "Item": "Sales", "ExecutingUser": "bob", "cpuMs": 100},
+    ]
+    facts = create_workspace_monitoring_collector(lambda kql: rows)["collect"]()
+    assert "users" in facts
+    assert facts["users"][0]["user"] == "alice" and round(facts["users"][0]["sharePct"]) == 90
+
+
+def test_merge_surfaces_failed_sources():
+    good = {"collect": lambda: {"items": [{"workspace": "W", "name": "I", "sharePct": 10, "cuSeconds": 1}]}}
+
+    def boom():
+        raise RuntimeError("LA unreachable")
+
+    merged = create_merged_collector([good, {"collect": boom}])["collect"]()
+    assert merged["items"][0]["name"] == "I"                         # the healthy source still lands
+    assert any("LA unreachable" in s for s in merged.get("sourcesFailed", []))   # the gap is surfaced
+
+
+def test_concentration_label_proxy_vs_authoritative():
+    # proxy (LA/Eventhouse) share must not claim to be a true capacity share
+    proxy = {"items": [{"workspace": "W", "name": "A4A", "sharePct": 100, "cuSeconds": 9,
+                        "topUsers": [{"user": "x@co"}], "userCount": 1, "attributionMode": "cost"}]}
+    what_proxy = detect_concentration(proxy)[0]["what"]
+    assert "monitored CU" in what_proxy and "capacity CU" not in what_proxy
+    # authoritative (CSV / Capacity Metrics) keeps "capacity CU"
+    auth = {"items": [{"workspace": "W", "name": "Sales", "sharePct": 60, "cuSeconds": 9,
+                       "topUsers": [{"user": "x@co"}], "userCount": 1}]}
+    assert "capacity CU" in detect_concentration(auth)[0]["what"]

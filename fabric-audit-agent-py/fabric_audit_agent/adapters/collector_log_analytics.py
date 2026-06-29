@@ -23,6 +23,9 @@ table is ``PowerBIDatasetsWorkspace``. ``_row`` resolves either spelling so the 
 deploy.
 """
 
+from .attribution_rollup import rollup_attribution
+
+
 # PowerBIDatasetsWorkspace is the LA table for Power BI semantic-model engine logs. PowerBIWorkspaceName
 # carries the real workspace name (confirmed in the live schema), so we group by it for accurate
 # (workspace, item) merge keys. A tenant-wide LA feed carries many workspaces; default is whole-estate.
@@ -42,14 +45,6 @@ def _build_default_kql(window, ws_filter):
     return "\n".join(lines)
 
 
-def _row(r, *names):
-    """First key present and non-None — tolerant of LA (ArtifactName) vs Eventhouse (ItemName)."""
-    for n in names:
-        if r.get(n) is not None:
-            return r[n]
-    return None
-
-
 def create_log_analytics_collector(query, config=None):
     """Build a CollectorPort that returns per-item user attribution from Log Analytics.
 
@@ -67,47 +62,6 @@ def create_log_analytics_collector(query, config=None):
     ws_label = cfg.get("workspace") or ""
 
     def collect():
-        rows = query(kql) or []
-        groups = {}
-        by_user = {}   # user -> {cpu, items{name:cpu}} — the per-user rollup (who, and via what)
-        for r in rows:
-            name = _row(r, "Item", "item", "name", "ItemName", "ArtifactName")
-            if not name:
-                continue
-            ws = _row(r, "Workspace", "workspace", "WorkspaceName", "PowerBIWorkspaceName") or ws_label
-            user = _row(r, "ExecutingUser", "user")
-            cpu = _row(r, "cpuMs", "CpuTimeMs", "cuSeconds") or 0
-            g = groups.setdefault((ws.lower(), str(name).lower()),
-                                  {"workspace": ws, "name": name, "users": {}, "cpu": 0})
-            g["cpu"] += cpu
-            if user:
-                g["users"][user] = g["users"].get(user, 0) + cpu
-                u = by_user.setdefault(user, {"user": user, "cpu": 0, "items": {}})
-                u["cpu"] += cpu
-                u["items"][name] = u["items"].get(name, 0) + cpu
-
-        total = sum(g["cpu"] for g in groups.values())
-        items = []
-        for g in groups.values():
-            ranked = sorted(({"user": u, "cuSeconds": c} for u, c in g["users"].items()),
-                            key=lambda x: -x["cuSeconds"])
-            items.append({
-                "workspace": g["workspace"], "name": g["name"], "cuSeconds": g["cpu"],
-                "sharePct": (g["cpu"] / total * 100) if total else 0,
-                "topUsers": ranked[:top_n], "userCount": len(ranked), "attributionMode": "cost",
-            })
-
-        # Per-user rollup: each user's share of total CU + the items they drive it through.
-        users = []
-        for u in by_user.values():
-            top_items = sorted(({"name": n, "cuSeconds": c} for n, c in u["items"].items()),
-                               key=lambda x: -x["cuSeconds"])
-            users.append({
-                "user": u["user"], "cuSeconds": u["cpu"],
-                "sharePct": (u["cpu"] / total * 100) if total else 0,
-                "topItems": top_items[:top_n], "itemCount": len(top_items),
-            })
-        users.sort(key=lambda x: -x["cuSeconds"])
-        return {"items": items, "users": users}
+        return rollup_attribution(query(kql) or [], top_n=top_n, ws_label=ws_label)
 
     return {"collect": collect}

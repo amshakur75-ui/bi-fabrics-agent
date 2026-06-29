@@ -24,9 +24,14 @@ _WINDOW_SEC = 30
 
 
 def _row(r, *names):
+    # Capacity Overview Events arrive with fields nested under a ``data`` envelope
+    # (data.capacityUnitMs, data.baseCapacityUnits, ...); resolve top-level first, then inside ``data``.
+    data = r.get("data") if isinstance(r.get("data"), dict) else {}
     for n in names:
         if r.get(n) is not None:
             return r[n]
+        if data.get(n) is not None:
+            return data[n]
     return None
 
 
@@ -57,6 +62,8 @@ def create_capacity_events_collector(query, config=None):
         # Dedupe to one row per (capacityId, window) — best-effort delivery can duplicate.
         seen = {}
         for r in rows:
+            if not isinstance(r, dict):
+                continue
             cap = str(_row(r, "capacityId", "CapacityId", "capacityid") or "")
             win = str(_row(r, "windowStartTime", "WindowStartTime", "windowStart", "startTime", "timestamp") or "")
             seen[(cap, win)] = r

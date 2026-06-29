@@ -27,6 +27,13 @@ def test_capacity_concentration():
     assert sev("capacity.concentration", sharePct=35)["level"] == "Warning"
 
 
+def test_capacity_concentration_label_is_honest_about_the_source():
+    # proxy share (LA/Eventhouse, attributionMode='cost') must say "monitored CU", not "capacity CU"
+    assert "monitored CU" in sev("capacity.concentration", sharePct=100, attributionMode="cost")["reason"]
+    # authoritative share (CSV / Capacity Metrics) keeps "capacity CU"
+    assert "capacity CU" in sev("capacity.concentration", sharePct=60)["reason"]
+
+
 def test_model_bidirectional():
     assert sev("model.bidirectional", count=9)["level"] == "Critical"
     assert sev("model.bidirectional", count=4)["level"] == "Warning"

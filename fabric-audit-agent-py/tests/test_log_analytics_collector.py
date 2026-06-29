@@ -28,7 +28,7 @@ def test_resolves_eventhouse_spelling_too():
 
 
 def test_empty():
-    assert create_log_analytics_collector(lambda kql: [])["collect"]() == {"items": []}
+    assert create_log_analytics_collector(lambda kql: [])["collect"]() == {"items": [], "users": []}
 
 
 def test_workspace_filter_injects_clause():
@@ -46,7 +46,10 @@ def test_workspace_filter_injects_clause():
 
 def test_no_filter_is_whole_estate():
     seen = {}
-    create_log_analytics_collector(lambda kql: seen.setdefault("kql", kql) or [], {})["collect"]()
+    def cap(kql):
+        seen["kql"] = kql
+        return []
+    create_log_analytics_collector(cap, {})["collect"]()
     assert "PowerBIWorkspaceName in (" not in seen["kql"]   # no filter -> all workspaces
 
 

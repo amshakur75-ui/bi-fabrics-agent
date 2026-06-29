@@ -65,7 +65,7 @@ def _default_reasoner(env, config):
     if endpoint or env.get("FABRIC_REASONER", "").lower() == "databricks":
         # Databricks-hosted Claude (in-tenant; no external key). Confirm the endpoint name under Serving.
         from .adapters.clients import build_databricks_claude_client
-        endpoint = endpoint or "databricks-claude-3-7-sonnet"
+        endpoint = endpoint or "databricks-claude-opus-4-7"
         return create_claude_reasoner(build_databricks_claude_client(endpoint), model=endpoint, config=config)
     from .adapters.clients import build_anthropic_client
     return create_claude_reasoner(build_anthropic_client(api_key=env.get("ANTHROPIC_API_KEY")), config=config)
