@@ -15,7 +15,7 @@ _DEFAULT_KQL = (
     "SemanticModelLogs\n"
     "| where Timestamp > ago({window})\n"
     "| where isnotempty(ExecutingUser)\n"
-    "| summarize cpuMs=sum(CpuTimeMs) by Workspace=WorkspaceName, Item=ArtifactName, ExecutingUser"
+    "| summarize cpuMs=sum(CpuTimeMs) by Workspace=WorkspaceName, Item=ItemName, ExecutingUser"
 )
 
 
