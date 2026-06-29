@@ -48,6 +48,15 @@ def create_merged_collector(collectors):
     cols = list(collectors)
 
     def collect():
-        return merge_facts_list([c["collect"]() for c in cols])
+        import logging
+        results = []
+        for c in cols:
+            try:
+                results.append(c["collect"]())
+            except Exception as exc:
+                logging.getLogger(__name__).warning("collector skipped due to error: %s", exc)
+        if not results:
+            raise RuntimeError("All collectors failed — no data to audit.")
+        return merge_facts_list(results)
 
     return {"collect": collect}
