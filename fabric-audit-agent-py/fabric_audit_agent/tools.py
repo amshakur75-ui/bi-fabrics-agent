@@ -23,7 +23,8 @@ def _run_real_or_mock(base, env):
     raw = env.get("FABRIC_AUDIT_CONFIG")
     config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
 
-    if env.get("FABRIC_CSV_PATHS") or env.get("FABRIC_CLIENT_ID") or env.get("FABRIC_KUSTO_CLUSTER"):
+    if (env.get("FABRIC_CSV_PATHS") or env.get("FABRIC_CLIENT_ID")
+            or env.get("FABRIC_KUSTO_CLUSTER") or env.get("FABRIC_CAPACITY_EVENTS_CLUSTER")):
         from .job import build_collector_from_env, _default_reasoner, _wants_llm
         collector = build_collector_from_env(env)
         reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
