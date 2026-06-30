@@ -48,5 +48,5 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
                             "content": wrap_untrusted(json.dumps(result, ensure_ascii=False))})
         messages.append({"role": "user", "content": results})
 
-    return {"text": "", "trajectory": trajectory, "toolResults": tool_results,
-            "stoppedReason": "budget"}
+    return {"text": "Investigation stopped at the step budget without a conclusion.",
+            "trajectory": trajectory, "toolResults": tool_results, "stoppedReason": "budget"}
