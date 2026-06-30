@@ -28,7 +28,7 @@ def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     for _def in create_tool_definitions(base_dir):
         props = (_def.get("input_schema") or {}).get("properties") or {}
         if not props:
-            # No-arg tools (run_audit, list_workspaces): register a zero-parameter function.
+            # No-arg tools: register a zero-parameter function.
             def _make_no_arg(handler):
                 def _tool():
                     return handler()

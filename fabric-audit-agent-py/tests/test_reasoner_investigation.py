@@ -23,3 +23,11 @@ def test_stub_grounds_in_evidence_and_states_assumptions():
     assert "40%" in out["explanation"]                 # cites the evidence figure
     assert any("monitored" in a.lower() or "proxy" in a.lower() for a in out["assumptions"])
     assert out["whatWouldConfirm"]                      # always offers a confirmation path
+
+
+def test_client_path_falls_back_to_stub():
+    # Until Phase 2 wires the Claude call, a provided client still returns grounded stub output
+    # (exercises the client-is-not-None branch + its fallback).
+    out = create_investigation_reasoner(client=object())["investigate"](_bundle())
+    assert "40%" in out["explanation"]
+    assert out["confidence"] == "medium"

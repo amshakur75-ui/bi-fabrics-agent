@@ -125,29 +125,38 @@ def create_tool_definitions(base_dir=None):
 
     def user_activity_handler(_input=None):
         """Return ranked top users (no arg) or a specific user's detail (user arg).
-        Falls back to the offline mock estate when no live source is configured."""
+        Falls back to the offline mock estate when no live source is configured — labeled
+        ``source: "mock"`` so callers never mistake fixture data for the real estate."""
         facts = _collector_or_mock()["collect"]()
+        cov = build_coverage(facts)
+        # Authoritative live-vs-mock signal is whether a real source is CONFIGURED — not the
+        # data shape (the mock fixture has data, so coverage.mode alone would read "live").
+        source = "live" if _has_live_source(os.environ) else "mock"
         users = facts.get("users") or []
         who = (_input or {}).get("user")
         if who:
             u = next((x for x in users if (x.get("user") or "").lower() == who.lower()), None)
             return {"user": who, "found": u is not None, "detail": u,
-                    "coverage": build_coverage(facts)}
+                    "source": source, "coverage": cov}
         return {"topUsers": users[:10], "userCount": len(users),
-                "coverage": build_coverage(facts)}
+                "source": source, "coverage": cov}
 
     def investigate_user_handler(_input=None):
         """Investigate a specific user's contribution to capacity: assembles evidence, baselines,
         and returns a grounded explanation. Abstains when the user is not in the collected data."""
         inp = _input or {}
-        return _iu(_collector_or_mock(), create_investigation_reasoner(),
-                   inp.get("user"), days=inp.get("days", 30))
+        result = _iu(_collector_or_mock(), create_investigation_reasoner(),
+                     inp.get("user"), days=inp.get("days", 30))
+        result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        return result
 
     def investigate_spike_handler(_input=None):
         """Investigate a capacity spike: identifies top-consuming items/users and explains
         the spike with evidence. Abstains when no capacity signal is available."""
         inp = _input or {}
-        return _ics(_collector_or_mock(), create_investigation_reasoner(), inp.get("when"))
+        result = _ics(_collector_or_mock(), create_investigation_reasoner(), inp.get("when"))
+        result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        return result
 
     return [
         {

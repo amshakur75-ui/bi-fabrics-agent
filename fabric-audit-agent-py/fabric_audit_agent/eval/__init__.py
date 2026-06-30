@@ -1,7 +1,8 @@
-"""Offline eval harness for the investigation playbooks (golden cases + groundedness/coverage scorer).
+"""Reasoner/detector eval scorers.
 
-Also re-exports the legacy reasoner-eval helpers (score_case, score_suite) so that existing
-imports — ``from .eval import score_case, score_suite`` — continue to work unchanged."""
+``score_case``/``score_suite`` here score the auditor's findings against expected finding types
+(recall/precision) — used by the ``eval`` CLI and entrypoints. The investigation playbooks have
+their own groundedness/coverage scorer in ``eval.score_investigations``."""
 import math
 
 

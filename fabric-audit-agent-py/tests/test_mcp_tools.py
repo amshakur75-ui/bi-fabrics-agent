@@ -47,3 +47,12 @@ def test_investigate_user_handler_abstains_offline(monkeypatch):
     h = next(d for d in create_tool_definitions() if d["name"] == "investigate_user")["handler"]
     out = h({"user": "anyone@co", "days": 30})   # no live source -> mock estate, user absent -> abstain
     assert out["abstained"] is True and "coverage" in out
+
+
+def test_user_activity_labels_mock_source_offline(monkeypatch):
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_activity")["handler"]
+    out = h()   # no live source -> mock estate; must label it mock, not pass it off as real
+    assert out["source"] == "mock" and "coverage" in out
