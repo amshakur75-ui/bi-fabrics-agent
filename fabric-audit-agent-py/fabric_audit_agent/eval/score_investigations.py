@@ -44,36 +44,18 @@ def run_suite(path=None):
 
 # --- agent-trajectory scoring (appended) ---
 from ..agent.investigator import investigate
+from ..agent.scripted_client import Block, Message, ScriptedClient
 
 
-class _B:
-    def __init__(self, d):
-        self.type = d["type"]; self.text = d.get("text"); self.id = d.get("id", "t")
-        self.name = d.get("name"); self.input = d.get("input")
-
-
-class _M:
-    def __init__(self, blocks, stop):
-        self.content = [_B(b) for b in blocks]; self.stop_reason = stop
-
-
-class _FakeClient:
-    def __init__(self, script):
-        # one tool_use message per tool block, then a final text message
-        msgs = []
-        for b in script:
-            if b["type"] == "tool_use":
-                msgs.append(_M([b], "tool_use"))
-            else:
-                msgs.append(_M([b], "end_turn"))
-        self._msgs = msgs
-
-    @property
-    def messages(self):
-        return self
-
-    def create(self, **kwargs):
-        return self._msgs.pop(0)
+def _client_from_script(script):
+    """Map a JSON script list (dicts with type/text/name/input) to a ScriptedClient."""
+    msgs = []
+    for b in script:
+        block = Block(b["type"], text=b.get("text"), id=b.get("id", "t"),
+                      name=b.get("name"), input=b.get("input"))
+        stop = "tool_use" if b["type"] == "tool_use" else "end_turn"
+        msgs.append(Message([block], stop))
+    return ScriptedClient(msgs)
 
 
 _AGENT_CASES = os.path.join(os.path.dirname(__file__), "agent_cases.json")
@@ -81,7 +63,7 @@ _AGENT_CASES = os.path.join(os.path.dirname(__file__), "agent_cases.json")
 
 def score_agent_case(case, client_factory=None):
     if client_factory is None:
-        client_factory = lambda c: _FakeClient(c["script"])
+        client_factory = lambda c: _client_from_script(c["script"])
     out = investigate(case["messages"], client_factory(case))
     tools_used = [t["tool"] for t in out["trajectory"]]
     text = out["output_text"].lower()

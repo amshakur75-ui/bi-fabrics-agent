@@ -1,30 +1,7 @@
 # tests/test_agent_loop.py
 import json
 from fabric_audit_agent.agent.loop import run_tool_loop
-
-
-class _B:   # a fake Anthropic content block
-    def __init__(self, type, text=None, id=None, name=None, input=None):
-        self.type, self.text, self.id, self.name, self.input = type, text, id, name, input
-
-
-class _M:   # a fake Anthropic message
-    def __init__(self, content, stop_reason):
-        self.content, self.stop_reason = content, stop_reason
-
-
-class FakeClient:
-    def __init__(self, scripted):
-        self._scripted = list(scripted)
-        self.calls = []
-
-    @property
-    def messages(self):
-        return self
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return self._scripted.pop(0)
+from fabric_audit_agent.agent.scripted_client import Block as _B, Message as _M, ScriptedClient as FakeClient
 
 
 def _dispatch():

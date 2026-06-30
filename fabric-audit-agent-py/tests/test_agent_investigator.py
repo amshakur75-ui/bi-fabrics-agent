@@ -1,5 +1,5 @@
 from fabric_audit_agent.agent.investigator import investigate
-from tests.test_agent_loop import FakeClient, _M, _B
+from fabric_audit_agent.agent.scripted_client import Block as _B, Message as _M, ScriptedClient as FakeClient
 
 
 def test_investigate_end_to_end_with_fake_client(monkeypatch):
