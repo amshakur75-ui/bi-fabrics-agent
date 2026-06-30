@@ -53,6 +53,7 @@ def investigate_user(collector, reasoner, user, days=30):
 
 
 def investigate_capacity_spike(collector, reasoner, when=None):
+    # `when` is reserved for time-window filtering once capacity events carry per-window timestamps (Phase 3/4).
     facts = collector["collect"]() or {}
     coverage = build_coverage(facts)
     cap = facts.get("capacity") or {}
