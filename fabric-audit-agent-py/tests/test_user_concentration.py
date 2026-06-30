@@ -55,3 +55,14 @@ def test_ranking_when_none_over_threshold():
 def test_empty():
     assert detect_user_concentration({"users": []}) == []
     assert detect_user_concentration({}) == []
+
+
+def test_user_concentration_labels_estimate_and_keeps_monitored_share():
+    facts = {"capacity": {"peakCuPct": 60.0},
+             "users": [{"user": "x@co", "sharePct": 80, "cuSeconds": 800,
+                        "topItems": [{"name": "A4A"}], "itemCount": 1}]}
+    flags = detect_user_concentration(facts)
+    f = next(f for f in flags if f["type"] == "capacity.user-concentration")
+    assert f["evidence"]["estimated"] is True
+    assert f["evidence"]["monitoredSharePct"] == 80          # raw monitored share preserved
+    assert "est" in f["what"].lower()                         # the headline marks it an estimate

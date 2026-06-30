@@ -17,18 +17,34 @@ def manifest(base_dir=None):
 
 def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
-    (``run_audit``, ``list_workspaces``, …). Requires the optional ``mcp`` dep."""
+    (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
+    ``investigate_capacity_spike``). No-arg tools are registered without parameters;
+    arg-taking tools expose ``user``, ``days``, and ``when`` as optional FastMCP params.
+    Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
     server = FastMCP("fabric-audit-agent", host=host, port=port)
 
     for _def in create_tool_definitions(base_dir):
-        def _make(handler):
-            def _tool():
-                return handler()
-            return _tool
-        # register each tool's no-arg handler under its own name/description
-        server.tool(name=_def["name"], description=_def["description"])(_make(_def["handler"]))
+        props = (_def.get("input_schema") or {}).get("properties") or {}
+        if not props:
+            # No-arg tools: register a zero-parameter function.
+            def _make_no_arg(handler):
+                def _tool():
+                    return handler()
+                return _tool
+            server.tool(name=_def["name"], description=_def["description"])(_make_no_arg(_def["handler"]))
+        else:
+            # Arg-taking tools (user_activity, investigate_user, investigate_capacity_spike):
+            # expose the union of possible params; FastMCP will pass only those provided.
+            # The shared signature covers all three tools' schemas (user: str, days: int, when: str).
+            def _make_with_args(handler):
+                def _tool(user: str = None, days: int = 30, when: str = None):
+                    payload = {k: v for k, v in {"user": user, "days": days, "when": when}.items()
+                               if v is not None}
+                    return handler(payload)
+                return _tool
+            server.tool(name=_def["name"], description=_def["description"])(_make_with_args(_def["handler"]))
 
     return server
 

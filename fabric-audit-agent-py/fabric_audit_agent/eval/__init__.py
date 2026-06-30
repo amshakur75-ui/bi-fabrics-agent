@@ -1,4 +1,8 @@
-"""Score reasoner output against golden expected finding types. Port of ``core/eval.js``. Pure."""
+"""Reasoner/detector eval scorers.
+
+``score_case``/``score_suite`` here score the auditor's findings against expected finding types
+(recall/precision) — used by the ``eval`` CLI and entrypoints. The investigation playbooks have
+their own groundedness/coverage scorer in ``eval.score_investigations``."""
 import math
 
 

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "user-present-grounded",
+    "playbook": "investigate_user",
+    "args": {"user": "x@co", "days": 30},
+    "facts": {"capacity": {"peakCuPct": 120.0, "throttleMinutes": 10},
+              "items": [{"workspace": "Sales", "name": "A4A", "sharePct": 90, "attributionMode": "cost",
+                         "topUsers": [{"user": "x@co", "cuSeconds": 900}], "userCount": 1}],
+              "users": [{"user": "x@co", "cuSeconds": 900, "sharePct": 90,
+                         "topItems": [{"name": "A4A", "cuSeconds": 900}], "itemCount": 1}]},
+    "expectAbstain": false
+  },
+  {
+    "name": "user-absent-abstains",
+    "playbook": "investigate_user",
+    "args": {"user": "ghost@co", "days": 30},
+    "facts": {"items": [], "users": []},
+    "expectAbstain": true
+  }
+]
