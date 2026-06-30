@@ -1,112 +1,99 @@
-# Phase 2 Part B — Deploy the agent on Databricks (work-machine runbook)
+# Phase 2 Part B — Deploy the agent on **Databricks Apps** (work-machine runbook)
 
-The agent **logic** is built, reviewed, and offline-tested (Phase-2 Part A / PR #2). This runbook
-deploys it: wrap as an MLflow `ResponsesAgent`, register to Unity Catalog, deploy with **OBO
-read-only** auth, smoke-test, and gate on eval judges. Run these on the **Databricks-connected work
-machine** (`am08570`).
+The agent **logic** is built, reviewed, and offline-tested (347 passing). This runbook hosts it as a
+**Databricks App** (the lowest-error path — see the research note at the bottom) that **calls your
+existing MCP App** for tools and the in-tenant Claude endpoint for reasoning, with **user
+authorization (OBO)** read-only.
 
-> **Honest caveat:** the MLflow `ResponsesAgent` + Databricks OBO/deploy APIs evolve. Each step says
-> what to verify. Confirm against current docs (the `agents.deploy` / `ResponsesAgent` / OBO pages)
-> before running. The agent *logic* (`fabric_audit_agent.agent.investigator.investigate`) is fixed and
-> tested — only this deploy wrapper is environment-specific.
+```
+  User → Agent (Databricks App)  ── calls ──▶  Claude serving endpoint   (reasoning)
+                  │              ── calls ──▶  MCP App (already running)  (read-only data tools)
+                  ▼
+            grounded answer
+```
+**One agent.** The MCP App is *not* a second agent — it's the data-tool service the agent calls.
+
+> **Why Apps, not Model Serving:** the `databricks/app-templates` agent template bundles the
+> @invoke/@stream server + chat UI + OBO + MCP wiring + **local testing** + DABs deploy — you fill in
+> a proven scaffold instead of assembling parts, on the *same* primitive your MCP App already uses.
+> Sources at the bottom.
+
+> **Honest caveats (don't skip):**
+> - **User authorization (OBO) is Public Preview + admin-gated** — a workspace admin must enable it.
+> - The OBO downscope-token resource list (SQL, Genie, **Model Serving Endpoint**, AI Search, UC
+>   Tables/Connections, Files) does **not explicitly include a custom MCP server**. So govern the
+>   agent→MCP hop with **Databricks Apps permissions + a read-only service principal**; let OBO
+>   downscope the *data sources* the MCP reads once admin enables it. Don't assume OBO flows through
+>   the MCP.
+> - Three integration points are SDK/workspace-specific — **verify against the cloned template**, not
+>   from memory: the `mlflow.genai.agent_server` decorators, the `databricks_mcp` client API, and the
+>   Claude endpoint protocol (B1).
 
 ## Prerequisites
-- `pip install -e '.[prod]' mlflow>=3.1 databricks-sdk databricks-agents databricks-ai-bridge anthropic` (and `pydantic>=2`).
-- Env: `DATABRICKS_CLAUDE_ENDPOINT` (default `databricks-claude-opus-4-7`); the live-source vars the tools use (`FABRIC_LA_WORKSPACE_ID` / `FABRIC_KUSTO_CLUSTER` + `FABRIC_KUSTO_DB` / `FABRIC_CAPACITY_EVENTS_CLUSTER`, etc.).
-- UC: catalog `fabric_audit`, schema `bi_fabrics_agent` (already provisioned).
-- Grants: the read-only SP / OBO identity can query the Claude serving endpoint + the read-only MCP server + the telemetry sources. **Read-only is absolute** — no write/refresh/scale on any resource.
-- The package importable in the serving env (log with `code_paths` or install the wheel — see B3).
+- Databricks CLI (new standalone) + `databricks auth login` (OAuth — **PATs are not supported** for Apps agents).
+- The **MCP App already deployed**, `mcp-`-prefixed, served at `https://<mcp-app>/mcp` (rename the existing `fabric-audit-mcp` → `mcp-fabric-audit` if needed).
+- Env for the agent app: `DATABRICKS_CLAUDE_ENDPOINT` (default `databricks-claude-opus-4-7`), `FABRIC_MCP_URL=https://<mcp-app>/mcp`.
+- A read-only **service principal** the agent app runs as (for the MCP/data hop until OBO is enabled). Read-only is absolute.
 
-## B1 — the Databricks-Claude client (the one integration point to verify FIRST)
-The agent file `app/agent.py` builds an Anthropic-Messages client pointed at the in-tenant Claude
-endpoint (`_build_client()`), **per request**, under OBO. The loop only needs an object with
-`.messages.create(model, max_tokens, system, messages, tools)` returning content blocks
-(`.type` in `text`/`tool_use`) + `.stop_reason`.
-
-**Smoke it in a notebook before anything else:**
+## B1 — Smoke the Claude endpoint FIRST (the one real unknown)
+In a notebook, confirm how your endpoint wants to be called. The loop only needs `.messages.create(...)` returning content blocks + `stop_reason`:
 ```python
-from app.agent import _build_client, _MODEL
-r = _build_client().messages.create(model=_MODEL, max_tokens=64,
-        messages=[{"role": "user", "content": "Reply with the word OK."}], tools=[])
-print(r.stop_reason, [b.text for b in r.content if b.type == "text"])
+import anthropic
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+c = anthropic.Anthropic(base_url=f"{w.config.host}/serving-endpoints/databricks-claude-opus-4-7", api_key=w.config.token)
+print(c.messages.create(model="databricks-claude-opus-4-7", max_tokens=32,
+      messages=[{"role":"user","content":"Reply OK."}], tools=[]).stop_reason)
 ```
-- If that returns text → the Anthropic protocol works; proceed.
-- **§B1-alt (fallback):** if the endpoint speaks only OpenAI chat-completions, replace `_build_client()`
-  with an adapter that calls `WorkspaceClient(credentials_strategy=ModelServingUserCredentials()).serving_endpoints.query(name=_MODEL, messages=..., tools=...)` (the SDK owns OBO auth) and translates the
-  OpenAI response into the Anthropic block shape the loop expects: map `choices[0].message.tool_calls`
-  → `tool_use` blocks (`id`, `name`, `json.loads(arguments)`), text → a `text` block, and
-  `finish_reason=="tool_calls"` → `stop_reason="tool_use"`. Keep the same `.messages.create(...)`
-  signature so `fabric_audit_agent.agent.loop` is unchanged.
+- Works → proceed. **§B1-alt:** if the endpoint only speaks OpenAI chat-completions, replace `_build_claude_client` in `app/agent.py` with a thin adapter that calls the OpenAI-compatible endpoint (`w.serving_endpoints.query(...)`) and maps the response into the Anthropic block shape (`tool_calls`→`tool_use` blocks, `finish_reason=="tool_calls"`→`stop_reason="tool_use"`). The loop stays unchanged.
 
-## B2 — the ResponsesAgent (already written: `app/agent.py`)
-`CapacityInvestigatorAgent(ResponsesAgent)` maps the MLflow Responses request → the core
-`investigate(...)` → a `ResponsesAgentResponse` (text output + `trajectory`/`toolResults`/`stoppedReason`
-as `custom_outputs`), with `@mlflow.trace(span_type=AGENT)` + `mlflow.anthropic.autolog()` and
-`set_model(...)` for models-from-code. **Verify** the `ResponsesAgentRequest.input` shape matches
-`_messages_from_request` (adjust the flattener if your MLflow version differs).
-
-## B3 — log + register to Unity Catalog (with the OBO AuthPolicy)
-```python
-import mlflow
-from mlflow.models.resources import DatabricksServingEndpoint   # + DatabricksFunction / DatabricksTable / the MCP resource as applicable
-from mlflow.models.auth_policy import AuthPolicy, SystemAuthPolicy, UserAuthPolicy
-
-mlflow.set_registry_uri("databricks-uc")
-system = SystemAuthPolicy(resources=[DatabricksServingEndpoint(endpoint_name="databricks-claude-opus-4-7")])
-user = UserAuthPolicy(api_scopes=["serving.serving-endpoints"])   # READ-ONLY scopes only; add the MCP/UC scopes the tools need
-with mlflow.start_run():
-    info = mlflow.pyfunc.log_model(
-        python_model="app/agent.py", name="agent",
-        code_paths=["fabric_audit_agent"],          # ship the tested core with the model
-        auth_policy=AuthPolicy(system_auth_policy=system, user_auth_policy=user),
-        pip_requirements=["mlflow>=3.1", "anthropic", "databricks-sdk", "databricks-ai-bridge", "pydantic>=2"],
-    )
-mlflow.register_model(info.model_uri, "fabric_audit.bi_fabrics_agent.capacity_investigator")
+## B2 — Clone the template
+```bash
+git clone https://github.com/databricks/app-templates
+cd app-templates/agent-openai-advanced
 ```
-- **Verify:** the exact resource classes + the minimal read-only `api_scopes`. Principle of least
-  privilege — only the scopes the read-only tools actually call. Confirm `mlflow.models.predict(info.model_uri, input_data=...)` returns a grounded answer locally before deploying.
+This gives you `agent_server/agent.py`, `agent_server/start_server.py`, `databricks.yml`, `pyproject.toml` and the chat UI. **Verify the exact `@invoke`/`@stream` import + Responses types here** — copy them, don't assume.
 
-## B4 — deploy (OBO read-only)
-Primary (simplest; OBO-on-Model-Serving covers our resources — Claude endpoint + MCP + UC functions):
-```python
-from databricks import agents
-agents.deploy("fabric_audit.bi_fabrics_agent.capacity_investigator", version=<v>, tags={"phase": "2"})
+## B3 — Drop in our handler
+- Replace the template's `agent_server/agent.py` with **our `app/agent.py`** (the @invoke/@stream handler that builds the OBO client + Claude client + **MCP-sourced tools** and runs our tested loop).
+- Add deps to `pyproject.toml`: our package `fabric-audit-agent` (or vendor `fabric_audit_agent/` via `code`), plus `anthropic`, `databricks-sdk`, `databricks-ai-bridge`, `databricks-mcp`, `mlflow`.
+- The reused, tested core is `fabric_audit_agent.agent.loop.run_tool_loop` + `...system_prompt.build_system_prompt` — unchanged.
+
+## B4 — Configure `databricks.yml` (scopes + env + MCP permission)
+- **user authorization (OBO) scopes** — least privilege; the Claude endpoint is the main one:
+  ```yaml
+  user_api_scopes:
+    - serving.serving-endpoints     # call the Claude model as the user
+    # add only the read-only data scopes the MCP ultimately needs (sql / dashboards.genie / ...)
+  ```
+- **env vars**: `DATABRICKS_CLAUDE_ENDPOINT`, `FABRIC_MCP_URL`.
+- **permissions**: grant the agent app's service principal **CAN_USE on the MCP App** (and read-only on the Claude endpoint + the telemetry sources). MCP access is governed by **Databricks Apps permissions**.
+
+## B5 — Run it locally (biggest error-reducer)
+```bash
+uv run start-app        # agent server + chat UI at http://localhost:8000
 ```
-- **Alternative (Databricks App)** if you hit an OBO resource limit on Model Serving: host `app/agent.py`
-  behind a small serving app, name it normally (the `mcp-` prefix rule is for *MCP* apps only), secrets
-  via `valueFrom` (the repo is PUBLIC — never inline tenant/client IDs). The App gives broader OBO scope.
-- **Verify:** a low-privilege test user sees only their permitted workspaces (OBO inherits UC row/column
-  grants). OBO is admin-gated/Public-Preview — confirm the tenant setting is enabled; if not, fall back
-  to the read-only SP identity for the (Phase-4) watchdog path.
+Ask "who is driving capacity on `<capacity>`?" and "why did it spike?" — confirm a grounded answer with a **monitored-CU** figure + cited evidence (or an honest abstention), and that the trace shows the MCP tool calls. Fix anything here before deploying.
 
-## B5 — OBO is enforced in code + policy
-Already wired: `app/agent.py::_build_client` builds the user client **inside `predict`** (identity at
-query time), and B3's `AuthPolicy` declares the OBO scopes. Nothing to add — just confirm the
-deployed endpoint's "On behalf of user" setting is on.
-
-## B6 — smoke test
-From the AI Playground (the registered model appears as an endpoint) or a REST call, ask:
-- "Who is driving capacity on `<capacity>`?" → expect a grounded answer naming the user with a
-  **monitored-CU** figure + cited evidence, or an honest abstention if monitoring isn't enabled.
-- "Why did capacity spike at `<time>`?" → expect the top driver + evidence, or abstention.
-- Confirm the MLflow trace shows the tool calls (`investigate_user` / `investigate_capacity_spike`).
-- **~120s Apps/gateway timeout:** keep answers within the step budget; stream via `predict_stream` if you
-  add it. Long/scheduled investigations belong on the watchdog Job (Phase 4), not the synchronous path.
-
-## B7 — eval / judges gate (the real groundedness check)
-The offline suites (`python -m fabric_audit_agent eval-agent` and `eval-investigations`) gate trajectory
-+ coverage-honesty deterministically. Add the LLM judges over a labeled set and block promotion on
-regression:
-```python
-import mlflow
-from mlflow.genai.scorers import Correctness, Guidelines   # + Safety / RelevanceToQuery as available
-results = mlflow.genai.evaluate(data=labeled_df, predict_fn=<deployed endpoint>,
-                                scorers=[Correctness(), Guidelines(guidelines="Every claim must cite a tool result; abstain if evidence is insufficient; never present monitored CU as authoritative capacity CU.")])
+## B6 — Deploy
+```bash
+databricks bundle deploy
+databricks bundle run agent_openai_advanced
 ```
-- This is the **real groundedness gate** the offline token-trace proxy stands in for. **Verify** the
-  current `mlflow.genai` scorer API (judge names/imports evolve).
+The app goes live with a chat UI + REST endpoint (query with a **Databricks OAuth token**, not a PAT). Streaming + the step budget keep you under the ~120s gateway timeout.
+
+## B7 — Turn on user authorization + the eval gate
+- Have a workspace admin **enable user authorization**; the agent then acts as the requesting user (inherits their read grants) via `get_user_workspace_client()` — already wired in `app/agent.py`.
+- Gate promotion on evals: the offline suites (`python -m fabric_audit_agent eval-agent` / `eval-investigations`) plus MLflow `mlflow.genai` judges (groundedness / safety) over a labeled set — block updates that regress. This is the *real* groundedness gate the offline token-trace proxy stands in for.
 
 ## Done = Phase 2 complete
-Agent answers grounded capacity questions in natural language, read-only, OBO-scoped, traced, and
-gated by evals. Next: **Phase 3** (metric/semantic layer + runbooks) and **Phase 4** (watchdog Job +
-Activator/Teams alerts + the eval flywheel).
+One agent, hosted on a Databricks App, calling Claude to think and the MCP App to fetch read-only data, under the user's identity, traced and eval-gated. Next: **Phase 3** (metric/semantic layer + runbooks), **Phase 4** (watchdog Job + Activator/Teams alerts).
+
+---
+**Sources (current Databricks docs):**
+[Author + deploy an agent on Databricks Apps](https://docs.databricks.com/aws/en/generative-ai/agent-framework/author-agent-db-app) ·
+[Migrate an agent from Model Serving to Apps](https://docs.databricks.com/aws/en/generative-ai/agent-framework/migrate-agent-to-apps) ·
+[Host a custom MCP server](https://docs.databricks.com/aws/en/generative-ai/mcp/custom-mcp) ·
+[Agent authentication (user authorization / OBO)](https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-authentication) ·
+[app-templates repo](https://github.com/databricks/app-templates) ·
+[Managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp/managed-mcp)

@@ -1,56 +1,66 @@
-"""Databricks deploy entry — the authored MLflow ``ResponsesAgent`` wrapping the offline-tested
-investigation core (Phase-2 Part B / B1+B2).
+"""Databricks **App** agent handler (Phase-2 deploy) — hosts our tested investigation loop on a
+Databricks App and reaches the read-only tools through the **existing MCP App**.
 
-DEPLOY-ONLY. This module imports ``mlflow`` / ``databricks`` / ``anthropic`` and is loaded ONLY in
-the serving / Databricks-App environment via ``mlflow.pyfunc.log_model(python_model="app/agent.py")``
-(models-from-code). It is NOT imported by the package or the test suite, so the stdlib-only core and
-``python -m pytest -q`` are unaffected.
+This is the `agent_server/agent.py` you drop into the official template
+`databricks/app-templates/agent-openai-advanced` (the lowest-error path — it bundles the
+@invoke/@stream server, chat UI, OBO, and DABs deploy). DEPLOY-ONLY: imports `mlflow.genai.*`,
+`databricks.*`, `databricks_mcp`, and an LLM client — none are needed to run the test suite, and
+this file is NOT imported by the `fabric_audit_agent` package.
 
-The agent logic itself is the offline-tested ``fabric_audit_agent.agent.investigator.investigate`` —
-this file only (a) builds an OBO client at query time and (b) maps to/from the MLflow Responses schema.
+WHAT STAYS THE SAME (tested, untouched): the loop + system prompt —
+`fabric_audit_agent.agent.loop.run_tool_loop` + `...system_prompt.build_system_prompt`.
+WHAT THIS FILE DOES (deploy glue only): per request, build the OBO user client, the Claude client,
+and source the tools from the MCP server, then run the loop.
 
-VERIFY AT DEPLOY TIME (these APIs evolve — confirm against current docs; see docs/PHASE2-DEPLOY.md):
-  - the MLflow ResponsesAgent request/response surface,
-  - how this workspace exposes the Databricks-hosted Claude endpoint (Anthropic Messages protocol vs
-    OpenAI chat-completions — see _build_client below and PHASE2-DEPLOY.md §B1).
+⚠️ VERIFY AT DEPLOY (3 integration points — these are env/SDK specific; confirm against the cloned
+template + the `databricks_mcp` package + your workspace; see docs/PHASE2-DEPLOY.md):
+  (A) the `mlflow.genai.agent_server` decorators (`invoke`/`stream`) + the Responses request/response
+      types — copy them from the template you clone, don't assume.
+  (B) `DatabricksMCPClient` method/field names (`list_tools()` / `call_tool(...)` and the tool
+      schema fields).
+  (C) how this workspace's Claude serving endpoint wants to be called (Anthropic Messages vs OpenAI
+      chat-completions) — the B1 smoke; the loop only needs an object with `.messages.create(...)`
+      returning content blocks + `stop_reason` (adapter in PHASE2-DEPLOY.md §B1-alt).
 """
 import os
 
-import mlflow
-from mlflow.pyfunc import ResponsesAgent
-from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse
-from mlflow.entities import SpanType
-from mlflow.models import set_model
+from mlflow.genai.agent_server import invoke, stream            # (A) verify import path in the template
+from mlflow.types.responses import (ResponsesAgentRequest, ResponsesAgentResponse,
+                                    ResponsesAgentStreamEvent)
+from databricks.sdk import WorkspaceClient
+from databricks_ai_bridge import get_user_workspace_client      # OBO: build INSIDE the handler
 
-from fabric_audit_agent.agent.investigator import investigate
-
-mlflow.anthropic.autolog()  # capture the raw tool-loop calls as traces
+from fabric_audit_agent.agent.loop import run_tool_loop          # tested, unchanged
+from fabric_audit_agent.agent.system_prompt import build_system_prompt
 
 _MODEL = os.environ.get("DATABRICKS_CLAUDE_ENDPOINT", "databricks-claude-opus-4-7")
+_MCP_URL = os.environ["FABRIC_MCP_URL"]                          # e.g. https://mcp-fabric-audit.<host>/mcp
 
 
-def _build_client():
-    """OBO Anthropic-Messages client pointed at the in-tenant Databricks-hosted Claude endpoint.
-    Built per-request (identity known at query time; never in __init__) per the OBO docs.
-
-    VERIFY: confirm this endpoint speaks the Anthropic Messages protocol. If your workspace exposes
-    only the OpenAI chat-completions protocol for this endpoint, replace this with the
-    OpenAI->Anthropic shape adapter in docs/PHASE2-DEPLOY.md §B1-alt (the loop only needs an object
-    with ``.messages.create(...)`` returning content blocks + ``stop_reason``)."""
-    from databricks.sdk import WorkspaceClient
-    from databricks_ai_bridge import ModelServingUserCredentials
+def _build_claude_client(ws):
+    """Anthropic-Messages-shaped client for the in-tenant Claude serving endpoint, under the user's
+    identity. (C) VERIFY the protocol with the B1 smoke; swap in the §B1-alt adapter if the endpoint
+    only speaks OpenAI chat-completions. The loop only needs `.messages.create(...)`."""
     import anthropic
+    return anthropic.Anthropic(base_url=f"{ws.config.host}/serving-endpoints/{_MODEL}",
+                               api_key=ws.config.token)
 
-    w = WorkspaceClient(credentials_strategy=ModelServingUserCredentials())
-    # NOTE: extracting a bearer for a 3rd-party SDK under OBO is the bit to verify. The robust
-    # alternative (PHASE2-DEPLOY.md §B1-alt) calls w.serving_endpoints.query(...) directly and
-    # adapts the response, so the SDK owns the OBO auth.
-    return anthropic.Anthropic(base_url=f"{w.config.host}/serving-endpoints/{_MODEL}",
-                               api_key=w.config.token)
+
+def _mcp_tools_and_dispatch(ws):
+    """Source the read-only tools from the EXISTING MCP App (not in-process). Returns the Anthropic
+    `tools` list + a name→callable dispatch that calls the MCP over HTTP. (B) VERIFY the
+    DatabricksMCPClient API against the `databricks_mcp` package."""
+    from databricks_mcp import DatabricksMCPClient
+    mcp = DatabricksMCPClient(server_url=_MCP_URL, workspace_client=ws)
+    listed = mcp.list_tools()                                   # (B) verify return shape
+    tools = [{"name": t.name, "description": t.description, "input_schema": t.inputSchema}
+             for t in listed]
+    dispatch = {t.name: (lambda name: (lambda inp: mcp.call_tool(name, inp or {})))(t.name)
+                for t in listed}
+    return tools, dispatch
 
 
 def _messages_from_request(request):
-    """Flatten a ResponsesAgentRequest's input items to [{role, content}] for the core loop."""
     msgs = []
     for item in getattr(request, "input", None) or []:
         role = getattr(item, "role", None) or (item.get("role") if isinstance(item, dict) else None)
@@ -62,16 +72,37 @@ def _messages_from_request(request):
     return msgs or [{"role": "user", "content": ""}]
 
 
-class CapacityInvestigatorAgent(ResponsesAgent):
-    @mlflow.trace(span_type=SpanType.AGENT)
-    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
-        result = investigate(_messages_from_request(request), _build_client(), model=_MODEL)
-        return ResponsesAgentResponse(
-            output=[self.create_text_output_item(text=result["output_text"], id="msg_1")],
-            custom_outputs={"trajectory": result["trajectory"],
-                            "toolResults": result["toolResults"],
-                            "stoppedReason": result["stoppedReason"]},
-        )
+def _run(request):
+    """Sync core: OBO client → Claude client + MCP tools → our tested loop. (For a long investigation
+    you'd run this off the event loop; v1 sync is fine under the step budget.)"""
+    ws = get_user_workspace_client()                            # OBO — only valid inside the handler
+    tools, dispatch = _mcp_tools_and_dispatch(ws)
+    result = run_tool_loop(_build_claude_client(ws), model=_MODEL, system=build_system_prompt(),
+                           messages=_messages_from_request(request), tools=tools, dispatch=dispatch,
+                           max_steps=6)
+    return result
 
 
-set_model(CapacityInvestigatorAgent())
+@invoke()
+async def non_streaming(request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+    r = _run(request)
+    from mlflow.types.responses import ResponsesAgent           # for create_text_output_item helper
+    text_item = ResponsesAgent.create_text_output_item(text=r["text"], id="msg_1")
+    return ResponsesAgentResponse(
+        output=[text_item],
+        custom_outputs={"trajectory": r["trajectory"], "toolResults": r.get("toolResults"),
+                        "stoppedReason": r["stoppedReason"]},
+    )
+
+
+@stream()
+async def streaming(request: ResponsesAgentRequest):
+    """Minimal streaming wrapper (the ~120s gateway timeout is beaten by streaming + the step budget).
+    v1 emits the final answer as one event; refine to token streaming later. VERIFY the event type
+    against the cloned template."""
+    r = _run(request)
+    from mlflow.types.responses import ResponsesAgent
+    yield ResponsesAgentStreamEvent(
+        type="response.output_item.done",
+        item=ResponsesAgent.create_text_output_item(text=r["text"], id="msg_1"),
+    )
