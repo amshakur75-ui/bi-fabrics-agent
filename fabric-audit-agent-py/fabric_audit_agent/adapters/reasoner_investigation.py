@@ -1,12 +1,9 @@
 """Investigation reasoner — turns an assembled evidence bundle into an explanation + ranked
 hypotheses + explicit assumptions + confidence + what-would-confirm.
 
-Stub (no client): deterministic, grounded ONLY in the provided evidence, abstains when confidence is
-insufficient. Claude path: same contract, sanitized + grounded prompt (wired in a later phase via
-adapters.clients). Mirrors reasoner_claude's KB-fallback discipline: any failure -> stub output."""
-import logging
-
-_log = logging.getLogger(__name__)
+Stub: deterministic, grounded ONLY in the provided evidence, abstains when confidence is
+insufficient. The LLM lives at the agent-loop level (Phase 2+); the playbook reasoner is
+always this deterministic stub."""
 
 
 def _stub_investigate(bundle):
@@ -36,19 +33,5 @@ def _stub_investigate(bundle):
     }
 
 
-def create_investigation_reasoner(client=None):
-    if client is None:
-        return {"investigate": _stub_investigate}
-
-    def investigate(bundle):
-        try:
-            # The Claude path is wired in Phase 2; on any error fall back to the grounded stub.
-            raise NotImplementedError  # placeholder until Phase 2 wiring; falls through to stub
-        except Exception:
-            # Loud, not silent: a Phase-2 client that errors (or is left unwired) must be
-            # diagnosable rather than quietly degrading to the stub on every call.
-            _log.warning("investigation reasoner: Claude client path not wired yet (Phase 2) — "
-                         "falling back to the deterministic stub")
-            return _stub_investigate(bundle)
-
-    return {"investigate": investigate}
+def create_investigation_reasoner():
+    return {"investigate": _stub_investigate}

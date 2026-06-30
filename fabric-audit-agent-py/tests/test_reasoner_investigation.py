@@ -1,13 +1,12 @@
 from fabric_audit_agent.adapters.reasoner_investigation import create_investigation_reasoner
 
 
-def _bundle(level="medium", findings=None):
+def _bundle(level="medium"):
     return {
         "subject": "user x@co",
         "coverage": {"workspacesSeen": ["Sales"], "sourcesFailed": []},
         "confidence": {"level": level, "basis": "single source"},
         "evidence": [{"kind": "query", "summary": "x@co = 40% monitored CU", "data": {"sharePct": 40}}],
-        "findings": findings or [],
     }
 
 
@@ -25,9 +24,3 @@ def test_stub_grounds_in_evidence_and_states_assumptions():
     assert out["whatWouldConfirm"]                      # always offers a confirmation path
 
 
-def test_client_path_falls_back_to_stub():
-    # Until Phase 2 wires the Claude call, a provided client still returns grounded stub output
-    # (exercises the client-is-not-None branch + its fallback).
-    out = create_investigation_reasoner(client=object())["investigate"](_bundle())
-    assert "40%" in out["explanation"]
-    assert out["confidence"] == "medium"

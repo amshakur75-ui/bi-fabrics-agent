@@ -45,7 +45,7 @@ can invent a cause.
 | `investigation/evidence.py` | `build_coverage(facts)`, `assess_confidence(*, found, corroborating_sources)`, `evidence_item(kind, summary, data)` — the honesty + evidence primitives. |
 | `investigation/baseline.py` | `compute_baseline(rows)` (p50/p95/p99 + op-mix + peak-hour) and `compare_to_baseline(today_cu, baseline)` — the **CPU×duration** "is today abnormal for this entity" model. |
 | `investigation/playbooks.py` | `investigate_user(...)` and `investigate_capacity_spike(...)` — deterministic orchestration; the `_finish(...)` helper packages every return. |
-| `adapters/reasoner_investigation.py` | `create_investigation_reasoner(client=None)` → `{"investigate": fn}`. Stub is grounded + abstaining. Client path is a **Phase-2 seam** (warns, then falls back to the stub). |
+| `adapters/reasoner_investigation.py` | `create_investigation_reasoner()` → `{"investigate": fn}`. Stub is grounded + abstaining. Always the deterministic stub (LLM lives at the agent-loop level). |
 | `tools.py` | The MCP tool handlers: `user_activity`, `investigate_user`, `investigate_capacity_spike` (+ the existing `run_audit`, `list_workspaces`). |
 | `mcp_server.py` | `build_mcp_server` registers every tool (no-arg + arg-taking) with FastMCP. |
 | `eval/score_investigations.py` | `score_investigation_case(case)` + `run_suite()` — the groundedness + coverage-honesty scorer; CLI `python -m fabric_audit_agent eval-investigations`. |
@@ -103,8 +103,8 @@ Every playbook returns the same shape; the tool handlers add `source`:
 6. **Mock ≠ live.** Tool handlers label `source: "live"|"mock"` from `_has_live_source(env)` — the
    *configured-source* truth, **not** `coverage.mode` (the mock fixture has real-looking data, so the
    data-shape heuristic alone would misread it as live).
-7. **No silent degradation.** If a Phase-2 Claude client is wired but errors/unset, the reasoner emits a
-   `logging.warning` before falling back to the stub — failures are diagnosable, not invisible.
+7. **No silent degradation.** The investigation reasoner is always the deterministic stub; the LLM lives at
+   the agent-loop level where failures surface via the agent harness, not silently.
 8. **Read-only.** Handlers only `collect()` and return; nothing is written or persisted on the
    interactive path (persistence is the scheduled Job's role).
 
@@ -130,8 +130,8 @@ groundedness (every hypothesis traces to cited evidence) and coverage-honesty (a
 
 ## Dormant by design / Phase-2 seams
 
-- **Claude reasoner path** — `create_investigation_reasoner(client=...)` exists but warns + falls back to
-  the deterministic stub until Phase 2 wires the in-tenant Databricks-hosted Claude call.
+- **Claude reasoner path** — the LLM lives at the agent-loop level (Phase 2+); the playbook reasoner is
+  always the deterministic stub (`create_investigation_reasoner()`).
 - **Baseline history** — `investigate_user` computes a baseline only when `facts["history"][<user>]` is
   present. Phase-1 collectors don't populate per-entity history, so the baseline path is dormant until a
   Phase-2 history collector (FUAM / Workspace Monitoring time series) fills it. `compute_baseline` is fully

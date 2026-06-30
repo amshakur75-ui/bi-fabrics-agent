@@ -8,7 +8,7 @@ from .baseline import compute_baseline, compare_to_baseline
 def _finish(subject, coverage, confidence, evidence, abstained, reasoner):
     """Assemble the investigation bundle, call the reasoner, and return the envelope."""
     bundle = {"subject": subject, "coverage": coverage, "confidence": confidence,
-              "evidence": evidence, "findings": []}
+              "evidence": evidence}
     return {"subject": subject, "abstained": abstained, "coverage": coverage,
             "confidence": confidence, "evidence": evidence,
             "result": reasoner["investigate"](bundle)}
