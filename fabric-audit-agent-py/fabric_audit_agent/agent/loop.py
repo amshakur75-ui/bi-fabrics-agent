@@ -17,7 +17,7 @@ def _blocks_to_dicts(content):
 
 def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps=6):
     messages = list(messages)
-    trajectory, cache = [], {}
+    trajectory, cache, tool_results = [], {}, []
     for step in range(max_steps):
         use_tools = tools if step < max_steps - 1 else []   # force-answer on the last allowed step
         resp = client.messages.create(model=model, max_tokens=4096, system=system,
@@ -25,7 +25,8 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
         if getattr(resp, "stop_reason", None) != "tool_use":
             text = "".join(getattr(b, "text", "") for b in resp.content
                            if getattr(b, "type", None) == "text")
-            return {"text": text, "trajectory": trajectory, "stoppedReason": "answer"}
+            return {"text": text, "trajectory": trajectory, "toolResults": tool_results,
+                    "stoppedReason": "answer"}
 
         messages.append({"role": "assistant", "content": _blocks_to_dicts(resp.content)})
         results = []
@@ -40,9 +41,11 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
                 handler = dispatch.get(b.name)
                 result = handler(b.input) if handler else {"error": f"unknown tool {b.name}"}
                 cache[key] = result
+                tool_results.append({"tool": b.name, "result": result})
             trajectory.append({"tool": b.name, "input": b.input})
             results.append({"type": "tool_result", "tool_use_id": b.id,
                             "content": json.dumps(result, ensure_ascii=False)})
         messages.append({"role": "user", "content": results})
 
-    return {"text": "", "trajectory": trajectory, "stoppedReason": "budget"}
+    return {"text": "", "trajectory": trajectory, "toolResults": tool_results,
+            "stoppedReason": "budget"}

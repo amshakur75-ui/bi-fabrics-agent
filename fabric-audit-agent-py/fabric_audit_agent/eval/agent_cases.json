@@ -8,5 +8,15 @@
     ],
     "expectTool": "investigate_capacity_spike",
     "expectAbstain": true
+  },
+  {
+    "name": "spike-grounded-96pct",
+    "messages": [{"role": "user", "content": "why did capacity spike on 2026-06-08?"}],
+    "script": [
+      {"type": "tool_use", "name": "investigate_capacity_spike", "input": {"when": "2026-06-08T06:05:00.000Z"}},
+      {"type": "text", "text": "The capacity peaked at 96% with 42 minutes of throttling, driven by concurrent 06:00 refreshes in the Finance workspace."}
+    ],
+    "expectTool": "investigate_capacity_spike",
+    "expectAbstain": false
   }
 ]

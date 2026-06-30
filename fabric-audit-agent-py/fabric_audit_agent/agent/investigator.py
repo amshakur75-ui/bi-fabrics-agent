@@ -14,4 +14,4 @@ def investigate(messages, client, *, model="fabric-claude", base_dir=None, max_s
         tools=to_anthropic_tools(defs), dispatch=build_dispatch(defs), max_steps=max_steps,
     )
     return {"output_text": result["text"], "trajectory": result["trajectory"],
-            "stoppedReason": result["stoppedReason"]}
+            "toolResults": result["toolResults"], "stoppedReason": result["stoppedReason"]}

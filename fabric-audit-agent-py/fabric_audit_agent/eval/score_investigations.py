@@ -79,13 +79,29 @@ class _FakeClient:
 _AGENT_CASES = os.path.join(os.path.dirname(__file__), "agent_cases.json")
 
 
-def score_agent_case(case):
-    out = investigate(case["messages"], _FakeClient(case["script"]))
+def score_agent_case(case, client_factory=None):
+    if client_factory is None:
+        client_factory = lambda c: _FakeClient(c["script"])
+    out = investigate(case["messages"], client_factory(case))
     tools_used = [t["tool"] for t in out["trajectory"]]
-    grounded_ok = case.get("expectTool") in tools_used if case.get("expectTool") else True
     text = out["output_text"].lower()
     abstained = any(w in text for w in ("can't", "cannot", "insufficient", "enable monitoring", "abstain"))
     abstain_ok = abstained == bool(case.get("expectAbstain"))
+
+    if case.get("expectAbstain"):
+        # abstaining cases: groundedness only requires the expected tool ran
+        grounded_ok = case.get("expectTool") in tools_used if case.get("expectTool") else True
+    else:
+        # non-abstaining cases: expected tool ran AND at least one substantive token (len>3) of
+        # output_text appears in the JSON of some toolResults entry (answer traces to a tool result)
+        tool_ran = case.get("expectTool") in tools_used if case.get("expectTool") else True
+        tool_results_json = " ".join(
+            json.dumps(tr["result"], ensure_ascii=False) for tr in out.get("toolResults", [])
+        ).lower()
+        output_tokens = [tok for tok in text.split() if len(tok) > 3]
+        traced = any(tok in tool_results_json for tok in output_tokens) if output_tokens else False
+        grounded_ok = tool_ran and traced
+
     return {"name": case["name"], "groundedOk": grounded_ok, "abstainOk": abstain_ok,
             "passed": grounded_ok and abstain_ok}
 

@@ -47,6 +47,9 @@ def test_loop_calls_tool_then_answers():
     assert calls == [{"user": "x@co"}]                          # the tool ran with the model's input
     assert "90%" in out["text"] and out["stoppedReason"] == "answer"
     assert out["trajectory"] == [{"tool": "investigate_user", "input": {"user": "x@co"}}]
+    # additive: toolResults carries the actual handler return for executed (non-cached) calls
+    assert out["toolResults"][0]["tool"] == "investigate_user"
+    assert "evidence" in out["toolResults"][0]["result"]
 
 
 def test_loop_dedups_identical_tool_calls():
@@ -62,6 +65,9 @@ def test_loop_dedups_identical_tool_calls():
                         tools=[{"name": "investigate_user"}], dispatch=dispatch, max_steps=6)
     assert len(calls) == 1                                       # identical call ran only once (read-only dedup)
     assert out["text"] == "done"
+    # additive: only the first (executed) call appears in toolResults; the cached re-call is excluded
+    assert len(out["toolResults"]) == 1
+    assert out["toolResults"][0]["tool"] == "investigate_user"
 
 
 def test_loop_forces_answer_on_last_step():
