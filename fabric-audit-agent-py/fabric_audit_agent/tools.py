@@ -10,6 +10,9 @@ import os
 
 from .adapters import create_mock_collector, create_stub_reasoner
 from .pipeline import run_audit
+from .investigation.evidence import build_coverage
+from .investigation.playbooks import investigate_user as _iu, investigate_capacity_spike as _ics
+from .adapters.reasoner_investigation import create_investigation_reasoner
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -57,6 +60,13 @@ def _build_collector(env):
 
 def create_tool_definitions(base_dir=None):
     base = base_dir if base_dir is not None else _BASE
+
+    def _collector_or_mock():
+        """Return a live collector if any source is configured, else the offline mock estate."""
+        col = _build_collector(os.environ)
+        if col is None:
+            col = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
+        return col
 
     def run_audit_handler(_input=None):
         envelope = _run_real_or_mock(base, os.environ)
@@ -112,6 +122,32 @@ def create_tool_definitions(base_dir=None):
             "source": "Log Analytics + Eventhouse (merged)",
         }
 
+    def user_activity_handler(_input=None):
+        """Return ranked top users (no arg) or a specific user's detail (user arg).
+        Falls back to the offline mock estate when no live source is configured."""
+        facts = _collector_or_mock()["collect"]()
+        users = facts.get("users") or []
+        who = (_input or {}).get("user")
+        if who:
+            u = next((x for x in users if (x.get("user") or "").lower() == who.lower()), None)
+            return {"user": who, "found": u is not None, "detail": u,
+                    "coverage": build_coverage(facts)}
+        return {"topUsers": users[:10], "userCount": len(users),
+                "coverage": build_coverage(facts)}
+
+    def investigate_user_handler(_input=None):
+        """Investigate a specific user's contribution to capacity: assembles evidence, baselines,
+        and returns a grounded explanation. Abstains when the user is not in the collected data."""
+        inp = _input or {}
+        return _iu(_collector_or_mock(), create_investigation_reasoner(),
+                   inp.get("user"), days=inp.get("days", 30))
+
+    def investigate_spike_handler(_input=None):
+        """Investigate a capacity spike: identifies top-consuming items/users and explains
+        the spike with evidence. Abstains when no capacity signal is available."""
+        inp = _input or {}
+        return _ics(_collector_or_mock(), create_investigation_reasoner(), inp.get("when"))
+
     return [
         {
             "name": "run_audit",
@@ -134,5 +170,56 @@ def create_tool_definitions(base_dir=None):
             ),
             "input_schema": {"type": "object", "properties": {}, "required": []},
             "handler": list_workspaces_handler,
+        },
+        {
+            "name": "user_activity",
+            "description": (
+                "Return per-user activity data. With no arguments, returns the ranked top users "
+                "by capacity CU. With a 'user' argument, returns that user's detail (items, "
+                "sharePct, cuSeconds). Falls back to the offline mock estate when no live source "
+                "is configured. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "user": {"type": "string", "description": "Optional user UPN/email to look up."},
+                },
+                "required": [],
+            },
+            "handler": user_activity_handler,
+        },
+        {
+            "name": "investigate_user",
+            "description": (
+                "Investigate a specific user's contribution to capacity: assembles evidence from "
+                "collectors + detectors, computes coverage and confidence, and returns a grounded "
+                "explanation. Abstains (abstained: true) when the user is not present in the "
+                "collected data rather than guessing. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "user": {"type": "string", "description": "User UPN/email to investigate (required)."},
+                    "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                },
+                "required": ["user"],
+            },
+            "handler": investigate_user_handler,
+        },
+        {
+            "name": "investigate_capacity_spike",
+            "description": (
+                "Investigate a capacity spike: identifies the top-consuming items and users, "
+                "assembles capacity evidence, and returns a grounded explanation with confidence "
+                "rating. Abstains when no capacity signal (peakCuPct) is available. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "when": {"type": "string", "description": "Optional ISO timestamp or label for the spike window."},
+                },
+                "required": [],
+            },
+            "handler": investigate_spike_handler,
         },
     ]
