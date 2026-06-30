@@ -1,28 +1,5 @@
 from fabric_audit_agent.agent.investigator import investigate
-try:
-    from tests.test_agent_loop import FakeClient, _M, _B
-except ImportError:
-    # Inline fallback if tests/ is not importable as a package
-    class _B:
-        def __init__(self, type, text=None, id=None, name=None, input=None):
-            self.type, self.text, self.id, self.name, self.input = type, text, id, name, input
-
-    class _M:
-        def __init__(self, content, stop_reason):
-            self.content, self.stop_reason = content, stop_reason
-
-    class FakeClient:
-        def __init__(self, scripted):
-            self._scripted = list(scripted)
-            self.calls = []
-
-        @property
-        def messages(self):
-            return self
-
-        def create(self, **kwargs):
-            self.calls.append(kwargs)
-            return self._scripted.pop(0)
+from tests.test_agent_loop import FakeClient, _M, _B
 
 
 def test_investigate_end_to_end_with_fake_client(monkeypatch):
