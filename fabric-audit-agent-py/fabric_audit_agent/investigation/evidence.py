@@ -26,7 +26,7 @@ def build_coverage(facts):
             "mode": mode, "blind": blind}
 
 
-def assess_confidence(facts, *, found, corroborating_sources):
+def assess_confidence(*, found, corroborating_sources):
     if not found:
         return {"level": "insufficient", "basis": "requested entity not present in collected data"}
     if corroborating_sources >= 2:

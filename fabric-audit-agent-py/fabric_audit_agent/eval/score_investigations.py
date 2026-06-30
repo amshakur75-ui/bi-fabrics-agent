@@ -21,7 +21,7 @@ def _grounded(result):
     return all(any(tok in ev_text for tok in h.lower().split() if len(tok) > 3) for h in hyps)
 
 
-def score_case(case):
+def score_investigation_case(case):
     pb = _PLAYBOOKS[case["playbook"]]
     collector = {"collect": lambda c=case: c["facts"]}
     args = case.get("args", {})
@@ -38,5 +38,5 @@ def score_case(case):
 def run_suite(path=None):
     with open(path or _CASES, "r", encoding="utf-8") as fh:
         cases = json.load(fh)
-    results = [score_case(c) for c in cases]
+    results = [score_investigation_case(c) for c in cases]
     return {"total": len(results), "passed": sum(1 for r in results if r["passed"]), "cases": results}

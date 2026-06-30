@@ -33,7 +33,8 @@ def _run_real_or_mock(base, env):
     """Run the audit and RETURN the envelope — read-only and **write-free**. A Databricks App
     container can't write to /Volumes, and the interactive tool doesn't need to persist: history
     and report files are the scheduled Job's role. Uses live sources when configured
-    (FABRIC_CAPACITIES_URL / FABRIC_KUSTO_* / FABRIC_CSV_PATHS), else the offline mock."""
+    (FABRIC_CSV_PATHS / FABRIC_CLIENT_ID / FABRIC_KUSTO_CLUSTER /
+    FABRIC_CAPACITY_EVENTS_CLUSTER / FABRIC_LA_WORKSPACE_ID), else the offline mock."""
     from .config import DEFAULT_CONFIG, merge_config
     raw = env.get("FABRIC_AUDIT_CONFIG")
     config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG

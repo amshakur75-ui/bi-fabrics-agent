@@ -5,22 +5,28 @@ from .evidence import build_coverage, assess_confidence, evidence_item
 from .baseline import compute_baseline, compare_to_baseline
 
 
-def investigate_user(collector, reasoner, user, days=30, config=None):
+def _finish(subject, coverage, confidence, evidence, abstained, reasoner):
+    """Assemble the investigation bundle, call the reasoner, and return the envelope."""
+    bundle = {"subject": subject, "coverage": coverage, "confidence": confidence,
+              "evidence": evidence, "findings": []}
+    return {"subject": subject, "abstained": abstained, "coverage": coverage,
+            "confidence": confidence, "evidence": evidence,
+            "result": reasoner["investigate"](bundle)}
+
+
+def investigate_user(collector, reasoner, user, days=30):
     facts = collector["collect"]() or {}
     coverage = build_coverage(facts)
     users = facts.get("users") or []
     match = next((u for u in users if (u.get("user") or "").lower() == (user or "").lower()), None)
 
     if match is None:
-        confidence = assess_confidence(facts, found=False, corroborating_sources=0)
-        bundle = {"subject": f"user {user}", "coverage": coverage, "confidence": confidence,
-                  "evidence": [], "findings": []}
-        return {"subject": f"user {user}", "abstained": True, "coverage": coverage,
-                "confidence": confidence, "evidence": [], "result": reasoner["investigate"](bundle)}
+        confidence = assess_confidence(found=False, corroborating_sources=0)
+        return _finish(f"user {user}", coverage, confidence, [], True, reasoner)
 
     cap = facts.get("capacity") or {}
     corroborating = 1 + (1 if cap.get("peakCuPct") is not None else 0)
-    confidence = assess_confidence(facts, found=True, corroborating_sources=corroborating)
+    confidence = assess_confidence(found=True, corroborating_sources=corroborating)
 
     ev = [evidence_item("attribution",
                         f"{match['user']} = {round(match.get('sharePct', 0), 1)}% of monitored CU "
@@ -43,28 +49,22 @@ def investigate_user(collector, reasoner, user, days=30, config=None):
                        f"(n={baseline['count']}): {label}")
             ev.append(evidence_item("baseline", summary, {"baseline": baseline, "comparison": cmp}))
 
-    bundle = {"subject": f"user {match['user']}", "coverage": coverage, "confidence": confidence,
-              "evidence": ev, "findings": []}
-    return {"subject": f"user {match['user']}", "abstained": False, "coverage": coverage,
-            "confidence": confidence, "evidence": ev, "result": reasoner["investigate"](bundle)}
+    return _finish(f"user {match['user']}", coverage, confidence, ev, False, reasoner)
 
 
-def investigate_capacity_spike(collector, reasoner, when=None, config=None):
+def investigate_capacity_spike(collector, reasoner, when=None):
     facts = collector["collect"]() or {}
     coverage = build_coverage(facts)
     cap = facts.get("capacity") or {}
 
     if cap.get("peakCuPct") is None:
-        confidence = assess_confidence(facts, found=False, corroborating_sources=0)
-        bundle = {"subject": "capacity spike", "coverage": coverage, "confidence": confidence,
-                  "evidence": [], "findings": []}
-        return {"subject": "capacity spike", "abstained": True, "coverage": coverage,
-                "confidence": confidence, "evidence": [], "result": reasoner["investigate"](bundle)}
+        confidence = assess_confidence(found=False, corroborating_sources=0)
+        return _finish("capacity spike", coverage, confidence, [], True, reasoner)
 
     items = sorted(facts.get("items") or [], key=lambda it: -(it.get("sharePct") or 0))
     top = items[0] if items else None
     corroborating = 1 + (1 if items else 0)
-    confidence = assess_confidence(facts, found=True, corroborating_sources=corroborating)
+    confidence = assess_confidence(found=True, corroborating_sources=corroborating)
 
     ev = [evidence_item("capacity",
                         f"capacity peaked {cap['peakCuPct']}% ({cap.get('throttleMinutes', 0)} min throttled)",
@@ -76,7 +76,4 @@ def investigate_capacity_spike(collector, reasoner, when=None, config=None):
                                 f"\"{top.get('name')}\" = {round(top.get('sharePct', 0), 1)}% of {label}"
                                 + (f" (top user {tu})" if tu else ""), top))
 
-    bundle = {"subject": "capacity spike", "coverage": coverage, "confidence": confidence,
-              "evidence": ev, "findings": []}
-    return {"subject": "capacity spike", "abstained": False, "coverage": coverage,
-            "confidence": confidence, "evidence": ev, "result": reasoner["investigate"](bundle)}
+    return _finish("capacity spike", coverage, confidence, ev, False, reasoner)

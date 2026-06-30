@@ -14,12 +14,12 @@ def test_build_coverage_lists_workspaces_and_failed_sources():
 
 
 def test_assess_confidence_insufficient_when_not_found():
-    c = assess_confidence({"users": []}, found=False, corroborating_sources=0)
+    c = assess_confidence(found=False, corroborating_sources=0)
     assert c["level"] == "insufficient"
 
 
 def test_assess_confidence_high_when_corroborated():
-    c = assess_confidence({"users": [{"user": "x"}]}, found=True, corroborating_sources=2)
+    c = assess_confidence(found=True, corroborating_sources=2)
     assert c["level"] == "high"
 
 

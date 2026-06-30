@@ -40,7 +40,6 @@ def create_investigation_reasoner(client=None):
     def investigate(bundle):
         try:
             # The Claude path is wired in Phase 2; on any error fall back to the grounded stub.
-            from .reasoner_claude import _first_text, _extract_json_array  # reuse existing helpers
             raise NotImplementedError  # placeholder until Phase 2 wiring; falls through to stub
         except Exception:
             return _stub_investigate(bundle)
