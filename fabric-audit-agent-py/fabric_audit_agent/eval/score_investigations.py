@@ -40,3 +40,58 @@ def run_suite(path=None):
         cases = json.load(fh)
     results = [score_investigation_case(c) for c in cases]
     return {"total": len(results), "passed": sum(1 for r in results if r["passed"]), "cases": results}
+
+
+# --- agent-trajectory scoring (appended) ---
+from ..agent.investigator import investigate
+
+
+class _B:
+    def __init__(self, d):
+        self.type = d["type"]; self.text = d.get("text"); self.id = d.get("id", "t")
+        self.name = d.get("name"); self.input = d.get("input")
+
+
+class _M:
+    def __init__(self, blocks, stop):
+        self.content = [_B(b) for b in blocks]; self.stop_reason = stop
+
+
+class _FakeClient:
+    def __init__(self, script):
+        # one tool_use message per tool block, then a final text message
+        msgs = []
+        for b in script:
+            if b["type"] == "tool_use":
+                msgs.append(_M([b], "tool_use"))
+            else:
+                msgs.append(_M([b], "end_turn"))
+        self._msgs = msgs
+
+    @property
+    def messages(self):
+        return self
+
+    def create(self, **kwargs):
+        return self._msgs.pop(0)
+
+
+_AGENT_CASES = os.path.join(os.path.dirname(__file__), "agent_cases.json")
+
+
+def score_agent_case(case):
+    out = investigate(case["messages"], _FakeClient(case["script"]))
+    tools_used = [t["tool"] for t in out["trajectory"]]
+    grounded_ok = case.get("expectTool") in tools_used if case.get("expectTool") else True
+    text = out["output_text"].lower()
+    abstained = any(w in text for w in ("can't", "cannot", "insufficient", "enable monitoring", "abstain"))
+    abstain_ok = abstained == bool(case.get("expectAbstain"))
+    return {"name": case["name"], "groundedOk": grounded_ok, "abstainOk": abstain_ok,
+            "passed": grounded_ok and abstain_ok}
+
+
+def run_agent_suite(path=None):
+    with open(path or _AGENT_CASES, "r", encoding="utf-8") as fh:
+        cases = json.load(fh)
+    results = [score_agent_case(c) for c in cases]
+    return {"total": len(results), "passed": sum(1 for r in results if r["passed"]), "cases": results}

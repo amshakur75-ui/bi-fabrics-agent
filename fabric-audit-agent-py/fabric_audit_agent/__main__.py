@@ -72,6 +72,14 @@ def main(argv=None):
         for c in res["cases"]:
             print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} (abstain={c['abstainOk']} grounded={c['groundedOk']})")
         return
+    elif cmd == "eval-agent":
+        from .eval.score_investigations import run_agent_suite
+        res = run_agent_suite()
+        print(f"Agent: {res['passed']}/{res['total']} passed")
+        for c in res["cases"]:
+            print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} "
+                  f"(grounded={c['groundedOk']} abstain={c['abstainOk']})")
+        return
     else:
         print(run_import(argv))   # forgiving: treat bare args as files to import
 
