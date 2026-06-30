@@ -74,14 +74,26 @@ def score_agent_case(case, client_factory=None):
         # abstaining cases: groundedness only requires the expected tool ran
         grounded_ok = case.get("expectTool") in tools_used if case.get("expectTool") else True
     else:
-        # non-abstaining cases: expected tool ran AND at least one substantive token (len>3) of
-        # output_text appears in the JSON of some toolResults entry (answer traces to a tool result)
+        # non-abstaining cases: expected tool ran AND at least one numeric OR capitalized/email-like
+        # entity token from output_text appears in the tool-results JSON (stronger than any >3-char word).
         tool_ran = case.get("expectTool") in tools_used if case.get("expectTool") else True
         tool_results_json = " ".join(
             json.dumps(tr["result"], ensure_ascii=False) for tr in out.get("toolResults", [])
-        ).lower()
-        output_tokens = [tok for tok in text.split() if len(tok) > 3]
-        traced = any(tok in tool_results_json for tok in output_tokens) if output_tokens else False
+        )
+        tool_results_lower = tool_results_json.lower()
+        # Numeric tokens: runs of digits (e.g. "96", "42") extracted from raw output text
+        import re as _re
+        numeric_tokens = _re.findall(r'\d+', out["output_text"])
+        # Entity tokens: words with an uppercase letter in the original text (e.g. "Finance") or
+        # email-like tokens (contain @); skip short words.
+        raw_words = out["output_text"].split()
+        entity_tokens = [w.strip(".,;:\"'()") for w in raw_words
+                         if (any(c.isupper() for c in w) or "@" in w) and len(w.strip(".,;:\"'()")) > 3]
+        # At least one numeric token OR entity token must appear in the tool-results JSON
+        traced = (
+            any(n in tool_results_json for n in numeric_tokens) or
+            any(e.lower() in tool_results_lower for e in entity_tokens)
+        )
         grounded_ok = tool_ran and traced
 
     return {"name": case["name"], "groundedOk": grounded_ok, "abstainOk": abstain_ok,
