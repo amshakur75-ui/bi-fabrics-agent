@@ -83,3 +83,19 @@ def test_loop_forces_answer_on_last_step():
                         tools=[{"name": "investigate_user"}], dispatch=dispatch, max_steps=2)
     assert client.calls[-1]["tools"] == []                      # tools stripped on the last allowed step
     assert out["stoppedReason"] == "answer"
+
+
+def test_loop_budget_exhaustion_message():
+    """Pathological case: even the final stripped-tools call returns tool_use (a misbehaving model).
+    The loop should exhaust the step budget and return stoppedReason='budget' with a non-empty message."""
+    # Step 0: tool_use; step 1 (final, tools=[]): also tool_use -> loop falls through -> budget
+    scripted = [
+        _M([_B("tool_use", id="t1", name="investigate_user", input={"user": "a"})], "tool_use"),
+        _M([_B("tool_use", id="t2", name="investigate_user", input={"user": "a"})], "tool_use"),
+    ]
+    dispatch, _ = _dispatch()
+    out = run_tool_loop(FakeClient(scripted), model="m", system="s",
+                        messages=[{"role": "user", "content": "?"}],
+                        tools=[{"name": "investigate_user"}], dispatch=dispatch, max_steps=2)
+    assert out["stoppedReason"] == "budget"
+    assert isinstance(out["text"], str) and len(out["text"]) > 0   # honest non-empty budget message

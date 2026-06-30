@@ -72,3 +72,17 @@ def test_investigate_user_no_baseline_item_without_history():
     out = investigate_user(_collector(facts), create_investigation_reasoner(), "x@co", days=30)
     baseline_items = [e for e in out["evidence"] if e["kind"] == "baseline"]
     assert len(baseline_items) == 0, "must not fabricate a baseline when history is absent"
+
+
+def test_investigate_user_baseline_uses_days_window():
+    """The baseline evidence summary must reference the `days` value passed to investigate_user."""
+    history_rows = [{"cuSeconds": c} for c in (10, 20, 30, 40, 50)]
+    facts = _facts([{"user": "x@co", "cuSeconds": 500, "sharePct": 99,
+                     "topItems": [{"name": "A4A", "cuSeconds": 500}], "itemCount": 1}])
+    facts["history"] = {"x@co": history_rows}
+    facts["users"][0]["cuSeconds"] = 500
+    out = investigate_user(_collector(facts), create_investigation_reasoner(), "x@co", days=7)
+    baseline_items = [e for e in out["evidence"] if e["kind"] == "baseline"]
+    assert len(baseline_items) == 1, "expected exactly one baseline evidence item"
+    # The summary should mention the days value passed
+    assert "7" in baseline_items[0]["summary"]
