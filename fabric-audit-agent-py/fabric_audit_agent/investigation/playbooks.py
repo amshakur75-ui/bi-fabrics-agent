@@ -33,3 +33,36 @@ def investigate_user(collector, reasoner, user, days=30, config=None):
               "evidence": ev, "findings": []}
     return {"subject": f"user {match['user']}", "abstained": False, "coverage": coverage,
             "confidence": confidence, "evidence": ev, "result": reasoner["investigate"](bundle)}
+
+
+def investigate_capacity_spike(collector, reasoner, when=None, config=None):
+    facts = collector["collect"]() or {}
+    coverage = build_coverage(facts)
+    cap = facts.get("capacity") or {}
+
+    if cap.get("peakCuPct") is None:
+        confidence = assess_confidence(facts, found=False, corroborating_sources=0)
+        bundle = {"subject": "capacity spike", "coverage": coverage, "confidence": confidence,
+                  "evidence": [], "findings": []}
+        return {"subject": "capacity spike", "abstained": True, "coverage": coverage,
+                "confidence": confidence, "evidence": [], "result": reasoner["investigate"](bundle)}
+
+    items = sorted(facts.get("items") or [], key=lambda it: -(it.get("sharePct") or 0))
+    top = items[0] if items else None
+    corroborating = 1 + (1 if items else 0)
+    confidence = assess_confidence(facts, found=True, corroborating_sources=corroborating)
+
+    ev = [evidence_item("capacity",
+                        f"capacity peaked {cap['peakCuPct']}% ({cap.get('throttleMinutes', 0)} min throttled)",
+                        cap)]
+    if top:
+        label = "monitored CU" if top.get("attributionMode") == "cost" else "capacity CU"
+        tu = (top.get("topUsers") or [{}])[0].get("user")
+        ev.append(evidence_item("concentration",
+                                f"\"{top.get('name')}\" = {round(top.get('sharePct', 0), 1)}% of {label}"
+                                + (f" (top user {tu})" if tu else ""), top))
+
+    bundle = {"subject": "capacity spike", "coverage": coverage, "confidence": confidence,
+              "evidence": ev, "findings": []}
+    return {"subject": "capacity spike", "abstained": False, "coverage": coverage,
+            "confidence": confidence, "evidence": ev, "result": reasoner["investigate"](bundle)}

@@ -1,6 +1,7 @@
 # tests/test_investigation_playbooks.py
 from fabric_audit_agent.investigation.playbooks import investigate_user
 from fabric_audit_agent.adapters.reasoner_investigation import create_investigation_reasoner
+from fabric_audit_agent.investigation.playbooks import investigate_capacity_spike
 
 
 def _facts(users):
@@ -30,3 +31,17 @@ def test_investigate_user_absent_abstains_not_hallucinates():
     assert out["abstained"] is True
     assert out["confidence"]["level"] == "insufficient"
     assert out["result"]["hypotheses"] == []     # never invents a cause for a user it can't see
+
+
+def test_capacity_spike_names_top_driver_when_throttled():
+    facts = _facts([{"user": "x@co", "cuSeconds": 900, "sharePct": 90, "topItems": [{"name": "A4A", "cuSeconds": 900}], "itemCount": 1}])
+    out = investigate_capacity_spike(_collector(facts), create_investigation_reasoner())
+    assert out["abstained"] is False
+    assert any("120" in str(e["data"]) or "120" in e["summary"] for e in out["evidence"])  # peak CU%
+    assert any("A4A" in e["summary"] for e in out["evidence"])                              # top item
+
+
+def test_capacity_spike_abstains_without_capacity_signal():
+    facts = {"items": [], "users": []}   # no capacity events wired
+    out = investigate_capacity_spike(_collector(facts), create_investigation_reasoner())
+    assert out["abstained"] is True and out["confidence"]["level"] == "insufficient"
