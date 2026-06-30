@@ -65,6 +65,13 @@ def main(argv=None):
         print(run_import(rest, inspect=True))
     elif cmd == "mytest":
         print(run_mytest())
+    elif cmd == "eval-investigations":
+        from .eval.score_investigations import run_suite
+        res = run_suite()
+        print(f"Investigations: {res['passed']}/{res['total']} passed")
+        for c in res["cases"]:
+            print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} (abstain={c['abstainOk']} grounded={c['groundedOk']})")
+        return
     else:
         print(run_import(argv))   # forgiving: treat bare args as files to import
 

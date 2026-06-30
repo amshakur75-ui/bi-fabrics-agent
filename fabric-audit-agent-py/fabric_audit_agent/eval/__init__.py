@@ -1,4 +1,7 @@
-"""Score reasoner output against golden expected finding types. Port of ``core/eval.js``. Pure."""
+"""Offline eval harness for the investigation playbooks (golden cases + groundedness/coverage scorer).
+
+Also re-exports the legacy reasoner-eval helpers (score_case, score_suite) so that existing
+imports — ``from .eval import score_case, score_suite`` — continue to work unchanged."""
 import math
 
 
