@@ -12,12 +12,18 @@ def build_coverage(facts):
     sources = []
     if facts.get("capacity"):
         sources.append("capacity")
-    if facts.get("users") or items:
+    if facts.get("users"):
+        # Per-user attribution is only meaningful when user rows are present.
         sources.append("attribution")
+    elif items:
+        # Items exist but no user breakdown -> inventory signal, not user attribution.
+        sources.append("inventory")
     failed = list(facts.get("sourcesFailed") or [])
     # "mock" only when nothing real was collected; live sources always populate users/items/capacity.
     mode = "live" if (workspaces or facts.get("users") or facts.get("capacity")) else "mock"
-    return {"workspacesSeen": workspaces, "sources": sources, "sourcesFailed": failed, "mode": mode}
+    blind = ["live estate (no source configured)"] if mode == "mock" else []
+    return {"workspacesSeen": workspaces, "sources": sources, "sourcesFailed": failed,
+            "mode": mode, "blind": blind}
 
 
 def assess_confidence(facts, *, found, corroborating_sources):
