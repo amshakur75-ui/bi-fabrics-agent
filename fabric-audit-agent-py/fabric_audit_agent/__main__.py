@@ -2,6 +2,8 @@
 
   audit                           full pipeline (mock adapters) -> runs/latest.json + report.md
   eval                            score the golden suite
+  eval-investigations             score the investigation golden suite (groundedness + coverage)
+  eval-agent                      score the agent-loop golden suite (grounded tool-use answers)
   whatif <kind> <sizeGB> <at>     capacity what-if (e.g. whatif model 5 06:00)
   triggers                        evaluate immediate triggers
   lifecycle <action> <key> [...]  set a finding's lifecycle state (snoozed needs an ISO date)
@@ -71,6 +73,14 @@ def main(argv=None):
         print(f"Investigations: {res['passed']}/{res['total']} passed")
         for c in res["cases"]:
             print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} (abstain={c['abstainOk']} grounded={c['groundedOk']})")
+        return
+    elif cmd == "eval-agent":
+        from .eval.score_investigations import run_agent_suite
+        res = run_agent_suite()
+        print(f"Agent: {res['passed']}/{res['total']} passed")
+        for c in res["cases"]:
+            print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} "
+                  f"(grounded={c['groundedOk']} abstain={c['abstainOk']})")
         return
     else:
         print(run_import(argv))   # forgiving: treat bare args as files to import

@@ -22,6 +22,10 @@ def build_coverage(facts):
     # "mock" only when nothing real was collected; live sources always populate users/items/capacity.
     mode = "live" if (workspaces or facts.get("users") or facts.get("capacity")) else "mock"
     blind = ["live estate (no source configured)"] if mode == "mock" else []
+    # Append any collector-populated blind entries (e.g. "Workspace Monitoring (not enabled)").
+    for entry in (facts.get("sourcesBlind") or []):
+        if entry not in blind:
+            blind.append(entry)
     return {"workspacesSeen": workspaces, "sources": sources, "sourcesFailed": failed,
             "mode": mode, "blind": blind}
 

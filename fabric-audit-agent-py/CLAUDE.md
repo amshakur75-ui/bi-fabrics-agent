@@ -13,7 +13,7 @@ actions are delivering findings and sending notifications.
 
 ## Status & rollout (new session: start here)
 
-Build is **complete & verified** (`python -m pytest -q` → **258 passed, 1 skipped**; byte-identical
+Build is **complete & verified** (`python -m pytest -q` → **347 passed, 1 skipped**; byte-identical
 to the Node reference). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 next**:
 
 1. **Phase 1 — local CSV test** (done): `python run.py import data.csv [Items.csv]`.

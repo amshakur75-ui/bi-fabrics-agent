@@ -62,3 +62,22 @@ def test_build_coverage_live_mode_blind_is_empty():
     cov = build_coverage(facts)
     assert cov["mode"] == "live"
     assert cov["blind"] == []
+
+
+def test_build_coverage_sources_blind_appended_on_live_facts():
+    """Live facts with sourcesBlind -> that entry is in coverage['blind']."""
+    facts = {
+        "users": [{"user": "x@co"}],
+        "capacity": {"peakCuPct": 80},
+        "sourcesBlind": ["Workspace Monitoring (not enabled)"],
+    }
+    cov = build_coverage(facts)
+    assert cov["mode"] == "live"
+    assert "Workspace Monitoring (not enabled)" in cov["blind"]
+
+
+def test_build_coverage_no_sources_blind_gives_empty_blind_on_live_facts():
+    """Live facts without sourcesBlind -> blind is still []."""
+    facts = {"users": [{"user": "x@co"}], "capacity": {"peakCuPct": 80}}
+    cov = build_coverage(facts)
+    assert cov["blind"] == []
