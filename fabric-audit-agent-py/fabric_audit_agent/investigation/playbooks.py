@@ -2,6 +2,7 @@
 collect -> locate -> baseline/correlate -> assemble evidence -> reasoner explains/abstains.
 Read-only; pure given injected collector + reasoner."""
 from .evidence import build_coverage, assess_confidence, evidence_item
+from .baseline import compute_baseline, compare_to_baseline
 
 
 def investigate_user(collector, reasoner, user, days=30, config=None):
@@ -28,6 +29,19 @@ def investigate_user(collector, reasoner, user, days=30, config=None):
         ev.append(evidence_item("capacity",
                                 f"capacity peaked {cap['peakCuPct']}% ({cap.get('throttleMinutes', 0)} min throttled)",
                                 cap))
+
+    history = facts.get("history")
+    if isinstance(history, dict):
+        rows = history.get(match["user"])
+        if rows:
+            baseline = compute_baseline(rows)
+            today_cu = match.get("cuSeconds") or 0
+            cmp = compare_to_baseline(today_cu, baseline)
+            label = ("ABOVE p95 — abnormal for this user" if cmp["shifted"]
+                     else "within this user's normal range")
+            summary = (f"today {today_cu} CU(s) vs p50 {baseline['p50']} over last {days}d "
+                       f"(n={baseline['count']}): {label}")
+            ev.append(evidence_item("baseline", summary, {"baseline": baseline, "comparison": cmp}))
 
     bundle = {"subject": f"user {match['user']}", "coverage": coverage, "confidence": confidence,
               "evidence": ev, "findings": []}
