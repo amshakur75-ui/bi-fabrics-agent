@@ -2,6 +2,7 @@
 hard step budget, forcing an answer on the last step. Identical tool calls are de-duplicated (sound
 because every tool is read-only). Pure: the Anthropic client is injected."""
 import json
+from .system_prompt import wrap_untrusted
 
 
 def _blocks_to_dicts(content):
@@ -44,7 +45,7 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
                 tool_results.append({"tool": b.name, "result": result})
             trajectory.append({"tool": b.name, "input": b.input})
             results.append({"type": "tool_result", "tool_use_id": b.id,
-                            "content": json.dumps(result, ensure_ascii=False)})
+                            "content": wrap_untrusted(json.dumps(result, ensure_ascii=False))})
         messages.append({"role": "user", "content": results})
 
     return {"text": "", "trajectory": trajectory, "toolResults": tool_results,
