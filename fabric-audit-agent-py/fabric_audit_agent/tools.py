@@ -175,7 +175,8 @@ def create_tool_definitions(base_dir=None):
             "name": "user_activity",
             "description": (
                 "Return per-user activity data. With no arguments, returns the ranked top users "
-                "by capacity CU. With a 'user' argument, returns that user's detail (items, "
+                "by monitored CU (a CPU-time proxy, not authoritative capacity CU). With a 'user' "
+                "argument, returns that user's detail (items, "
                 "sharePct, cuSeconds). Falls back to the offline mock estate when no live source "
                 "is configured. Read-only."
             ),
