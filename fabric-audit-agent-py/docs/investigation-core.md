@@ -124,7 +124,7 @@ python -m fabric_audit_agent eval-investigations     # -> "Investigations: N/N p
 Golden cases live in `fabric_audit_agent/eval/investigation_cases.json`; the scorer enforces
 groundedness (every hypothesis traces to cited evidence) and coverage-honesty (abstains iff expected).
 
-**Tests:** `cd fabric-audit-agent-py && python -m pytest -q` (currently 338 passed, 1 skipped).
+**Tests:** `cd fabric-audit-agent-py && python -m pytest -q` (currently 347 passed, 1 skipped).
 
 ---
 

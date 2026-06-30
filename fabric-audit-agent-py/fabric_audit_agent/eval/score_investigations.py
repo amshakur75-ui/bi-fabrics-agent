@@ -2,6 +2,7 @@
 evidence) + coverage-honesty (abstain iff expected). Offline, uses the stub reasoner."""
 import json
 import os
+import re as _re
 
 from ..investigation.playbooks import investigate_user, investigate_capacity_spike
 from ..adapters.reasoner_investigation import create_investigation_reasoner
@@ -82,7 +83,6 @@ def score_agent_case(case, client_factory=None):
         )
         tool_results_lower = tool_results_json.lower()
         # Numeric tokens: runs of digits (e.g. "96", "42") extracted from raw output text
-        import re as _re
         numeric_tokens = _re.findall(r'\d+', out["output_text"])
         # Entity tokens: words with an uppercase letter in the original text (e.g. "Finance") or
         # email-like tokens (contain @); skip short words.
