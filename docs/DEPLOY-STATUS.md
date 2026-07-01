@@ -4,9 +4,47 @@
 
 | Service | URL | Status |
 |---------|-----|--------|
-| **Agent App** (Phase 2) | `https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com` | RUNNING |
+| **Agent App** (Phase 2) | `https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com` | RUNNING — verified end-to-end 2026-07-01 |
 | **MCP App** (data tools) | `https://mcp-bi-fabrics-auditor-7405609570261849.9.azure.databricksapps.com/mcp` | RUNNING |
 | **Claude endpoint** | `databricks-claude-opus-4-7` | READY |
+
+## Verification (2026-07-01)
+
+Tested directly against `/invocations` (bypassing the browser UI) using an OAuth token from
+`databricks auth login` + `databricks auth token` via the Databricks CLI — a PAT does **not**
+authenticate against `*.databricksapps.com` App URLs, but a CLI-issued OAuth token does.
+
+Both gate questions returned grounded, tool-backed answers with `run_audit` confirmed in
+`trajectory`/`toolResults`:
+- *"Who is driving capacity on Enterprise A4A - SVT?"* → capacity `1faee871-…` at 177.6% CU
+  peak (71.5 min throttled); item "Ent-Reporting-Sales" at ~48.5% CU concentration; verdict
+  size-up. Cited an alternative hypothesis it ruled out (single dominant user).
+- *"What caused the last capacity spike?"* → same audit data correlated into a spike narrative;
+  explicitly stated what it could not confirm (interactive vs. scheduled-refresh trigger) rather
+  than guessing.
+
+**Known gap:** `run_audit`'s `input_schema` takes no parameters, so it can't filter to a named
+capacity ("Enterprise A4A - SVT") — it always audits whichever capacity the collector is
+configured against. The agent answered honestly with the capacity it could see rather than
+fabricating data for the named one. Worth a follow-up if multiple capacities need to be
+queryable by name.
+
+Three bugs were fixed to reach this state (see commit history on `main` from `e485e0b` through
+`d7a3d60`):
+1. **401 calling the MCP app** — a plain SP bearer token doesn't authenticate against another
+   Databricks App's URL. Fixed by using `databricks_mcp.DatabricksMCPClient`, which performs the
+   correct app-to-app OAuth negotiation via `DatabricksOAuthClientProvider`.
+2. **`asyncio.run() cannot be called from a running event loop`** — `DatabricksMCPClient`'s sync
+   `list_tools()`/`call_tool()` call `asyncio.run()` internally, which can't nest inside the
+   already-running event loop our `@invoke()`/`@stream()` handlers run under. Fixed by using the
+   async `alist_tools()`/`acall_tool()` variants throughout.
+3. **401 calling the Claude serving endpoint** — `ws.config.token` is a PAT-only attribute; under
+   the app's actual SP/OAuth auth it's empty, so the request silently sent
+   `Authorization: Bearer None`. Fixed by using `ws.config.authenticate()`, which returns valid
+   headers regardless of auth strategy.
+4. **`ImportError` on `ResponsesAgent` from `mlflow.types.responses`** — that class lives in
+   `mlflow.pyfunc`, not `mlflow.types.responses`, which only exports the standalone
+   `create_text_output_item` function. Fixed by importing that function directly.
 
 ## Architecture
 
