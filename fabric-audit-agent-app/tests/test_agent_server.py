@@ -343,5 +343,55 @@ class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stoppedReason"], "budget")
 
 
+# ---------------------------------------------------------------------------
+# _messages_from_request — real Responses-API clients send content blocks as
+# parsed Pydantic objects, not plain dicts. This must not silently drop them.
+# ---------------------------------------------------------------------------
+
+class _FakeContentBlock:
+    """Stands in for mlflow's ResponseInputTextParam -- has .text, no .get()."""
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeInputItem:
+    """Stands in for mlflow's Message -- attribute access, no .get()."""
+    def __init__(self, role, content):
+        self.role = role
+        self.content = content
+
+
+class TestMessagesFromRequest(unittest.TestCase):
+    def test_plain_string_content(self):
+        request = types.SimpleNamespace(input=[{"role": "user", "content": "hi there"}])
+        msgs = _agent._messages_from_request(request)
+        self.assertEqual(msgs, [{"role": "user", "content": "hi there"}])
+
+    def test_list_of_dict_content_blocks(self):
+        request = types.SimpleNamespace(input=[
+            {"role": "user", "content": [{"type": "input_text", "text": "hi there"}]}
+        ])
+        msgs = _agent._messages_from_request(request)
+        self.assertEqual(msgs, [{"role": "user", "content": "hi there"}])
+
+    def test_list_of_object_content_blocks_not_dropped(self):
+        """Regression: content blocks parsed as ResponseInputTextParam objects (attribute
+        access, not dict) must not be silently filtered out, which previously sent Claude
+        an empty message and got a 400 Bad Request from the serving endpoint."""
+        item = _FakeInputItem(role="user", content=[_FakeContentBlock("hi there")])
+        request = types.SimpleNamespace(input=[item])
+        msgs = _agent._messages_from_request(request)
+        self.assertEqual(msgs, [{"role": "user", "content": "hi there"}])
+
+    def test_mixed_dict_and_object_content_blocks(self):
+        item = _FakeInputItem(role="user", content=[
+            {"type": "input_text", "text": "part one"},
+            _FakeContentBlock("part two"),
+        ])
+        request = types.SimpleNamespace(input=[item])
+        msgs = _agent._messages_from_request(request)
+        self.assertEqual(msgs, [{"role": "user", "content": "part one part two"}])
+
+
 if __name__ == "__main__":
     unittest.main()

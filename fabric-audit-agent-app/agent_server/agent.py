@@ -236,12 +236,21 @@ async def _mcp_tools_and_dispatch(ws):
 
 
 def _messages_from_request(request):
+    # mlflow's Message.content is `str | list[ResponseInputTextParam | dict]` -- real
+    # Responses-API clients (the chat UI) send content blocks that mlflow parses into
+    # ResponseInputTextParam *objects*, not dicts. Filtering on isinstance(c, dict) alone
+    # silently dropped every block, sending Claude an empty message (400 Bad Request).
     msgs = []
     for item in getattr(request, "input", None) or []:
         role = getattr(item, "role", None) or (item.get("role") if isinstance(item, dict) else None)
         content = getattr(item, "content", None) or (item.get("content") if isinstance(item, dict) else "")
         if isinstance(content, list):
-            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+            texts = []
+            for c in content:
+                text = c.get("text", "") if isinstance(c, dict) else getattr(c, "text", "")
+                if text:
+                    texts.append(text)
+            content = " ".join(texts)
         if role:
             msgs.append({"role": role, "content": content})
     return msgs or [{"role": "user", "content": ""}]
