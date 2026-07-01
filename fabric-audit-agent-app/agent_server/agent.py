@@ -13,6 +13,7 @@ from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
+    create_text_output_item,
 )
 
 
@@ -261,8 +262,7 @@ async def _run(request):
 @invoke()
 async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentResponse:
     r = await _run(request)
-    from mlflow.types.responses import ResponsesAgent
-    text_item = ResponsesAgent.create_text_output_item(text=r["text"], id="msg_1")
+    text_item = create_text_output_item(text=r["text"], id="msg_1")
     return ResponsesAgentResponse(
         output=[text_item],
         custom_outputs={"trajectory": r["trajectory"], "toolResults": r.get("toolResults"),
@@ -273,8 +273,7 @@ async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentRespon
 @stream()
 async def stream_handler(request: ResponsesAgentRequest):
     r = await _run(request)
-    from mlflow.types.responses import ResponsesAgent
     yield ResponsesAgentStreamEvent(
         type="response.output_item.done",
-        item=ResponsesAgent.create_text_output_item(text=r["text"], id="msg_1"),
+        item=create_text_output_item(text=r["text"], id="msg_1"),
     )
