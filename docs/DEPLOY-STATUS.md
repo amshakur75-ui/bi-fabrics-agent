@@ -23,14 +23,8 @@ Both gate questions returned grounded, tool-backed answers with `run_audit` conf
   explicitly stated what it could not confirm (interactive vs. scheduled-refresh trigger) rather
   than guessing.
 
-**Known gap:** `run_audit`'s `input_schema` takes no parameters, so it can't filter to a named
-capacity ("Enterprise A4A - SVT") — it always audits whichever capacity the collector is
-configured against. The agent answered honestly with the capacity it could see rather than
-fabricating data for the named one. Worth a follow-up if multiple capacities need to be
-queryable by name.
-
-Three bugs were fixed to reach this state (see commit history on `main` from `e485e0b` through
-`d7a3d60`):
+Five bugs were fixed to reach this state (see commit history on `main` from `e485e0b` through
+`ee7b8b7`):
 1. **401 calling the MCP app** — a plain SP bearer token doesn't authenticate against another
    Databricks App's URL. Fixed by using `databricks_mcp.DatabricksMCPClient`, which performs the
    correct app-to-app OAuth negotiation via `DatabricksOAuthClientProvider`.
@@ -45,6 +39,32 @@ Three bugs were fixed to reach this state (see commit history on `main` from `e4
 4. **`ImportError` on `ResponsesAgent` from `mlflow.types.responses`** — that class lives in
    `mlflow.pyfunc`, not `mlflow.types.responses`, which only exports the standalone
    `create_text_output_item` function. Fixed by importing that function directly.
+5. **400 Bad Request calling the Claude serving endpoint** — real Responses-API clients (the
+   chat UI) send `content` as a list of blocks that mlflow parses into `ResponseInputTextParam`
+   *objects*, not dicts. `_messages_from_request` only checked `isinstance(c, dict)`, silently
+   dropping every block and sending Claude an empty message. Fixed by falling back to
+   `getattr(c, "text", "")` for non-dict blocks.
+
+## Known Issues — Phase 3 Backlog
+
+1. **No capacity-name filter on `run_audit`.** `run_audit`'s `input_schema` takes no parameters,
+   so it always audits whichever capacity the collector is configured against — it cannot target
+   a capacity named in the question (e.g. "Enterprise A4A - SVT"). In a single-capacity estate
+   this is invisible; in a multi-capacity estate it means the agent can only ever answer about
+   one capacity, honestly abstaining on any other name rather than fabricating data (confirmed
+   2026-07-01 — the abstain behavior itself worked correctly). **Real product gap, directly
+   relevant to Phase 3**: `run_audit` needs a capacity-id/name parameter, `list_workspaces` (or a
+   new tool) needs to resolve a human name to that id, and the collector/pipeline need to accept
+   a capacity selector instead of a single fixed target.
+
+2. **Inlined loop drift risk (minor, not urgent).** `agent_server/agent.py` still inlines its own
+   copy of the tool loop (`_run_tool_loop`) and system prompt rather than importing the tested
+   `fabric_audit_agent.agent.loop`/`system_prompt` package. `tests/test_agent_server.py`'s
+   `TestInlinedLoopParity` class guards against behavioral drift between the two copies, but that
+   mitigates the risk rather than eliminating it — a change to the real `loop.py` still has to be
+   manually mirrored into `agent_server/agent.py`, and nothing fails until the parity tests are
+   updated by hand. Worth revisiting once the agent app's packaging story is settled (e.g.
+   vendoring `fabric_audit_agent` properly or publishing it as an installable dependency).
 
 ## Architecture
 
