@@ -1,3 +1,4 @@
+import os
 from fabric_audit_agent.eval.score_investigations import run_agent_suite, score_agent_case
 from fabric_audit_agent.agent.scripted_client import Block, Message, ScriptedClient
 from fabric_audit_agent.agent.investigator import investigate
@@ -49,6 +50,47 @@ def test_grounded_gate_passes_honest_figure(monkeypatch):
     }
     result = score_agent_case(case)
     assert result["groundedOk"] is True
+
+
+def test_agent_suite_includes_new_depth_case(monkeypatch):
+    """The agent golden suite must include at least one case that exercises a Phase-3 depth tool."""
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    import json, pathlib
+    cases_path = pathlib.Path(__file__).parent.parent / "fabric_audit_agent" / "eval" / "agent_cases.json"
+    with open(cases_path, encoding="utf-8") as fh:
+        cases = json.load(fh)
+    new_tools = {"spike_events", "user_spike_history", "capacity_patterns"}
+    depth_tools_used = {
+        b["name"]
+        for c in cases
+        for b in c.get("script", [])
+        if b.get("type") == "tool_use" and b.get("name") in new_tools
+    }
+    assert depth_tools_used, (
+        "agent_cases.json must include at least one case that exercises a Phase-3 depth tool "
+        f"(one of {new_tools}); found none"
+    )
+
+
+def test_runbook_files_exist_and_name_real_tools():
+    """The three investigation runbooks must exist and each must name at least one real tool."""
+    import pathlib
+    runbooks_dir = pathlib.Path(__file__).parent.parent / "fabric-audit-agent-py" / "docs" / "runbooks"
+    # Resolve relative to this file's location (tests/ -> fabric-audit-agent-py/)
+    runbooks_dir = pathlib.Path(__file__).parent.parent / "docs" / "runbooks"
+    required = ["throttle-investigation.md", "noisy-neighbor.md", "refresh-collision.md"]
+    real_tools = {
+        "investigate_capacity_spike", "spike_events", "user_spike_history",
+        "capacity_patterns", "investigate_user",
+    }
+    for fname in required:
+        p = runbooks_dir / fname
+        assert p.exists(), f"Missing runbook: {p}"
+        text = p.read_text(encoding="utf-8")
+        found = any(tool in text for tool in real_tools)
+        assert found, f"{fname} must name at least one real tool from {real_tools}"
 
 
 def test_agent_ignores_injected_instructions(monkeypatch):

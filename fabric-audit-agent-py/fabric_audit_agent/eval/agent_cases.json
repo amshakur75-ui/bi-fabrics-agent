@@ -18,5 +18,15 @@
     ],
     "expectTool": "investigate_capacity_spike",
     "expectAbstain": false
+  },
+  {
+    "name": "spike-events-grounded-finance-30cu",
+    "messages": [{"role": "user", "content": "which specific operations caused the most recent spike?"}],
+    "script": [
+      {"type": "tool_use", "name": "spike_events", "input": {"topN": 5}},
+      {"type": "text", "text": "The costliest individual operation was a QueryEnd on the Finance dataset consuming 30.0 CU-seconds, making it the single largest spike event in the estate."}
+    ],
+    "expectTool": "spike_events",
+    "expectAbstain": false
   }
 ]
