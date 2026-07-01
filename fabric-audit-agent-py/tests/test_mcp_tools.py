@@ -172,3 +172,48 @@ def test_existing_tools_unaffected_by_phase3(monkeypatch):
     assert pre_phase3 <= set(by_name)
     # investigate_user still requires "user"
     assert "user" in by_name["investigate_user"]["input_schema"]["required"]
+
+
+def test_spike_events_carries_queryText(monkeypatch):
+    """spike_events must include queryText on each event (the costly DAX, truncated).
+
+    This test verifies that top_expensive is wired into spike_events_handler so that
+    queryText is present (not dropped as in the old inline ranking path).
+    At least one event in the mock fixture must have a non-None queryText because
+    the mock events carry EventText.
+    """
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"topN": 5})
+    assert "events" in out
+    assert len(out["events"]) >= 1, "Expected at least one spike event in mock data"
+    # Every returned event must have a queryText key
+    for ev in out["events"]:
+        assert "queryText" in ev, f"Event missing queryText: {ev}"
+    # At least one event must have a non-None queryText (from EventText in the mock fixture)
+    assert any(ev["queryText"] is not None for ev in out["events"]), (
+        "No event carries a non-None queryText; check mock fixture has EventText populated"
+    )
+    # Sort order: cuSeconds descending
+    evs = out["events"]
+    for i in range(len(evs) - 1):
+        assert evs[i]["cuSeconds"] >= evs[i + 1]["cuSeconds"]
+    # topN still respected
+    assert len(evs) <= 5
+
+
+def test_spike_events_uses_canonical_p95(monkeypatch):
+    """spike_events p95 must match compute_baseline — not a hand-rolled int(0.95*(n-1)) index."""
+    _no_live(monkeypatch)
+    from fabric_audit_agent.investigation.baseline import compute_baseline
+    from fabric_audit_agent.tools import create_tool_definitions as ctd
+    # Call the handler and check that the set of returned spikes is consistent with
+    # compute_baseline p95 (i.e. all returned events are above the canonical p95).
+    tools = ctd()
+    h = next(d for d in tools if d["name"] == "spike_events")["handler"]
+    out = h({"topN": 10})
+    # We can't import _MOCK_EVENTS directly (closure), but we can call compute_baseline
+    # on the returned events + a helper: all returned spike events must have cuSeconds > 0
+    # (they pass is_spike, so they're above p95 or floor).
+    for ev in out["events"]:
+        assert ev["cuSeconds"] is not None

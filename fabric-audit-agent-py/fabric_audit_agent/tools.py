@@ -14,6 +14,8 @@ from .investigation.evidence import build_coverage
 from .investigation.playbooks import investigate_user as _iu, investigate_capacity_spike as _ics
 from .adapters.reasoner_investigation import create_investigation_reasoner
 from .investigation import events as _events_mod
+from .investigation.baseline import compute_baseline as _compute_baseline
+from .investigation.expensive import top_expensive as _top_expensive
 from .investigation.spike_history import user_spike_history as _user_spike_history
 from .investigation.patterns import capacity_patterns as _capacity_patterns
 
@@ -170,10 +172,12 @@ def create_tool_definitions(base_dir=None):
         _events_mod.normalize_event({
             "TimeGenerated": "2026-06-30T09:00:00Z", "ExecutingUser": "alice@co",
             "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 8000,
+            "EventText": "EVALUATE TOPN(100, Sales, [Revenue])",
         }),
         _events_mod.normalize_event({
             "TimeGenerated": "2026-06-30T09:05:00Z", "ExecutingUser": "alice@co",
             "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 12000,
+            "EventText": "EVALUATE CALCULATETABLE(Sales, DATESINPERIOD(Sales[Date], TODAY(), -90, DAY))",
         }),
         _events_mod.normalize_event({
             "TimeGenerated": "2026-06-30T09:10:00Z", "ExecutingUser": "bob@co",
@@ -190,6 +194,7 @@ def create_tool_definitions(base_dir=None):
         _events_mod.normalize_event({
             "TimeGenerated": "2026-06-30T09:14:30Z", "ExecutingUser": "eve@co",
             "ArtifactName": "Finance", "OperationName": "QueryEnd", "CpuTimeMs": 30000,
+            "EventText": "EVALUATE CALCULATETABLE(Transactions, DATESINPERIOD(Transactions[Date], TODAY(), -365, DAY))",
         }),
     ]
     _MOCK_CAPACITY_SERIES = [
@@ -214,27 +219,20 @@ def create_tool_definitions(base_dir=None):
         return result
 
     def spike_events_handler(_input=None):
-        """Ranked spike events across the estate: top-N by cuSeconds, each {user,item,ts,cuSeconds}."""
+        """Ranked spike events across the estate: top-N by cuSeconds, each with
+        {user, item, ts, cuSeconds, queryText}.  queryText carries the truncated
+        DAX/query text from the raw event (None when absent).  Uses the canonical
+        compute_baseline p95 (not a hand-rolled percentile index)."""
         inp = _input or {}
         top_n = inp.get("topN") if inp.get("topN") is not None else 5
         events, _ = _events_or_mock()
-        # Identify spikes: compute p95 across all events, use is_spike per event
-        cu_vals = sorted(e.get("cuSeconds", 0) for e in events)
-        if cu_vals:
-            idx = int(0.95 * (len(cu_vals) - 1))
-            p95_all = cu_vals[idx]
-        else:
-            p95_all = 0
+        baseline = _compute_baseline(events)
+        p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
         spike_list = [
             e for e in events
             if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
         ]
-        spike_list_sorted = sorted(spike_list, key=lambda e: e.get("cuSeconds", 0), reverse=True)
-        top = spike_list_sorted[:top_n]
-        result_events = [
-            {"user": e.get("user"), "item": e.get("item"), "ts": e.get("ts"), "cuSeconds": e.get("cuSeconds", 0)}
-            for e in top
-        ]
+        result_events = _top_expensive(spike_list, n=top_n)
         return {
             "events": result_events,
             "source": "live" if _has_live_source(os.environ) else "mock",
