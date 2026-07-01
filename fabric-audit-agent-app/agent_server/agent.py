@@ -79,7 +79,7 @@ def _blocks_to_dicts(content):
     return out
 
 
-def _run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps=6):
+async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps=6):
     messages = list(messages)
     trajectory, cache, tool_results = [], {}, []
     for step in range(max_steps):
@@ -102,7 +102,7 @@ def _run_tool_loop(client, *, model, system, messages, tools, dispatch, max_step
                 result = {"note": "duplicate read-only tool call skipped", "cached": cache[key]}
             else:
                 handler = dispatch.get(b.name)
-                result = handler(b.input) if handler else {"error": f"unknown tool {b.name}"}
+                result = await handler(b.input) if handler else {"error": f"unknown tool {b.name}"}
                 cache[key] = result
                 tool_results.append({"tool": b.name, "result": result})
             trajectory.append({"tool": b.name, "input": b.input})
@@ -203,17 +203,21 @@ def _build_claude_client(ws):
 # DatabricksMCPClient wraps DatabricksOAuthClientProvider, which negotiates the
 # OAuth handshake another Databricks App's URL requires; a plain SP bearer
 # token (ws.config.token) is NOT sufficient and gets a 401 from the target app.
+# Uses the async variants (alist_tools/acall_tool): the sync list_tools/call_tool
+# call asyncio.run() internally, which fails since our handlers already run
+# inside uvicorn's event loop ("asyncio.run() cannot be called from a running
+# event loop").
 # ---------------------------------------------------------------------------
 
-def _mcp_tools_and_dispatch(ws):
+async def _mcp_tools_and_dispatch(ws):
     from databricks_mcp import DatabricksMCPClient
     mcp = DatabricksMCPClient(server_url=_MCP_URL, workspace_client=ws)
-    listed = mcp.list_tools()
+    listed = await mcp.alist_tools()
     tools = [{"name": t.name, "description": t.description or "",
                "input_schema": t.inputSchema or {}} for t in listed]
 
-    def _call(name, inp):
-        result = mcp.call_tool(name, inp or {})
+    async def _call(name, inp):
+        result = await mcp.acall_tool(name, inp or {})
         for c in (result.content or []):
             text = getattr(c, "text", None)
             if text is not None:
@@ -243,17 +247,17 @@ def _messages_from_request(request):
 # Responses Agent handlers
 # ---------------------------------------------------------------------------
 
-def _run(request):
+async def _run(request):
     ws = get_user_workspace_client()
-    tools, dispatch = _mcp_tools_and_dispatch(ws)
-    return _run_tool_loop(
+    tools, dispatch = await _mcp_tools_and_dispatch(ws)
+    return await _run_tool_loop(
         _build_claude_client(ws), model=_MODEL, system=_SYSTEM,
         messages=_messages_from_request(request), tools=tools, dispatch=dispatch, max_steps=6)
 
 
 @invoke()
 async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentResponse:
-    r = _run(request)
+    r = await _run(request)
     from mlflow.types.responses import ResponsesAgent
     text_item = ResponsesAgent.create_text_output_item(text=r["text"], id="msg_1")
     return ResponsesAgentResponse(
@@ -265,7 +269,7 @@ async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentRespon
 
 @stream()
 async def stream_handler(request: ResponsesAgentRequest):
-    r = _run(request)
+    r = await _run(request)
     from mlflow.types.responses import ResponsesAgent
     yield ResponsesAgentStreamEvent(
         type="response.output_item.done",

@@ -6,7 +6,7 @@ because the deployed agent is self-contained (no package import).
 import json
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,11 @@ class TestB1AltAdapter(unittest.TestCase):
 # MCP tool sourcing — via databricks_mcp.DatabricksMCPClient (app-to-app OAuth)
 # ---------------------------------------------------------------------------
 
-class TestMcpToolsAndDispatch(unittest.TestCase):
+class TestMcpToolsAndDispatch(unittest.IsolatedAsyncioTestCase):
+    """_mcp_tools_and_dispatch uses the async alist_tools/acall_tool variants —
+    the sync ones call asyncio.run() internally, which breaks inside the
+    already-running event loop our async handlers run under."""
+
     def _make_tool(self, name, description="", input_schema=None):
         t = MagicMock()
         t.name = name
@@ -181,15 +185,15 @@ class TestMcpToolsAndDispatch(unittest.TestCase):
         result.content = [content_item]
         return result
 
-    def test_tools_list_returns_tool_defs(self):
+    async def test_tools_list_returns_tool_defs(self):
         ws = _FakeWs()
         mock_client = MagicMock()
-        mock_client.list_tools.return_value = [
+        mock_client.alist_tools = AsyncMock(return_value=[
             self._make_tool("run_audit", "Run audit", {"type": "object"}),
             self._make_tool("list_workspaces", "List WS", {}),
-        ]
+        ])
         with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client):
-            tools, dispatch = _agent._mcp_tools_and_dispatch(ws)
+            tools, dispatch = await _agent._mcp_tools_and_dispatch(ws)
 
         self.assertEqual(len(tools), 2)
         self.assertEqual(tools[0]["name"], "run_audit")
@@ -197,39 +201,39 @@ class TestMcpToolsAndDispatch(unittest.TestCase):
         self.assertIn("run_audit", dispatch)
         self.assertIn("list_workspaces", dispatch)
 
-    def test_client_constructed_with_server_url_and_workspace_client(self):
+    async def test_client_constructed_with_server_url_and_workspace_client(self):
         ws = _FakeWs()
         mock_client = MagicMock()
-        mock_client.list_tools.return_value = []
+        mock_client.alist_tools = AsyncMock(return_value=[])
         with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client) as mock_cls:
-            _agent._mcp_tools_and_dispatch(ws)
+            await _agent._mcp_tools_and_dispatch(ws)
 
         mock_cls.assert_called_once_with(server_url=_agent._MCP_URL, workspace_client=ws)
 
-    def test_tool_call_parses_json_text_content(self):
+    async def test_tool_call_parses_json_text_content(self):
         ws = _FakeWs()
         mock_client = MagicMock()
-        mock_client.list_tools.return_value = [self._make_tool("run_audit")]
-        mock_client.call_tool.return_value = self._make_call_result(
-            json.dumps({"verdict": "optimize", "healthScore": 72}))
+        mock_client.alist_tools = AsyncMock(return_value=[self._make_tool("run_audit")])
+        mock_client.acall_tool = AsyncMock(return_value=self._make_call_result(
+            json.dumps({"verdict": "optimize", "healthScore": 72})))
 
         with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client):
-            _, dispatch = _agent._mcp_tools_and_dispatch(ws)
-            result = dispatch["run_audit"]({})
+            _, dispatch = await _agent._mcp_tools_and_dispatch(ws)
+            result = await dispatch["run_audit"]({})
 
         self.assertEqual(result["verdict"], "optimize")
         self.assertEqual(result["healthScore"], 72)
-        mock_client.call_tool.assert_called_once_with("run_audit", {})
+        mock_client.acall_tool.assert_called_once_with("run_audit", {})
 
-    def test_tool_call_falls_back_to_raw_text_on_non_json(self):
+    async def test_tool_call_falls_back_to_raw_text_on_non_json(self):
         ws = _FakeWs()
         mock_client = MagicMock()
-        mock_client.list_tools.return_value = [self._make_tool("run_audit")]
-        mock_client.call_tool.return_value = self._make_call_result("plain text result")
+        mock_client.alist_tools = AsyncMock(return_value=[self._make_tool("run_audit")])
+        mock_client.acall_tool = AsyncMock(return_value=self._make_call_result("plain text result"))
 
         with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client):
-            _, dispatch = _agent._mcp_tools_and_dispatch(ws)
-            result = dispatch["run_audit"]({})
+            _, dispatch = await _agent._mcp_tools_and_dispatch(ws)
+            result = await dispatch["run_audit"]({})
 
         self.assertEqual(result, "plain text result")
 
@@ -238,7 +242,14 @@ class TestMcpToolsAndDispatch(unittest.TestCase):
 # Inlined loop matches the tested original
 # ---------------------------------------------------------------------------
 
-class TestInlinedLoopParity(unittest.TestCase):
+def _async_handler(value):
+    """dispatch handlers are async now — _run_tool_loop awaits them."""
+    async def _inner(_inp):
+        return value
+    return _inner
+
+
+class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
     """Smoke-test the inlined _run_tool_loop to catch divergence from loop.py."""
 
     def _make_client(self, responses):
@@ -260,11 +271,11 @@ class TestInlinedLoopParity(unittest.TestCase):
             messages = _Messages()
         return _Client(), _Block, _Resp
 
-    def test_direct_answer_no_tool_calls(self):
+    async def test_direct_answer_no_tool_calls(self):
         client, Block, Resp = self._make_client([
             Resp([Block(type="text", text="The answer is 42.")], "end_turn")
         ])
-        result = _agent._run_tool_loop(
+        result = await _agent._run_tool_loop(
             client, model="m", system="s",
             messages=[{"role": "user", "content": "q"}],
             tools=[], dispatch={}, max_steps=3,
@@ -272,13 +283,13 @@ class TestInlinedLoopParity(unittest.TestCase):
         self.assertEqual(result["text"], "The answer is 42.")
         self.assertEqual(result["stoppedReason"], "answer")
 
-    def test_one_tool_call_then_answer(self):
+    async def test_one_tool_call_then_answer(self):
         client, Block, Resp = self._make_client([
             Resp([Block(type="tool_use", id="t1", name="run_audit", input={})], "tool_use"),
             Resp([Block(type="text", text="Audit done.")], "end_turn"),
         ])
-        dispatch = {"run_audit": lambda inp: {"verdict": "optimize"}}
-        result = _agent._run_tool_loop(
+        dispatch = {"run_audit": _async_handler({"verdict": "optimize"})}
+        result = await _agent._run_tool_loop(
             client, model="m", system="s",
             messages=[{"role": "user", "content": "audit"}],
             tools=[{"name": "run_audit", "description": "", "input_schema": {}}],
@@ -288,14 +299,14 @@ class TestInlinedLoopParity(unittest.TestCase):
         self.assertEqual(len(result["toolResults"]), 1)
         self.assertEqual(result["toolResults"][0]["tool"], "run_audit")
 
-    def test_budget_exhaustion(self):
+    async def test_budget_exhaustion(self):
         client, Block, Resp = self._make_client(
             [Resp([Block(type="tool_use", id=f"t{i}", name="run_audit", input={})], "tool_use")
              for i in range(10)]
             + [Resp([Block(type="text", text="done")], "end_turn")]
         )
-        dispatch = {"run_audit": lambda inp: {}}
-        result = _agent._run_tool_loop(
+        dispatch = {"run_audit": _async_handler({})}
+        result = await _agent._run_tool_loop(
             client, model="m", system="s",
             messages=[{"role": "user", "content": "q"}],
             tools=[{"name": "run_audit", "description": "", "input_schema": {}}],
