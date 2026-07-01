@@ -20,7 +20,7 @@ def _load_agent_module():
     # Stub out deploy-only deps that aren't available in the test environment
     for mod in ["mlflow", "mlflow.genai", "mlflow.genai.agent_server",
                 "mlflow.types", "mlflow.types.responses",
-                "databricks_ai_bridge"]:
+                "databricks_ai_bridge", "databricks_mcp"]:
         if mod not in sys.modules:
             sys.modules[mod] = MagicMock()
 
@@ -163,99 +163,75 @@ class TestB1AltAdapter(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# HTTP JSON-RPC MCP client
+# MCP tool sourcing — via databricks_mcp.DatabricksMCPClient (app-to-app OAuth)
 # ---------------------------------------------------------------------------
 
-class TestMcpJsonRpc(unittest.TestCase):
-    def _make_resp(self, result=None, sse=False):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        if sse:
-            mock_resp.headers = {"content-type": "text/event-stream"}
-            mock_resp.text = f"data: {json.dumps({'result': result})}\n"
-        else:
-            mock_resp.headers = {"content-type": "application/json"}
-            mock_resp.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": result}
-        return mock_resp
+class TestMcpToolsAndDispatch(unittest.TestCase):
+    def _make_tool(self, name, description="", input_schema=None):
+        t = MagicMock()
+        t.name = name
+        t.description = description
+        t.inputSchema = input_schema if input_schema is not None else {}
+        return t
+
+    def _make_call_result(self, text):
+        content_item = MagicMock()
+        content_item.text = text
+        result = MagicMock()
+        result.content = [content_item]
+        return result
 
     def test_tools_list_returns_tool_defs(self):
-        tools_payload = {"tools": [
-            {"name": "run_audit", "description": "Run audit", "inputSchema": {"type": "object"}},
-            {"name": "list_workspaces", "description": "List WS", "inputSchema": {}},
-        ]}
         ws = _FakeWs()
-        with patch("requests.post", return_value=self._make_resp(tools_payload)) as mock_post:
-            # Patch initialize to succeed silently
-            call_count = [0]
-            real_post = mock_post.side_effect
-
-            def side_effect(url, json=None, **kw):
-                call_count[0] += 1
-                return self._make_resp({"protocolVersion": "2024-11-05"} if call_count[0] == 1 else tools_payload)
-
-            mock_post.side_effect = side_effect
+        mock_client = MagicMock()
+        mock_client.list_tools.return_value = [
+            self._make_tool("run_audit", "Run audit", {"type": "object"}),
+            self._make_tool("list_workspaces", "List WS", {}),
+        ]
+        with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client):
             tools, dispatch = _agent._mcp_tools_and_dispatch(ws)
 
         self.assertEqual(len(tools), 2)
         self.assertEqual(tools[0]["name"], "run_audit")
+        self.assertEqual(tools[0]["input_schema"], {"type": "object"})
         self.assertIn("run_audit", dispatch)
         self.assertIn("list_workspaces", dispatch)
 
-    def test_tool_call_parses_text_content(self):
-        tool_result = {"verdict": "optimize", "healthScore": 72}
-        call_payload = {"content": [{"type": "text", "text": json.dumps(tool_result)}]}
+    def test_client_constructed_with_server_url_and_workspace_client(self):
         ws = _FakeWs()
+        mock_client = MagicMock()
+        mock_client.list_tools.return_value = []
+        with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client) as mock_cls:
+            _agent._mcp_tools_and_dispatch(ws)
 
-        with patch("requests.post") as mock_post:
-            call_count = [0]
-            def side_effect(url, json=None, **kw):
-                call_count[0] += 1
-                if call_count[0] == 1:  # initialize
-                    return self._make_resp({})
-                elif call_count[0] == 2:  # tools/list
-                    return self._make_resp({"tools": [{"name": "run_audit", "description": "x", "inputSchema": {}}]})
-                else:  # tools/call
-                    return self._make_resp(call_payload)
-            mock_post.side_effect = side_effect
+        mock_cls.assert_called_once_with(server_url=_agent._MCP_URL, workspace_client=ws)
 
-            tools, dispatch = _agent._mcp_tools_and_dispatch(ws)
+    def test_tool_call_parses_json_text_content(self):
+        ws = _FakeWs()
+        mock_client = MagicMock()
+        mock_client.list_tools.return_value = [self._make_tool("run_audit")]
+        mock_client.call_tool.return_value = self._make_call_result(
+            json.dumps({"verdict": "optimize", "healthScore": 72}))
+
+        with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client):
+            _, dispatch = _agent._mcp_tools_and_dispatch(ws)
             result = dispatch["run_audit"]({})
 
         self.assertEqual(result["verdict"], "optimize")
         self.assertEqual(result["healthScore"], 72)
+        mock_client.call_tool.assert_called_once_with("run_audit", {})
 
-    def test_sse_response_parsed_correctly(self):
-        result_data = {"tools": [{"name": "run_audit", "description": "x", "inputSchema": {}}]}
+    def test_tool_call_falls_back_to_raw_text_on_non_json(self):
         ws = _FakeWs()
-        with patch("requests.post") as mock_post:
-            call_count = [0]
-            def side_effect(url, json=None, **kw):
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    return self._make_resp({})
-                return self._make_resp(result_data, sse=True)
-            mock_post.side_effect = side_effect
+        mock_client = MagicMock()
+        mock_client.list_tools.return_value = [self._make_tool("run_audit")]
+        mock_client.call_tool.return_value = self._make_call_result("plain text result")
 
-            tools, _ = _agent._mcp_tools_and_dispatch(ws)
+        with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client):
+            _, dispatch = _agent._mcp_tools_and_dispatch(ws)
+            result = dispatch["run_audit"]({})
 
-        self.assertEqual(tools[0]["name"], "run_audit")
-
-    def test_initialize_failure_is_swallowed(self):
-        """If initialize fails the client should continue to tools/list."""
-        tools_payload = {"tools": [{"name": "run_audit", "description": "x", "inputSchema": {}}]}
-        ws = _FakeWs()
-        with patch("requests.post") as mock_post:
-            call_count = [0]
-            def side_effect(url, json=None, **kw):
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    raise Exception("connection refused")
-                return self._make_resp(tools_payload)
-            mock_post.side_effect = side_effect
-
-            tools, _ = _agent._mcp_tools_and_dispatch(ws)
-
-        self.assertEqual(len(tools), 1)
+        self.assertEqual(result, "plain text result")
 
 
 # ---------------------------------------------------------------------------

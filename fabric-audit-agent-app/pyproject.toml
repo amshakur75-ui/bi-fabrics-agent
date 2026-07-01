@@ -9,6 +9,7 @@ dependencies = [
     "mlflow>=3.10.0",
     "databricks-agents>=1.9.3",
     "databricks-sdk>=0.28",
+    "databricks-mcp>=0.1",
     "requests>=2",
     "python-dotenv>=1.2.1",
 ]

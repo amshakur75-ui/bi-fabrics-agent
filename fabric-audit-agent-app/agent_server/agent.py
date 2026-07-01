@@ -199,57 +199,29 @@ def _build_claude_client(ws):
 
 
 # ---------------------------------------------------------------------------
-# MCP tool sourcing — direct HTTP JSON-RPC (streamable-http transport)
+# MCP tool sourcing — app-to-app call via the databricks-mcp SDK client.
+# DatabricksMCPClient wraps DatabricksOAuthClientProvider, which negotiates the
+# OAuth handshake another Databricks App's URL requires; a plain SP bearer
+# token (ws.config.token) is NOT sufficient and gets a 401 from the target app.
 # ---------------------------------------------------------------------------
 
-def _mcp_jsonrpc(token, method, params, _id=1):
-    """Sync JSON-RPC call to the MCP server. Handles both JSON and SSE responses."""
-    import requests as _req, json as _json
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-    body = {"jsonrpc": "2.0", "id": _id, "method": method, "params": params or {}}
-    r = _req.post(_MCP_URL, json=body, headers=headers, timeout=30)
-    r.raise_for_status()
-    ct = r.headers.get("content-type", "")
-    if "text/event-stream" in ct:
-        for line in r.text.splitlines():
-            if line.startswith("data: ") and not line.startswith("data: [DONE]"):
-                try: return _json.loads(line[6:]).get("result", {})
-                except: pass
-        return {}
-    data = r.json()
-    if "error" in data:
-        raise RuntimeError(f"MCP error {method}: {data['error']}")
-    return data.get("result", {})
-
-
 def _mcp_tools_and_dispatch(ws):
-    token = ws.config.token
-    # Initialize (required by MCP protocol to negotiate capabilities)
-    try:
-        _mcp_jsonrpc(token, "initialize", {
-            "protocolVersion": "2024-11-05", "capabilities": {},
-            "clientInfo": {"name": "fabric-audit-agent", "version": "0.1"},
-        })
-    except Exception:
-        pass  # some servers are stateless and skip initialize gracefully
-
-    result = _mcp_jsonrpc(token, "tools/list", {}, _id=2)
-    tools_raw = result.get("tools", []) if result else []
-    tools = [{"name": t["name"], "description": t.get("description", ""),
-               "input_schema": t.get("inputSchema", {})} for t in tools_raw]
+    from databricks_mcp import DatabricksMCPClient
+    mcp = DatabricksMCPClient(server_url=_MCP_URL, workspace_client=ws)
+    listed = mcp.list_tools()
+    tools = [{"name": t.name, "description": t.description or "",
+               "input_schema": t.inputSchema or {}} for t in listed]
 
     def _call(name, inp):
-        r = _mcp_jsonrpc(token, "tools/call", {"name": name, "arguments": inp or {}}, _id=3)
-        content = (r or {}).get("content", [])
-        if content and isinstance(content, list) and content[0].get("type") == "text":
-            import json as _j
-            try: return _j.loads(content[0]["text"])
-            except: return content[0]["text"]
-        return r or {}
+        result = mcp.call_tool(name, inp or {})
+        for c in (result.content or []):
+            text = getattr(c, "text", None)
+            if text is not None:
+                try:
+                    return json.loads(text)
+                except Exception:
+                    return text
+        return {}
 
     dispatch = {t["name"]: (lambda n: lambda inp: _call(n, inp))(t["name"]) for t in tools}
     return tools, dispatch
