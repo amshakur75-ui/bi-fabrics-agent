@@ -122,7 +122,10 @@ def _build_claude_client(ws):
     import json as _json, requests as _req
 
     endpoint_url = f"{ws.config.host}/serving-endpoints/{_MODEL}/invocations"
-    token = ws.config.token
+    # ws.config.token is a PAT-only field; for the app's SP (M2M OAuth) it's empty,
+    # which silently sent "Authorization: Bearer None" and 401'd every call.
+    # ws.config.authenticate() returns valid headers for whatever auth strategy is
+    # active (PAT or OAuth) — the same mechanism the SDK's own HTTP client relies on.
 
     class _Block:
         def __init__(self, **kw):
@@ -173,8 +176,8 @@ def _build_claude_client(ws):
                     "name": t.get("name"), "description": t.get("description",""),
                     "parameters": t.get("input_schema", {"type":"object","properties":{}})
                 }} for t in tools]
-            r = _req.post(endpoint_url, json=body,
-                          headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            headers = {**ws.config.authenticate(), "Content-Type": "application/json"}
+            r = _req.post(endpoint_url, json=body, headers=headers)
             r.raise_for_status()
             data = r.json()
             choice = data["choices"][0]

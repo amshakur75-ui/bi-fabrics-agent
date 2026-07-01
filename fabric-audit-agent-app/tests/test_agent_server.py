@@ -51,6 +51,10 @@ class _FakeWs:
         host = "https://fake.databricks.net"
         token = "fake-token"
 
+        @staticmethod
+        def authenticate():
+            return {"Authorization": "Bearer fake-token"}
+
 
 class TestB1AltAdapter(unittest.TestCase):
     def _get_client(self):
@@ -114,6 +118,21 @@ class TestB1AltAdapter(unittest.TestCase):
                        return_value=self._mock_post(content_text="x", finish_reason=finish)):
                 resp = client.messages.create(messages=[{"role":"user","content":"x"}], tools=[])
             self.assertEqual(resp.stop_reason, expected_stop, f"finish_reason={finish!r}")
+
+    def test_uses_authenticate_headers_not_bare_token(self):
+        """ws.config.token is PAT-only and empty under SP/OAuth auth; the client must send
+        whatever ws.config.authenticate() returns instead of hand-building 'Bearer <token>'."""
+        client = self._get_client()
+        captured = {}
+
+        def fake_post(url, json=None, headers=None, **kw):
+            captured["headers"] = headers
+            return self._mock_post(content_text="ok")
+
+        with patch("requests.post", side_effect=fake_post):
+            client.messages.create(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer fake-token")
 
     def test_tool_result_messages_sent_as_tool_role(self):
         """tool_result blocks in user messages must become role=tool messages for OpenAI."""
