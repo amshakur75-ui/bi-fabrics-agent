@@ -13,6 +13,9 @@ from .pipeline import run_audit
 from .investigation.evidence import build_coverage
 from .investigation.playbooks import investigate_user as _iu, investigate_capacity_spike as _ics
 from .adapters.reasoner_investigation import create_investigation_reasoner
+from .investigation import events as _events_mod
+from .investigation.spike_history import user_spike_history as _user_spike_history
+from .investigation.patterns import capacity_patterns as _capacity_patterns
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -158,6 +161,94 @@ def create_tool_definitions(base_dir=None):
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
         return result
 
+    # ------------------------------------------------------------------
+    # Phase-3 event helpers
+    # ------------------------------------------------------------------
+    # Small mock event fixture — a handful of normalize_event-shaped dicts plus
+    # a tiny capacity_series used when no live event collector is configured.
+    _MOCK_EVENTS = [
+        _events_mod.normalize_event({
+            "TimeGenerated": "2026-06-30T09:00:00Z", "ExecutingUser": "alice@co",
+            "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 8000,
+        }),
+        _events_mod.normalize_event({
+            "TimeGenerated": "2026-06-30T09:05:00Z", "ExecutingUser": "alice@co",
+            "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 12000,
+        }),
+        _events_mod.normalize_event({
+            "TimeGenerated": "2026-06-30T09:10:00Z", "ExecutingUser": "bob@co",
+            "ArtifactName": "Inventory", "OperationName": "QueryEnd", "CpuTimeMs": 5000,
+        }),
+        _events_mod.normalize_event({
+            "TimeGenerated": "2026-06-30T09:12:00Z", "ExecutingUser": "carol@co",
+            "ArtifactName": "Inventory", "OperationName": "QueryEnd", "CpuTimeMs": 6000,
+        }),
+        _events_mod.normalize_event({
+            "TimeGenerated": "2026-06-30T09:14:00Z", "ExecutingUser": "dave@co",
+            "ArtifactName": "HR", "OperationName": "CommandEnd", "DurationMs": 20000,
+        }),
+        _events_mod.normalize_event({
+            "TimeGenerated": "2026-06-30T09:14:30Z", "ExecutingUser": "eve@co",
+            "ArtifactName": "Finance", "OperationName": "QueryEnd", "CpuTimeMs": 30000,
+        }),
+    ]
+    _MOCK_CAPACITY_SERIES = [
+        {"ts": "2026-06-30T09:00:00Z", "cuPct": 55.0},
+        {"ts": "2026-06-30T09:10:00Z", "cuPct": 85.0},
+        {"ts": "2026-06-30T09:15:00Z", "cuPct": 72.0},
+    ]
+
+    def _events_or_mock():
+        """Yield a normalized event list.  Live event collector when configured; else small mock."""
+        # When a live event source is wired this returns real events; until then, the mock fixture
+        # ensures handlers are offline-testable and the MCP tool returns a shaped (not empty) result.
+        return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES
+
+    def user_spike_history_handler(_input=None):
+        """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
+        inp = _input or {}
+        user = inp.get("user") or ""
+        events, _ = _events_or_mock()
+        result = _user_spike_history(events, user.lower())
+        result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        return result
+
+    def spike_events_handler(_input=None):
+        """Ranked spike events across the estate: top-N by cuSeconds, each {user,item,ts,cuSeconds}."""
+        inp = _input or {}
+        top_n = inp.get("topN") if inp.get("topN") is not None else 5
+        events, _ = _events_or_mock()
+        # Identify spikes: compute p95 across all events, use is_spike per event
+        cu_vals = sorted(e.get("cuSeconds", 0) for e in events)
+        if cu_vals:
+            idx = int(0.95 * (len(cu_vals) - 1))
+            p95_all = cu_vals[idx]
+        else:
+            p95_all = 0
+        spike_list = [
+            e for e in events
+            if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
+        ]
+        spike_list_sorted = sorted(spike_list, key=lambda e: e.get("cuSeconds", 0), reverse=True)
+        top = spike_list_sorted[:top_n]
+        result_events = [
+            {"user": e.get("user"), "item": e.get("item"), "ts": e.get("ts"), "cuSeconds": e.get("cuSeconds", 0)}
+            for e in top
+        ]
+        return {
+            "events": result_events,
+            "source": "live" if _has_live_source(os.environ) else "mock",
+        }
+
+    def capacity_patterns_handler(_input=None):
+        """Temporal activity-surge ↔ CU-spike patterns across the estate."""
+        events, capacity_series = _events_or_mock()
+        patterns = _capacity_patterns(events, capacity_series)
+        return {
+            "patterns": patterns,
+            "source": "live" if _has_live_source(os.environ) else "mock",
+        }
+
     return [
         {
             "name": "run_audit",
@@ -232,5 +323,55 @@ def create_tool_definitions(base_dir=None):
                 "required": [],
             },
             "handler": investigate_spike_handler,
+        },
+        {
+            "name": "user_spike_history",
+            "description": (
+                "Return per-user spike history: every high-cost event above the user's own p95 baseline, "
+                "with counts, timestamps, items, time-of-day distribution, and interactive-vs-refresh split. "
+                "Falls back to a small offline mock when no live event collector is configured. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "user": {"type": "string", "description": "User UPN/email to look up (required)."},
+                    "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                },
+                "required": ["user"],
+            },
+            "handler": user_spike_history_handler,
+        },
+        {
+            "name": "spike_events",
+            "description": (
+                "Return the top-N most expensive spike events across the estate, ranked by cuSeconds "
+                "descending. Each entry carries user, item, ts, and cuSeconds — not averages. "
+                "Use this to find which specific operations drove CU spikes. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                    "topN": {"type": "integer", "description": "Maximum events to return (default 5)."},
+                },
+                "required": [],
+            },
+            "handler": spike_events_handler,
+        },
+        {
+            "name": "capacity_patterns",
+            "description": (
+                "Identify temporal patterns coupling activity surges with CU% spikes. "
+                "Returns one pattern per detected surge-spike pair with the driving item, user, "
+                "peak CU%, and a plain-English narrative. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                },
+                "required": [],
+            },
+            "handler": capacity_patterns_handler,
         },
     ]
