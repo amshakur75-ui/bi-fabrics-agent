@@ -8,7 +8,7 @@ import json
 import os
 
 from databricks.sdk import WorkspaceClient
-from mlflow.genai.agent_server import get_request_headers, invoke, stream
+from mlflow.genai.agent_server import invoke, stream
 from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
@@ -17,8 +17,8 @@ from mlflow.types.responses import (
 
 
 def get_user_workspace_client() -> WorkspaceClient:
-    token = get_request_headers().get("x-forwarded-access-token")
-    return WorkspaceClient(token=token, auth_type="pat")
+    # OBO pending admin action; SP auth is the correct fallback.
+    return WorkspaceClient()
 
 _MODEL = os.environ.get("DATABRICKS_CLAUDE_ENDPOINT", "databricks-claude-opus-4-7")
 _MCP_URL = os.environ.get("FABRIC_MCP_URL", "")
