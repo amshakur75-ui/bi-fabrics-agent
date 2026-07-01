@@ -217,3 +217,131 @@ def test_spike_events_uses_canonical_p95(monkeypatch):
     # (they pass is_spike, so they're above p95 or floor).
     for ev in out["events"]:
         assert ev["cuSeconds"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 Part B: live event wiring (_events_or_mock) — offline with injected fakes.
+# Never hits a live endpoint; build_log_analytics_query/build_kusto_query are monkeypatched
+# at their definition site so the module-local `from .adapters.clients import ...` inside
+# _events_or_mock picks up the fake at call time.
+# ---------------------------------------------------------------------------
+
+def _set_la_env(monkeypatch):
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws-123")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+
+
+def _fake_la_query_builder(rows, captured=None):
+    def build(workspace_id, tenant_id, client_id, client_secret, session=None):
+        if captured is not None:
+            captured["workspace_id"] = workspace_id
+        def query(kql, timespan=None):
+            if captured is not None:
+                captured["kql"] = kql
+            return rows
+        return query
+    return build
+
+
+def test_events_go_live_when_la_configured(monkeypatch):
+    """Once FABRIC_LA_WORKSPACE_ID + FABRIC_CLIENT_ID are set, spike_events must source real
+    (injected-fake) LA rows instead of the mock fixture, and label source 'live'."""
+    _set_la_env(monkeypatch)
+    la_rows = [
+        # A cheap baseline row -- without it, a lone event's p95 equals itself and it can
+        # never register as its own spike (cu > p95 is never true for n=1).
+        {"TimeGenerated": "2026-07-01T09:00:00Z", "ExecutingUser": "baseline@co",
+         "ArtifactName": "Baseline Item", "OperationName": "QueryEnd", "CpuTimeMs": 1000},
+        {"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "zeynep@co",
+         "ArtifactName": "Live Item", "PowerBIWorkspaceName": "Live WS",
+         "OperationName": "QueryEnd", "CpuTimeMs": 99000,
+         "EventText": "EVALUATE Live"},
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(la_rows),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 7, "topN": 5})
+    assert out["source"] == "live"
+    assert len(out["events"]) == 1
+    assert out["events"][0]["cuSeconds"] == 99.0
+    assert out["events"][0]["queryText"] == "EVALUATE Live"
+
+
+def test_events_stay_mock_when_only_csv_configured(monkeypatch):
+    """Regression guard: FABRIC_CSV_PATHS alone (no LA) must NOT flip the event tools' source
+    label to 'live' — they are still reading the mock fixture, and must say so honestly."""
+    _no_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_CSV_PATHS", "/tmp/whatever.csv")
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 5})
+    assert out["source"] == "mock"
+
+
+def test_days_threads_into_la_window(monkeypatch):
+    """The `days` tool argument must reach the KQL ago() window, not be silently ignored."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    h({"days": 7})
+    assert "ago(7d)" in captured["kql"]
+
+
+def test_user_scope_threads_into_la_filter(monkeypatch):
+    """user_spike_history must scope the live query to the requested user, not pull the estate."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    h({"user": "Alice@Co", "days": 30})
+    assert 'ExecutingUser =~ "alice@co"' in captured["kql"]
+
+
+def test_capacity_series_included_when_capacity_events_also_configured(monkeypatch):
+    """When FABRIC_CAPACITY_EVENTS_CLUSTER/DB are also set, capacity_patterns must use the real
+    (injected-fake) CU% series instead of the empty default, alongside live events."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+
+    la_rows = [
+        {"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co", "ArtifactName": "I",
+         "OperationName": "QueryEnd", "CpuTimeMs": 5000},
+        {"TimeGenerated": "2026-07-01T10:01:00Z", "ExecutingUser": "b@co", "ArtifactName": "I",
+         "OperationName": "QueryEnd", "CpuTimeMs": 5000},
+        {"TimeGenerated": "2026-07-01T10:02:00Z", "ExecutingUser": "c@co", "ArtifactName": "I",
+         "OperationName": "QueryEnd", "CpuTimeMs": 5000},
+        {"TimeGenerated": "2026-07-01T10:03:00Z", "ExecutingUser": "d@co", "ArtifactName": "I",
+         "OperationName": "QueryEnd", "CpuTimeMs": 5000},
+    ]
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-01T10:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 1536000},   # 80%
+    ]
+
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(la_rows),
+    )
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        return lambda kql: ce_rows
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["source"] == "live"
+    # 4 distinct users in one 15-min bucket (>= SURGE_USER_THRESHOLD=4) + 80% CU (>= 70 threshold)
+    assert len(out["patterns"]) == 1
+    assert out["patterns"][0]["activeUsers"] == 4

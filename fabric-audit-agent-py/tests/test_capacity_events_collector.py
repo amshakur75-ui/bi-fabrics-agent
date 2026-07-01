@@ -1,5 +1,5 @@
 """Tests for the capacity-events collector (CU% / throttle from Real-Time Hub Capacity Overview Events)."""
-from fabric_audit_agent.adapters.collector_capacity_events import create_capacity_events_collector
+from fabric_audit_agent.adapters.collector_capacity_events import create_capacity_events_collector, capacity_series
 
 # FT64 -> baseCapacityUnits 64 CU/sec -> 30s budget = 64 * 1000 * 30 = 1,920,000 CU-ms.
 
@@ -39,3 +39,41 @@ def test_skips_nondict_rows():
     rows = ["CapacityEvents", None, {"capacityId": "C", "windowStartTime": "t", "baseCapacityUnits": 64, "capacityUnitMs": 960000}]
     cap = create_capacity_events_collector(lambda kql: rows)["collect"]()["capacity"]
     assert cap["peakCuPct"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# capacity_series — the full per-window series (not reduced to a single peak)
+# ---------------------------------------------------------------------------
+
+def test_series_returns_all_windows_sorted_by_ts():
+    rows = [
+        {"capacityId": "cap1", "windowStartTime": "t3", "baseCapacityUnits": 64, "capacityUnitMs": 960000},   # 50%
+        {"capacityId": "cap1", "windowStartTime": "t1", "baseCapacityUnits": 64, "capacityUnitMs": 1920000},  # 100%
+        {"capacityId": "cap1", "windowStartTime": "t2", "baseCapacityUnits": 64, "capacityUnitMs": 2016000},  # 105%
+    ]
+    series = capacity_series(lambda kql: rows)
+    assert series == [
+        {"ts": "t1", "cuPct": 100.0},
+        {"ts": "t2", "cuPct": 105.0},
+        {"ts": "t3", "cuPct": 50.0},
+    ]
+
+
+def test_series_dedupes_by_capacity_and_window():
+    rows = [
+        {"capacityId": "cap1", "windowStartTime": "t1", "baseCapacityUnits": 64, "capacityUnitMs": 960000},
+        {"capacityId": "cap1", "windowStartTime": "t1", "baseCapacityUnits": 64, "capacityUnitMs": 960000},  # dup
+    ]
+    assert capacity_series(lambda kql: rows) == [{"ts": "t1", "cuPct": 50.0}]
+
+
+def test_series_skips_unusable_rows():
+    rows = [
+        {"capacityId": "p", "windowStartTime": "t1", "capacityUnitMs": 5000},   # no baseCapacityUnits (P-SKU)
+        {"capacityId": "cap1", "windowStartTime": "t2", "baseCapacityUnits": 64, "capacityUnitMs": 960000},
+    ]
+    assert capacity_series(lambda kql: rows) == [{"ts": "t2", "cuPct": 50.0}]
+
+
+def test_series_empty():
+    assert capacity_series(lambda kql: []) == []

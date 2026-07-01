@@ -103,3 +103,35 @@ def create_capacity_events_collector(query, config=None):
         return {"capacity": cap}
 
     return {"collect": collect}
+
+
+def capacity_series(query, config=None):
+    """Return per-window ``[{ts, cuPct}]`` sorted by ``ts`` — the full series, NOT reduced to the
+    peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``
+    needs the series to correlate CU% against event-activity buckets). Same dedupe + CU% math as
+    the peak collector; read-only."""
+    cfg = config or {}
+    table = cfg.get("table", "CapacityEvents")
+    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
+    rows = query(kql) or []
+
+    seen = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        cap = str(_row(r, "capacityId", "CapacityId", "capacityid") or "")
+        win = str(_row(r, "windowStartTime", "WindowStartTime", "windowStart", "startTime", "timestamp") or "")
+        seen[(cap, win)] = r
+
+    out = []
+    for (cap, win), r in seen.items():
+        base = _num(_row(r, "baseCapacityUnits", "BaseCapacityUnits"))
+        used = _num(_row(r, "capacityUnitMs", "CapacityUnitMs"))
+        if base is None or used is None or base <= 0:
+            continue
+        budget = base * 1000 * _WINDOW_SEC
+        if budget <= 0:
+            continue
+        out.append({"ts": win, "cuPct": round(used / budget * 100, 1)})
+
+    return sorted(out, key=lambda p: p["ts"])

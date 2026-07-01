@@ -18,6 +18,7 @@ from .investigation.baseline import compute_baseline as _compute_baseline
 from .investigation.expensive import top_expensive as _top_expensive
 from .investigation.spike_history import user_spike_history as _user_spike_history
 from .investigation.patterns import capacity_patterns as _capacity_patterns
+from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +33,15 @@ def _has_live_source(env):
     Single source of truth so ``run_audit`` and ``list_workspaces`` can never disagree about
     whether to go live or fall back to the mock."""
     return any(env.get(v) for v in _LIVE_SOURCE_VARS)
+
+
+def _has_live_event_source(env):
+    """True only if the RAW per-event LA source (events_or_mock's actual live branch) is
+    configured. Narrower than ``_has_live_source`` on purpose: the Phase-3 event tools
+    (user_spike_history / spike_events / capacity_patterns) must not label their data "live"
+    just because some OTHER source (e.g. FABRIC_CSV_PATHS) is configured while events themselves
+    are still coming from the mock fixture -- that would be a real mislabel, not a cosmetic one."""
+    return bool(env.get("FABRIC_LA_WORKSPACE_ID") and env.get("FABRIC_CLIENT_ID"))
 
 
 def _run_real_or_mock(base, env):
@@ -203,19 +213,53 @@ def create_tool_definitions(base_dir=None):
         {"ts": "2026-06-30T09:15:00Z", "cuPct": 72.0},
     ]
 
-    def _events_or_mock():
-        """Yield a normalized event list.  Live event collector when configured; else small mock."""
-        # When a live event source is wired this returns real events; until then, the mock fixture
-        # ensures handlers are offline-testable and the MCP tool returns a shaped (not empty) result.
-        return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES
+    def _events_or_mock(*, days=None, user=None, item=None):
+        """Yield ``(events, capacity_series)``. Live LA event collector + capacity CU% series when
+        ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small offline
+        mock. Live requests are bounded (window from ``days``, capped row count) and scoped to
+        ``user``/``item`` when given -- never an unbounded whole-estate pull from a live request;
+        that mining belongs in the scheduled Job."""
+        env = os.environ
+        if not _has_live_event_source(env):
+            return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES
+
+        from .job import _require
+        from .adapters.clients import build_log_analytics_query
+        from .adapters.collector_events_la import create_event_collector
+
+        window = f"{int(days)}d" if days else "30d"
+        la_query = build_log_analytics_query(
+            env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
+            env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        )
+        event_cfg = {"window": window, "cap": 5000}
+        if user:
+            event_cfg["user"] = user
+        if item:
+            event_cfg["item"] = item
+        events = create_event_collector(la_query, event_cfg)["collect"]()
+
+        series = []
+        if env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB"):
+            from .adapters.clients import build_kusto_query
+            ce_query = build_kusto_query(
+                env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+                _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+            )
+            ce_cfg = {"window": window}
+            if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
+                ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
+            series = _capacity_cu_series(ce_query, ce_cfg)
+
+        return events, series
 
     def user_spike_history_handler(_input=None):
         """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
         inp = _input or {}
         user = inp.get("user") or ""
-        events, _ = _events_or_mock()
+        events, _ = _events_or_mock(days=inp.get("days"), user=user.lower() or None)
         result = _user_spike_history(events, user.lower())
-        result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
         return result
 
     def spike_events_handler(_input=None):
@@ -225,7 +269,7 @@ def create_tool_definitions(base_dir=None):
         compute_baseline p95 (not a hand-rolled percentile index)."""
         inp = _input or {}
         top_n = inp.get("topN") if inp.get("topN") is not None else 5
-        events, _ = _events_or_mock()
+        events, _ = _events_or_mock(days=inp.get("days"))
         baseline = _compute_baseline(events)
         p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
         spike_list = [
@@ -235,16 +279,17 @@ def create_tool_definitions(base_dir=None):
         result_events = _top_expensive(spike_list, n=top_n)
         return {
             "events": result_events,
-            "source": "live" if _has_live_source(os.environ) else "mock",
+            "source": "live" if _has_live_event_source(os.environ) else "mock",
         }
 
     def capacity_patterns_handler(_input=None):
         """Temporal activity-surge ↔ CU-spike patterns across the estate."""
-        events, capacity_series = _events_or_mock()
+        inp = _input or {}
+        events, capacity_series = _events_or_mock(days=inp.get("days"))
         patterns = _capacity_patterns(events, capacity_series)
         return {
             "patterns": patterns,
-            "source": "live" if _has_live_source(os.environ) else "mock",
+            "source": "live" if _has_live_event_source(os.environ) else "mock",
         }
 
     return [
