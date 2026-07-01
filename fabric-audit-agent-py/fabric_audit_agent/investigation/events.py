@@ -13,6 +13,7 @@ def normalize_event(row):
     dur = row.get("DurationMs")
     ms = cpu if cpu is not None else dur
     op = row.get("OperationName") or row.get("operation") or ""
+    raw_text = row.get("EventText") if row.get("EventText") is not None else row.get("queryText")
     return {
         "ts": row.get("TimeGenerated") or row.get("Timestamp") or row.get("ts") or "",
         "user": (_identity_email(row) or "").lower() or None,
@@ -23,6 +24,7 @@ def normalize_event(row):
         "cuSeconds": round((ms or 0) / 1000.0, 3),
         "durationMs": dur,
         "throttled": bool(row.get("throttled")),
+        "queryText": raw_text,
     }
 
 def is_spike(event, *, p95, floor_cu):
