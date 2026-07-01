@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "fabric-audit-agent"
 version = "1.0.0"
 description = "Read-only Microsoft Fabric / Power BI capacity & performance audit agent (Python, Databricks-ready)."

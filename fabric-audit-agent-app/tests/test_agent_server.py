@@ -20,7 +20,8 @@ def _load_agent_module():
     # Stub out deploy-only deps that aren't available in the test environment
     for mod in ["mlflow", "mlflow.genai", "mlflow.genai.agent_server",
                 "mlflow.types", "mlflow.types.responses",
-                "databricks_ai_bridge", "databricks_mcp"]:
+                "databricks_ai_bridge", "databricks_mcp",
+                "databricks", "databricks.sdk"]:
         if mod not in sys.modules:
             sys.modules[mod] = MagicMock()
 
@@ -268,19 +269,23 @@ def _async_handler(value):
     return _inner
 
 
+class _Block:
+    def __init__(self, **kw):
+        for k, v in kw.items(): setattr(self, k, v)
+
+
+class _Resp:
+    def __init__(self, content, stop_reason):
+        self.content = content
+        self.stop_reason = stop_reason
+
+
 class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
     """Smoke-test the inlined _run_tool_loop to catch divergence from loop.py."""
 
     def _make_client(self, responses):
         """Return a fake client that yields successive pre-built responses."""
         idx = [0]
-        class _Block:
-            def __init__(self, **kw):
-                for k, v in kw.items(): setattr(self, k, v)
-        class _Resp:
-            def __init__(self, content, stop_reason):
-                self.content = content
-                self.stop_reason = stop_reason
         class _Messages:
             def create(self_inner, **kw):
                 r = responses[idx[0]]
@@ -288,11 +293,11 @@ class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
                 return r
         class _Client:
             messages = _Messages()
-        return _Client(), _Block, _Resp
+        return _Client()
 
     async def test_direct_answer_no_tool_calls(self):
-        client, Block, Resp = self._make_client([
-            Resp([Block(type="text", text="The answer is 42.")], "end_turn")
+        client = self._make_client([
+            _Resp([_Block(type="text", text="The answer is 42.")], "end_turn")
         ])
         result = await _agent._run_tool_loop(
             client, model="m", system="s",
@@ -303,9 +308,9 @@ class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stoppedReason"], "answer")
 
     async def test_one_tool_call_then_answer(self):
-        client, Block, Resp = self._make_client([
-            Resp([Block(type="tool_use", id="t1", name="run_audit", input={})], "tool_use"),
-            Resp([Block(type="text", text="Audit done.")], "end_turn"),
+        client = self._make_client([
+            _Resp([_Block(type="tool_use", id="t1", name="run_audit", input={})], "tool_use"),
+            _Resp([_Block(type="text", text="Audit done.")], "end_turn"),
         ])
         dispatch = {"run_audit": _async_handler({"verdict": "optimize"})}
         result = await _agent._run_tool_loop(
@@ -319,10 +324,14 @@ class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["toolResults"][0]["tool"], "run_audit")
 
     async def test_budget_exhaustion(self):
-        client, Block, Resp = self._make_client(
-            [Resp([Block(type="tool_use", id=f"t{i}", name="run_audit", input={})], "tool_use")
+        # The fake client replays this list regardless of the tools= it was called
+        # with, so even though _run_tool_loop passes tools=[] on the final step, the
+        # model "keeps calling tools" for all max_steps iterations — the loop must
+        # exhaust its budget and report "budget", not fabricate an answer.
+        client = self._make_client(
+            [_Resp([_Block(type="tool_use", id=f"t{i}", name="run_audit", input={})], "tool_use")
              for i in range(10)]
-            + [Resp([Block(type="text", text="done")], "end_turn")]
+            + [_Resp([_Block(type="text", text="done")], "end_turn")]
         )
         dispatch = {"run_audit": _async_handler({})}
         result = await _agent._run_tool_loop(
@@ -331,8 +340,7 @@ class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
             tools=[{"name": "run_audit", "description": "", "input_schema": {}}],
             dispatch=dispatch, max_steps=3,
         )
-        # At max_steps-1=2, tools are passed; at step 2 (last), tools=[] so model answers
-        self.assertEqual(result["stoppedReason"], "answer")
+        self.assertEqual(result["stoppedReason"], "budget")
 
 
 if __name__ == "__main__":
