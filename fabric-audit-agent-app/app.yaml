@@ -1,0 +1,18 @@
+﻿command: ["uv", "run", "start-app"]
+# Backend on :8000, chat UI on :3000 (proxied by the app platform)
+
+env:
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"
+  - name: API_PROXY
+    value: "http://localhost:8000/invocations"
+  - name: CHAT_APP_PORT
+    value: "3000"
+  - name: CHAT_PROXY_TIMEOUT_SECONDS
+    value: "300"
+  - name: DATABRICKS_CLAUDE_ENDPOINT
+    value: "databricks-claude-opus-4-7"
+  - name: FABRIC_MCP_URL
+    value: "https://mcp-bi-fabrics-auditor-7405609570261849.9.azure.databricksapps.com/mcp"

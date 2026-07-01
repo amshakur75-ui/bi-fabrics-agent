@@ -1,4 +1,4 @@
-[project]
+﻿[project]
 name = "fabric-audit-agent"
 version = "1.0.0"
 description = "Read-only Microsoft Fabric / Power BI capacity & performance audit agent (Python, Databricks-ready)."
@@ -9,6 +9,15 @@ dependencies = []   # anthropic / msal / databricks-sdk added as their adapters 
 dev = ["pytest>=7"]
 prod = ["requests>=2", "msal>=1.24", "anthropic>=0.39"]   # collector_rest / clients / reasoner_claude
 mcp = ["mcp>=1.2"]                                          # mcp_server (pull surface)
+agent = [                                                   # Phase 2: agent app on Databricks Apps
+    "requests>=2",
+    "msal>=1.24",
+    "databricks-sdk>=0.28",
+    "databricks-ai-bridge>=0.4",
+    "databricks-mcp>=0.1",
+    "mlflow>=2.16",
+    "azure-kusto-data>=4.0",
+]
 
 [project.scripts]
 fabric-audit = "fabric_audit_agent.__main__:_console"

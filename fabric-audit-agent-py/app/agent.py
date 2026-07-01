@@ -38,12 +38,91 @@ _MCP_URL = os.environ["FABRIC_MCP_URL"]                          # e.g. https://
 
 
 def _build_claude_client(ws):
-    """Anthropic-Messages-shaped client for the in-tenant Claude serving endpoint, under the user's
-    identity. (C) VERIFY the protocol with the B1 smoke; swap in the §B1-alt adapter if the endpoint
-    only speaks OpenAI chat-completions. The loop only needs `.messages.create(...)`."""
-    import anthropic
-    return anthropic.Anthropic(base_url=f"{ws.config.host}/serving-endpoints/{_MODEL}",
-                               api_key=ws.config.token)
+    """§B1-alt adapter: endpoint speaks OpenAI chat-completions; this wraps it in the Anthropic
+    Messages shape the loop expects (.messages.create(...) → content blocks + stop_reason).
+    Confirmed by B1 smoke: endpoint returns choices[0].finish_reason, not stop_reason."""
+    import json as _json, requests as _req
+
+    endpoint_url = f"{ws.config.host}/serving-endpoints/{_MODEL}/invocations"
+    token = ws.config.token
+
+    class _Block:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    class _Resp:
+        def __init__(self, content, stop_reason):
+            self.content = content
+            self.stop_reason = stop_reason
+
+    class _Messages:
+        def create(self, model=None, max_tokens=1024, system=None, messages=None, tools=None):
+            oai_msgs = []
+            # system → system message
+            if system:
+                sys_text = system if isinstance(system, str) else " ".join(
+                    b.get("text", "") for b in (system or []) if isinstance(b, dict))
+                oai_msgs.append({"role": "system", "content": sys_text})
+            # convert messages (Anthropic → OpenAI)
+            for m in (messages or []):
+                role, content = m.get("role"), m.get("content")
+                if role == "user" and isinstance(content, list):
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            tc_content = b.get("content", "")
+                            if isinstance(tc_content, list):
+                                tc_content = " ".join(c.get("text","") if isinstance(c,dict) else str(c) for c in tc_content)
+                            oai_msgs.append({"role": "tool", "tool_call_id": b.get("tool_use_id",""), "content": tc_content})
+                    texts = [b.get("text","") for b in content if isinstance(b,dict) and b.get("type")=="text"]
+                    if texts:
+                        oai_msgs.append({"role": "user", "content": " ".join(texts)})
+                elif role == "assistant" and isinstance(content, list):
+                    texts, tcs = [], []
+                    for b in content:
+                        if isinstance(b, dict):
+                            if b.get("type") == "text": texts.append(b.get("text",""))
+                            elif b.get("type") == "tool_use":
+                                tcs.append({"id": b.get("id",""), "type": "function",
+                                            "function": {"name": b.get("name",""),
+                                                         "arguments": _json.dumps(b.get("input",{}))}})
+                    d = {"role": "assistant", "content": " ".join(texts) if texts else None}
+                    if tcs: d["tool_calls"] = tcs
+                    oai_msgs.append(d)
+                else:
+                    oai_msgs.append({"role": role, "content": content if isinstance(content, str) else str(content or "")})
+            # tools (Anthropic → OpenAI function format)
+            body = {"messages": oai_msgs, "max_tokens": max_tokens}
+            if tools:
+                body["tools"] = [{"type": "function", "function": {
+                    "name": t.get("name"), "description": t.get("description",""),
+                    "parameters": t.get("input_schema", {"type":"object","properties":{}})
+                }} for t in tools]
+            # call endpoint
+            r = _req.post(endpoint_url, json=body, headers={"Authorization": f"Bearer {token}",
+                                                             "Content-Type": "application/json"})
+            r.raise_for_status()
+            data = r.json()
+            choice = data["choices"][0]
+            msg = choice["message"]
+            # map response (OpenAI → Anthropic blocks)
+            blocks = []
+            if msg.get("content"):
+                blocks.append(_Block(type="text", text=msg["content"]))
+            for tc in (msg.get("tool_calls") or []):
+                inp = tc["function"].get("arguments", "{}")
+                if isinstance(inp, str):
+                    try: inp = _json.loads(inp)
+                    except: inp = {}
+                blocks.append(_Block(type="tool_use", id=tc.get("id",""),
+                                     name=tc["function"]["name"], input=inp))
+            stop_map = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
+            return _Resp(blocks, stop_map.get(choice.get("finish_reason","stop"), "end_turn"))
+
+    class _Client:
+        messages = _Messages()
+
+    return _Client()
 
 
 def _mcp_tools_and_dispatch(ws):
