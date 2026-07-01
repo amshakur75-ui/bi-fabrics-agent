@@ -6,6 +6,7 @@ names the owner for background-dominated load, else notes users are pending corr
 """
 import math
 from ..config import DEFAULT_CONFIG
+from ..investigation.sku import round_pct
 
 
 def _fmt(x):
@@ -26,6 +27,7 @@ def detect_concentration(facts, config=None):
             continue
         if not math.isfinite(share) or share < min_share:
             continue
+        share = round_pct(share)  # clip false precision (e.g. 49.213063380823705 -> 49.2)
         share_out = int(share) if share == int(share) else share   # 70.0 -> 70 for clean JSON parity
 
         ws = it.get("workspace") or "unknown workspace"

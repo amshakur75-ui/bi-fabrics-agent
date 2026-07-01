@@ -3,6 +3,8 @@
 Decides whether the capacity needs optimization first or a genuine size-up, from the
 capacity facts + capacity-domain flags.
 """
+from .investigation.sku import sku_note
+
 _NEXT_SKU = {
     "F2": "F4", "F4": "F8", "F8": "F16", "F16": "F32",
     "F32": "F64", "F64": "F128", "F128": "F256", "F256": "F512",
@@ -31,11 +33,15 @@ def build_capacity_verdict(facts, flags):
             "evidence": {"peakCuPct": c.get("peakCuPct"), "throttleMinutes": c.get("throttleMinutes"), "optimizations": optimizations},
         }
 
+    current_sku = c.get("sku")
+    note = sku_note(current_sku)
+    evidence = {
+        "peakCuPct": c.get("peakCuPct"), "throttleMinutes": c.get("throttleMinutes"),
+        "currentSku": current_sku, "recommendedSku": _NEXT_SKU.get(current_sku, "next tier up"),
+        "skuNote": note,
+    }
     return {
         "decision": "size-up",
         "reason": f"Capacity {c.get('capacityId')} is throttling with no remaining optimizations — the honest answer is a larger SKU.",
-        "evidence": {
-            "peakCuPct": c.get("peakCuPct"), "throttleMinutes": c.get("throttleMinutes"),
-            "currentSku": c.get("sku"), "recommendedSku": _NEXT_SKU.get(c.get("sku"), "next tier up"),
-        },
+        "evidence": evidence,
     }

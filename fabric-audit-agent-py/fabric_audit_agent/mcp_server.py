@@ -18,9 +18,18 @@ def _make_no_arg(handler):
 
 
 def _make_with_args(handler):
-    """Return a union-signature tool function wrapping *handler* (user/days/when optional)."""
-    def _tool(user: str = None, days: int = 30, when: str = None):
-        payload = {k: v for k, v in {"user": user, "days": days, "when": when}.items()
+    """Return a union-signature tool function wrapping *handler*.
+
+    Covers the union of all arg-taking tool schemas:
+      user  (user_activity, investigate_user, user_spike_history)
+      days  (investigate_user, user_spike_history, spike_events, capacity_patterns)
+      when  (investigate_capacity_spike)
+      topN  (spike_events)
+    Only non-None values are forwarded so handlers can apply their own defaults.
+    """
+    def _tool(user: str = None, days: int = 30, when: str = None, topN: int = 5):
+        payload = {k: v for k, v in
+                   {"user": user, "days": days, "when": when, "topN": topN}.items()
                    if v is not None}
         return handler(payload)
     return _tool
@@ -34,8 +43,9 @@ def manifest(base_dir=None):
 def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
     (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
-    ``investigate_capacity_spike``). No-arg tools are registered without parameters;
-    arg-taking tools expose ``user``, ``days``, and ``when`` as optional FastMCP params.
+    ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``,
+    ``capacity_patterns``). No-arg tools are registered without parameters; arg-taking
+    tools expose ``user``, ``days``, ``when``, and ``topN`` as optional FastMCP params.
     Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
