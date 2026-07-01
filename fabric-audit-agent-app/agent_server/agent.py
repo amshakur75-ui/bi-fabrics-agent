@@ -7,13 +7,18 @@ needed). Claude endpoint bridged via the §B1-alt adapter (OpenAI chat-completio
 import json
 import os
 
-from mlflow.genai.agent_server import invoke, stream
+from databricks.sdk import WorkspaceClient
+from mlflow.genai.agent_server import get_request_headers, invoke, stream
 from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
 )
-from databricks_ai_bridge import get_user_workspace_client
+
+
+def get_user_workspace_client() -> WorkspaceClient:
+    token = get_request_headers().get("x-forwarded-access-token")
+    return WorkspaceClient(token=token, auth_type="pat")
 
 _MODEL = os.environ.get("DATABRICKS_CLAUDE_ENDPOINT", "databricks-claude-opus-4-7")
 _MCP_URL = os.environ.get("FABRIC_MCP_URL", "")
