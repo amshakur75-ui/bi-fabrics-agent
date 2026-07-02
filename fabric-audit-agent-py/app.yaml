@@ -1,11 +1,17 @@
-# Databricks App — hosts the read-only Fabric Audit MCP server (the run_audit tool) at /mcp.
+# Databricks App — hosts the read-only Fabric Audit MCP server at /mcp.
 # Deploy per: https://learn.microsoft.com/azure/databricks/generative-ai/mcp/custom-mcp
 # Databricks installs requirements.txt, then runs this command; apps listen on port 8000.
 #
-# The tool is READ-AND-RETURN: it audits live sources and returns findings to the agent. It writes
-# NOTHING — a Databricks App can't write /Volumes, and it doesn't need to. History + report files
-# are the scheduled Job's role (databricks.yml), which runs on a cluster and persists to the catalog.
-
+# SAFE FOR PUBLIC REPO: every credential AND infrastructure identifier/endpoint is injected
+# via `valueFrom` from a Databricks App *resource* (secret-backed, scope `fabric-audit`) — no
+# tenant/client IDs, workspace GUIDs, or cluster URLs appear in git. The matching app resources
+# (tenant_id, client_id, client_secret, la_workspace_id, capacity_events_cluster,
+# capacity_events_db, kusto_cluster, kusto_db) must exist on the app for these to resolve; see
+# docs/DEPLOY-STATUS.md. This file is complete, so a plain `repos update` pull deploys cleanly
+# (no workspace-only overrides needed).
+#
+# The MCP tools are READ-AND-RETURN: they audit live sources and return findings to the agent,
+# writing nothing. LLM reasoning happens in the agent app, so no Claude endpoint is set here.
 command: ["fabric-audit-mcp"]
 
 env:
@@ -14,24 +20,34 @@ env:
   - name: MCP_PORT
     value: "8000"
 
-  # --- Live Fabric audit (no CSV, no mock). Creds come from App secrets — add three named
-  #     tenant_id / client_id / client_secret (public repo: never inline real IDs/secrets here). ---
+  # SP credentials + tenant/client identity — secret-backed app resources (never inline in git)
   - name: FABRIC_TENANT_ID
     valueFrom: tenant_id
   - name: FABRIC_CLIENT_ID
     valueFrom: client_id
   - name: FABRIC_CLIENT_SECRET
     valueFrom: client_secret
+
+  # Fabric REST API (public endpoint — safe inline)
   - name: FABRIC_CAPACITIES_URL
     value: "https://api.fabric.microsoft.com/v1/capacities"
-  - name: DATABRICKS_CLAUDE_ENDPOINT
-    value: "databricks-claude-opus-4-7"   # confirm this exact endpoint name under Serving
 
-  # NOTE: do NOT set FABRIC_OUT_DIR / AUDIT_HISTORY_PATH here — the App can't write /Volumes.
-  #       Those belong to the scheduled Job (databricks.yml), which persists history to the catalog.
+  # Per-user attribution via Log Analytics (the 30% "who") — workspace GUID via resource
+  - name: FABRIC_LA_WORKSPACE_ID
+    valueFrom: la_workspace_id
 
-  # --- Real CU% / per-user (30%) findings need Workspace Monitoring; set once the Eventhouse is up: ---
-  # - name: FABRIC_KUSTO_CLUSTER
-  #   value: "https://<eventhouse>.kusto.fabric.microsoft.com"
-  # - name: FABRIC_KUSTO_DB
-  #   value: "<monitoring-database-name>"
+  # Capacity Events Eventhouse (live CU%) — cluster/db via resources; KQL is non-sensitive query logic
+  - name: FABRIC_CAPACITY_EVENTS_CLUSTER
+    valueFrom: capacity_events_cluster
+  - name: FABRIC_CAPACITY_EVENTS_DB
+    valueFrom: capacity_events_db
+  - name: FABRIC_CAPACITY_EVENTS_KQL
+    value: "CapacityEvents | where ingestion_time() > ago(1d) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
+
+  # Workspace Monitoring Eventhouse (per-user SemanticModelLogs) — cluster/db via resources
+  - name: FABRIC_KUSTO_CLUSTER
+    valueFrom: kusto_cluster
+  - name: FABRIC_KUSTO_DB
+    valueFrom: kusto_db
+  - name: FABRIC_KUSTO_KQL
+    value: "SemanticModelLogs | where Timestamp > ago(1d) | where isnotempty(ExecutingUser) | summarize cpuMs=sum(CpuTimeMs) by Workspace=WorkspaceName, Item=ItemName, ExecutingUser"

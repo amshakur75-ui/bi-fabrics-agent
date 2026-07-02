@@ -45,6 +45,68 @@ Five bugs were fixed to reach this state (see commit history on `main` from `e48
    dropping every block and sending Claude an empty message. Fixed by falling back to
    `getattr(c, "text", "")` for non-dict blocks.
 
+## Phase 3 Part B — Live event tools deployed + verified (2026-07-02)
+
+The 3 Phase-3 event tools now run on **live** Log Analytics data on the MCP app (were mock-only):
+
+- **`spike_events`** → real event-level depth: per-event timestamps, users, `cuSeconds`, and actual
+  `queryText` (DAX/XMLA) — not averages.
+- **`user_spike_history`** → e.g. `edwin.gregary@…` → 208 spikes, per-event item/operation/kind.
+- **`capacity_patterns`** → runs live (`source: "live"`); returns `[]` when no ≥4-user surge
+  coincides with a ≥70% CU bucket (valid deterministic result, not an error).
+- **`run_audit`** and the other 5 tools verified returning live data; `tools/list` shows all 8.
+
+Verified by direct MCP JSON-RPC (`initialize` → `tools/list` → `tools/call`) with a CLI OAuth token.
+The previously-unverified `OperationName`/`EventText` LA columns **work on first live call** — no
+schema fix needed. All read-only (SELECT-only KQL).
+
+### Deploy mechanics learned the hard way (documented so they don't recur)
+
+1. **`requirements.txt` install cache.** Databricks Apps keys the pip install on this file's content
+   hash and logs `Requirements have not changed. Skipping installation.` when unchanged. The app
+   installs the local package via `.[mcp]` *by version*, so a `pyproject.toml` version bump alone
+   never reinstalls — the app kept serving stale pre-Part-A code (only `run_audit` in `tools/list`).
+   **Fix:** bump the `# code version:` marker in `requirements.txt` in lockstep with the pyproject
+   version on every code change — this changes the hash and forces the reinstall.
+
+2. **The MCP app is a git-backed Databricks Repo.** Deploy = `databricks repos update <id>
+   --branch main --dangerously-force-discard-all` (discards workspace edits, pulls main — atomic,
+   no destructive window) → then `apps deploy`. Do **not** hand-upload files into the Repo working
+   tree; that dirties it and blocks future pulls.
+
+3. **`app.yaml` is now fully `valueFrom` + pull-safe (the durable fix).** Previously the working
+   `app.yaml` was **workspace-only** (inline tenant/client IDs + live-source config) and never in
+   git, because the repo is **public**. Any `repos update` wiped it and broke the app. Fixed by
+   promoting **all** credentials *and* infrastructure identifiers/endpoints to secret-backed **app
+   resources**, so git's `app.yaml` is 100% `valueFrom` (no sensitive values) and complete — a plain
+   pull now deploys cleanly.
+
+   App resources on `mcp-bi-fabrics-auditor` (secret scope `fabric-audit`):
+
+   | Resource | Secret key | Injected env |
+   |----------|-----------|--------------|
+   | `tenant_id` | `FABRIC_TENANT_ID` | `FABRIC_TENANT_ID` |
+   | `client_id` | `FABRIC_CLIENT_ID` | `FABRIC_CLIENT_ID` |
+   | `client_secret` | `FABRIC_CLIENT_SECRET` | `FABRIC_CLIENT_SECRET` |
+   | `la_workspace_id` | `FABRIC_LA_WORKSPACE_ID` | `FABRIC_LA_WORKSPACE_ID` |
+   | `capacity_events_cluster` | `FABRIC_CAPACITY_EVENTS_CLUSTER` | `FABRIC_CAPACITY_EVENTS_CLUSTER` |
+   | `capacity_events_db` | `FABRIC_CAPACITY_EVENTS_DB` | `FABRIC_CAPACITY_EVENTS_DB` |
+   | `kusto_cluster` | `FABRIC_KUSTO_CLUSTER` | `FABRIC_KUSTO_CLUSTER` |
+   | `kusto_db` | `FABRIC_KUSTO_DB` | `FABRIC_KUSTO_DB` |
+
+   (`FABRIC_CAPACITY_EVENTS_KQL` / `FABRIC_KUSTO_KQL` stay inline in `app.yaml` — query logic only,
+   no secrets. The Databricks CLI *OAuth* profile is required to write secrets; the PAT lacks the
+   `secrets` scope.)
+
+### Incident + recovery note (transparency)
+
+The Part B deploy briefly broke the MCP app: the first `repos update` pulled the incomplete git
+`app.yaml` (`valueFrom: tenant_id/client_id` referencing resources that didn't exist yet) over the
+working workspace-only version, so `run_audit` errored (`estate.json not found` — it had fallen back
+to the un-packaged mock because no live source resolved). Recovered by restoring the working config,
+then eliminated the root cause with the app-resource fix above. Running apps were never at data risk
+(read-only; the estate was never written).
+
 ## Known Issues — Phase 3 Backlog
 
 1. **No capacity-name filter on `run_audit`.** `run_audit`'s `input_schema` takes no parameters,
