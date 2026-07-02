@@ -49,72 +49,18 @@ def _default_kql(table, window):
     return f"['{table}']\n| where ingestion_time() > ago({window})"
 
 
-def create_capacity_events_collector(query, config=None):
-    """``config`` keys: ``table`` (Eventhouse table the eventstream writes to, default "CapacityEvents"),
-    ``window`` (lookback, default "1d"), ``kql`` (override the whole query)."""
-    cfg = config or {}
-    table = cfg.get("table", "CapacityEvents")
-    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
+def _windows(rows):
+    """Dedupe Capacity Overview Events to one row per (capacityId, window) and compute CU% per
+    window. Returns ``[{"cap", "ts", "pct"}]`` for every window with a positive budget; P-SKU
+    autoscale / missing-field rows (no positive budget) are skipped -- they can't yield a %.
 
-    def collect():
-        rows = query(kql) or []
-
-        # Dedupe to one row per (capacityId, window) — best-effort delivery can duplicate.
-        seen = {}
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            cap = str(_row(r, "capacityId", "CapacityId", "capacityid") or "")
-            win = str(_row(r, "windowStartTime", "WindowStartTime", "windowStart", "startTime", "timestamp") or "")
-            seen[(cap, win)] = r
-
-        peak = None
-        peak_at = ""
-        over_windows = 0
-        usable = 0
-        cap_id = ""
-        for r in seen.values():
-            base = _num(_row(r, "baseCapacityUnits", "BaseCapacityUnits"))
-            used = _num(_row(r, "capacityUnitMs", "CapacityUnitMs"))
-            if base is None or used is None or base <= 0:
-                continue   # P-SKU autoscale / missing fields → can't compute %, skip
-            budget = base * 1000 * _WINDOW_SEC
-            if budget <= 0:
-                continue
-            usable += 1
-            pct = used / budget * 100
-            cap_id = cap_id or str(_row(r, "capacityId", "CapacityId") or "")
-            if peak is None or pct > peak:
-                peak = pct
-                peak_at = str(_row(r, "windowStartTime", "WindowStartTime", "startTime", "timestamp") or "")
-            if pct >= 100:
-                over_windows += 1
-
-        if not usable:
-            return {}   # nothing computable → contribute nothing; merge keeps other sources
-
-        cap = {
-            "peakCuPct": round(peak, 1),
-            "peakAt": peak_at,
-            "throttleMinutes": round(over_windows * _WINDOW_SEC / 60, 1),
-        }
-        if cap_id:
-            cap["capacityId"] = cap_id
-        return {"capacity": cap}
-
-    return {"collect": collect}
-
-
-def capacity_series(query, config=None):
-    """Return per-window ``[{ts, cuPct}]`` sorted by ``ts`` — the full series, NOT reduced to the
-    peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``
-    needs the series to correlate CU% against event-activity buckets). Same dedupe + CU% math as
-    the peak collector; read-only."""
-    cfg = config or {}
-    table = cfg.get("table", "CapacityEvents")
-    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
-    rows = query(kql) or []
-
+    Shared by ``create_capacity_events_collector`` (which reduces to the peak) and
+    ``capacity_series`` (which keeps every point), so the dedupe + the official
+    ``capacityUnitMs / (baseCapacityUnits*1000*30) * 100`` math live in exactly ONE place. The
+    window ``ts`` and ``cap`` are resolved from the SAME field lists used to build the dedupe key,
+    so a downstream ``peakAt`` / series ``ts`` can never disagree with the key -- e.g. a row
+    carrying only ``windowStart`` still surfaces its timestamp."""
+    # Best-effort delivery can duplicate → dedupe to one row per (capacityId, window).
     seen = {}
     for r in rows:
         if not isinstance(r, dict):
@@ -128,10 +74,52 @@ def capacity_series(query, config=None):
         base = _num(_row(r, "baseCapacityUnits", "BaseCapacityUnits"))
         used = _num(_row(r, "capacityUnitMs", "CapacityUnitMs"))
         if base is None or used is None or base <= 0:
-            continue
+            continue   # P-SKU autoscale / missing fields → can't compute %, skip
         budget = base * 1000 * _WINDOW_SEC
         if budget <= 0:
             continue
-        out.append({"ts": win, "cuPct": round(used / budget * 100, 1)})
+        out.append({"cap": cap, "ts": win, "pct": used / budget * 100})
+    return out
 
-    return sorted(out, key=lambda p: p["ts"])
+
+def create_capacity_events_collector(query, config=None):
+    """``config`` keys: ``table`` (Eventhouse table the eventstream writes to, default "CapacityEvents"),
+    ``window`` (lookback, default "1d"), ``kql`` (override the whole query)."""
+    cfg = config or {}
+    table = cfg.get("table", "CapacityEvents")
+    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
+
+    def collect():
+        windows = _windows(query(kql) or [])
+        if not windows:
+            return {}   # nothing computable → contribute nothing; merge keeps other sources
+
+        peak_w = max(windows, key=lambda w: w["pct"])   # first max wins on ties (insertion order)
+        over_windows = sum(1 for w in windows if w["pct"] >= 100)
+        cap_id = next((w["cap"] for w in windows if w["cap"]), "")
+
+        cap = {
+            "peakCuPct": round(peak_w["pct"], 1),
+            "peakAt": peak_w["ts"],
+            "throttleMinutes": round(over_windows * _WINDOW_SEC / 60, 1),
+        }
+        if cap_id:
+            cap["capacityId"] = cap_id
+        return {"capacity": cap}
+
+    return {"collect": collect}
+
+
+def capacity_series(query, config=None):
+    """Return per-window ``[{ts, cuPct}]`` sorted by ``ts`` — the full series, NOT reduced to the
+    peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``
+    needs the series to correlate CU% against event-activity buckets). Shares ``_windows`` (dedupe +
+    CU% math) with the peak collector; read-only."""
+    cfg = config or {}
+    table = cfg.get("table", "CapacityEvents")
+    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
+    windows = _windows(query(kql) or [])
+    return sorted(
+        [{"ts": w["ts"], "cuPct": round(w["pct"], 1)} for w in windows],
+        key=lambda p: p["ts"],
+    )

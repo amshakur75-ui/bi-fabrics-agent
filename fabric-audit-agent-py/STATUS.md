@@ -13,16 +13,22 @@ reads + advises + notifies; it never edits/refreshes/scales/deletes.
 
 ## Current state
 - **Build: complete & verified.** All-Python port of the Node reference (`../fabric-audit-agent/`).
-  `python -m pytest -q` → **347 passed, 1 skipped** (skip = optional `mcp` SDK). Audit/eval output is
+  `python -m pytest -q` → **460 passed, 1 skipped** (skip = optional `mcp` SDK). Audit/eval output is
   byte-identical to Node; zero Node in the runtime path.
-- **Rollout: Phase 1 done · Phase 2 built (awaiting your run) · Phase 3 next.**
+- **Rollout: Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** — the read-only
+  agent App + MCP app are **deployed and verified end-to-end** on Databricks (see [`docs/DEPLOY-STATUS.md`](docs/DEPLOY-STATUS.md));
+  the scheduled Job / Teams surface is still pending.
+- **Two phase tracks — don't conflate.** The *Phase N* labels here are the **deployment-rollout**
+  track (CSV → connectivity → Databricks → estate-wide). The **agent-capability** build phases
+  (investigation core → agent brain → event depth → deeper permissions) are a separate track,
+  tracked in `docs/superpowers/plans/` + `docs/DEPLOY-STATUS.md`.
 
 ## Rollout phases
 | Phase | What | Status | How |
 |---|---|---|---|
 | **1 — local engine test** | run the engine on a real Capacity Metrics CSV export; no cloud, no SP | ✅ done (on `data.csv`) | `python run.py import data.csv [Items.csv]` / `inspect` |
 | **2 — single-workspace connectivity test** | prove auth + one-workspace read, locally | ✅ built | `python -m fabric_audit_agent.connectivity <wsId> [--auth user\|sp]` → `PHASE2-SP-TEST.md` |
-| **3 — Databricks deployment** | scheduled read-only sweep (secret scope, wheel, Job, Teams) | ⬜ next | `PHASE3-DATABRICKS.md` |
+| **3 — Databricks deployment** | scheduled read-only sweep (secret scope, wheel, Job, Teams) | 🔄 in progress — App + MCP deployed & verified (`docs/DEPLOY-STATUS.md`); Job/Teams pending | `PHASE3-DATABRICKS.md` |
 | **4 — widen + interactive** | estate-wide admin APIs, Log Analytics attribution, MCP/Copilot pull, Bot Service two-way, ITSM | ⬜ later | `DEPLOYMENT.md` §§2, 4 |
 
 ## Phase 1 — what we found (on `data.csv`, 3,119 timepoints)
