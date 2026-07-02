@@ -12,8 +12,8 @@ def test_groups_ranks_and_shares():
     items = {it["name"]: it for it in col["collect"]()["items"]}
 
     sales = items["Sales Model"]
-    assert sales["cuSeconds"] == 1000
-    assert round(sales["sharePct"]) == 50            # 1000 of 2000 total
+    assert sales["cuSeconds"] == 1.0                 # 800ms + 200ms = 1000ms -> 1.0 CU-seconds
+    assert round(sales["sharePct"]) == 50            # 1000 of 2000 ms total (ratio unchanged)
     assert sales["topUsers"][0]["user"] == "jane@x.com"   # ranked by cpu
     assert sales["userCount"] == 2
     assert sales["attributionMode"] == "cost"
@@ -59,5 +59,5 @@ def test_rows_without_user_skipped_in_attribution():
         {"ArtifactName": "M", "ExecutingUser": "u@x.com", "cpuMs": 50},
     ]
     item = create_log_analytics_collector(lambda kql: rows)["collect"]()["items"][0]
-    assert item["cuSeconds"] == 100        # both rows count toward CU
+    assert item["cuSeconds"] == 0.1        # 50ms + 50ms = 100ms -> 0.1 CU-seconds (both rows count)
     assert item["userCount"] == 1          # only the named user is attributed

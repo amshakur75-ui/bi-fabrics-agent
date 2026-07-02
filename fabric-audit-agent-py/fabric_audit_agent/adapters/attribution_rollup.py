@@ -53,7 +53,12 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
             continue
         ws = _row(r, "Workspace", "workspace", "WorkspaceName", "PowerBIWorkspaceName") or ws_label
         user = identity_email(_row(r, "ExecutingUser", "user", "Identity"))
-        cpu = _row(r, "cpuMs", "CpuTimeMs", "DurationMs", "cuSeconds") or 0
+        # Cost column is milliseconds (CpuTimeMs / DurationMs) -> convert to CU-seconds so this
+        # matches ``normalize_event``'s scale (this rollup previously emitted MILLISECONDS labelled
+        # as cuSeconds, ~1000x off from the event path). ``cuSeconds`` input is already seconds.
+        raw_ms = _row(r, "cpuMs", "CpuTimeMs", "DurationMs")
+        cs = r.get("cuSeconds")
+        cpu = (raw_ms / 1000.0) if raw_ms is not None else (cs if cs is not None else 0)
         g = groups.setdefault((str(ws).lower(), str(name).lower()),
                               {"workspace": ws, "name": name, "users": {}, "cpu": 0})
         g["cpu"] += cpu
@@ -67,20 +72,20 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
 
     items = []
     for g in groups.values():
-        ranked = sorted(({"user": u, "cuSeconds": c} for u, c in g["users"].items()),
+        ranked = sorted(({"user": u, "cuSeconds": round(c, 3)} for u, c in g["users"].items()),
                         key=lambda x: -x["cuSeconds"])
         items.append({
-            "workspace": g["workspace"], "name": g["name"], "cuSeconds": g["cpu"],
+            "workspace": g["workspace"], "name": g["name"], "cuSeconds": round(g["cpu"], 3),
             "sharePct": (g["cpu"] / total * 100) if total else 0,
             "topUsers": ranked[:top_n], "userCount": len(ranked), "attributionMode": "cost",
         })
 
     users = []
     for u in by_user.values():
-        top_items = sorted(({"name": n, "cuSeconds": c} for n, c in u["items"].items()),
+        top_items = sorted(({"name": n, "cuSeconds": round(c, 3)} for n, c in u["items"].items()),
                            key=lambda x: -x["cuSeconds"])
         users.append({
-            "user": u["user"], "cuSeconds": u["cpu"],
+            "user": u["user"], "cuSeconds": round(u["cpu"], 3),
             "sharePct": (u["cpu"] / total * 100) if total else 0,
             "topItems": top_items[:top_n], "itemCount": len(top_items),
         })
