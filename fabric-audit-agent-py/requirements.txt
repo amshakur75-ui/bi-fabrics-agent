@@ -1,5 +1,12 @@
 # Dependencies for the Databricks App that hosts the MCP server (installed at app build).
 # Installs this package with the MCP extra, plus the in-tenant Claude client deps.
+#
+# DEPLOY NOTE: Databricks Apps caches the pip install on THIS FILE's content hash
+# ("Requirements have not changed. Skipping installation."). The local `.` package
+# below installs by version, so bumping pyproject version alone is NOT enough --
+# this file must also change to force a reinstall. Bump the marker below in lockstep
+# with the pyproject version whenever the package code changes.
+# code version: 1.1.0
 .[mcp]
 openai>=1.0
 databricks-sdk>=0.28  # get_open_ai_client added in 0.28
