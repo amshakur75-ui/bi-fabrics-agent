@@ -13,8 +13,8 @@ actions are delivering findings and sending notifications.
 
 ## Status & rollout (new session: start here)
 
-Build is **complete & verified** (`python -m pytest -q` → **347 passed, 1 skipped**; byte-identical
-to the Node reference). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 next**:
+Build is **complete & verified** (`python -m pytest -q` → **460 passed, 1 skipped**; byte-identical
+to the Node reference). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** (read-only App + MCP deployed & verified end-to-end — see `docs/DEPLOY-STATUS.md`; scheduled Job/Teams pending):
 
 1. **Phase 1 — local CSV test** (done): `python run.py import data.csv [Items.csv]`.
 2. **Phase 2 — single-workspace connectivity test** (built): `python -m fabric_audit_agent.connectivity <wsId> [--auth user|sp]` → **PHASE2-SP-TEST.md**.

@@ -77,3 +77,18 @@ def test_series_skips_unusable_rows():
 
 def test_series_empty():
     assert capacity_series(lambda kql: []) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: peakAt must resolve the SAME window-timestamp field list as the
+# dedupe key. A row keyed only on ``windowStart`` (not ``windowStartTime``) used
+# to dedupe correctly but produce an empty peakAt, because the peak path resolved
+# a narrower field list. The shared _windows() helper resolves both from one list.
+# ---------------------------------------------------------------------------
+
+def test_peak_at_resolves_windowStart_field():
+    rows = [{"capacityId": "c", "windowStart": "w1",
+             "baseCapacityUnits": 64, "capacityUnitMs": 2016000}]   # 105%
+    cap = create_capacity_events_collector(lambda kql: rows)["collect"]()["capacity"]
+    assert cap["peakCuPct"] == 105.0
+    assert cap["peakAt"] == "w1"     # was "" before the _windows() unification
