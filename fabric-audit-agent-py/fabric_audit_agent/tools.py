@@ -249,6 +249,10 @@ def create_tool_definitions(base_dir=None):
             ce_cfg = {"window": window}
             if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
                 ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
+            # Honor the same KQL override job.py passes -- the deployed MCP app uses it to flatten
+            # the nested ``data`` envelope; skipping it here would diverge from the known-good path.
+            if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
+                ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
             series = _capacity_cu_series(ce_query, ce_cfg)
 
         return events, series

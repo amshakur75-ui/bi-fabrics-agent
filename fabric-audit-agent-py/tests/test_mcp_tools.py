@@ -345,3 +345,30 @@ def test_capacity_series_included_when_capacity_events_also_configured(monkeypat
     # 4 distinct users in one 15-min bucket (>= SURGE_USER_THRESHOLD=4) + 80% CU (>= 70 threshold)
     assert len(out["patterns"]) == 1
     assert out["patterns"][0]["activeUsers"] == 4
+
+
+def test_capacity_events_kql_override_is_passed_through(monkeypatch):
+    """The deployed MCP app sets FABRIC_CAPACITY_EVENTS_KQL to flatten the nested `data` envelope;
+    _events_or_mock must forward it to capacity_series (parity with job.py) rather than silently
+    running the default KQL against a differently-shaped result."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    override = "CapacityEvents | extend capacityId=tostring(data.capacityId) | project capacityId"
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_KQL", override)
+
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    captured = {}
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured["kql"] = kql
+            return []
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    h({"days": 1})
+    assert captured["kql"] == override
