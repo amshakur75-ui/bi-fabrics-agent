@@ -21,9 +21,10 @@ Raw KQL/SQL firewall tool; **`.show queryplan` cost *estimation*** (mgmt command
 
 ---
 
-### Task 1: KQL guard module (escaping + single-statement) ⟲ fixed escape state machine
+### Task 1: KQL guard module (escaping + single-statement + read-only validator) ⟲⟲ +Azure-MCP validator
 **Files:** Create `fabric_audit_agent/query/__init__.py` (empty), `query/kql_guard.py`; Test `tests/test_kql_guard.py`
 **Interfaces:** `escape_string(value)` (double-quoted-literal safe: strip `\x00`, escape `\` then `"`), `escape_entity(name)` (`['...']` bracket form, doubles `'`, rejects control chars via `ValueError`), `first_statement(text)` (text up to the first top-level `;` not inside a string literal). Adapted from fabric-rti-mcp `kql_escape_string`/`kql_escape_entity_name`/`_find_first_statement` (MIT).
+⟲⟲ **ALSO** `assert_read_only_kql(kql)` — the Azure-MCP `KqlQueryValidator` gate (research/23 §11), STRONGER than `first_statement`: (a) length ≤ 10_000 → `ValueError`; (b) strip string literals, then reject **control commands** (`.drop .alter .create .delete .set .append .set-or-append .set-or-replace .ingest .purge .execute`) appearing at the **start OR immediately after a `|` or `;`** (catches post-pipe/post-semicolon injection `first_statement` misses); (c) reject boolean tautologies (`or 1==1`, `or true`, `or '1'=='1'`) on the literal-stripped text. Returns the kql unchanged if clean. This is the read-only gate the collectors and (Task 9) command path call before executing built KQL. MIT-attributed to microsoft/mcp.
 
 - [ ] **Step 1: failing test** (note the escaped-backslash-at-boundary case — review #1)
 ```python
@@ -147,7 +148,7 @@ def test_kusto_sets_readonly_hardline_timeout_and_request_id():
 ### Task 8: Schema discovery + sampling (+ optional dry-run) ⟲ escape_entity for tables; int-guard; dry-run
 **Files:** `tools.py` (+2 tools + a helper), `mcp_server.py` (args `source`,`table`,`n` — unconditional, review #22); Test.
 **Interfaces:**
-- `describe_source {source:"events"|"capacity"}` → live: `<table> | getschema | project ColumnName, ColumnType` via the query port (LA `PowerBIDatasetsWorkspace`; capacity table from `FABRIC_CAPACITY_EVENTS_TABLE`); table name interpolated via **`escape_entity`** (review #12). `{source, table, columns:[{name,type}], sourceLabel}`. Unset capacity env → error envelope (not KeyError). Mock: fixture columns.
+- `describe_source {source:"events"|"capacity"}` → live: for KQL/Kusto (capacity) use the Azure-MCP grounding primitive **`.show table ['<t>'] cslschema`** (research/23 §11); for LA use `<table> | getschema | project ColumnName, ColumnType` (LA has no `.show table`); table name via **`escape_entity`** (review #12). Return `{source, table, columns:[{name,type}], sourceLabel}`. Unset capacity env → error envelope (not KeyError). Mock: fixture columns. ⟲⟲ Kusto host must pass the **cluster-URI allowlist** check (HTTPS + host suffix in the Kusto/Fabric/ADX-monitor set) before any live call — add `assert_kusto_host(uri)` to `query/kql_guard.py` (anti-SSRF, Azure-MCP `ValidateAndNormalizeClusterUri`).
 - `sample_events {source, n (default 5, cap 20)}` → `<table> | where TimeGenerated > ago(1d) | take <n>` RAW rows; **`n` cast to `int`, clamped [1,20]** before interpolation (rti-mcp footgun, research/23 §9). Description warns results are UNTRUSTED telemetry (spotlighting applies).
 - `dry_run(kql) -> {valid, error}` helper (adapted mcp-kql-server): wrap as `<kql>\n| take 0`, execute; empty success = valid, else the bind error. Exposed as an internal helper used by tools before a heavy live query (not yet an agent tool — full validation UX is P4).
 - [ ] TDD: definitions/schemas; mock outputs; a fake live query captures the emitted `getschema` KQL with a bracketed table; `n=99`→20; unset-env → `{"error":...}`. Commit `feat(mcp): describe_source + sample_events (+ take-0 dry-run helper)`.

@@ -199,6 +199,68 @@ for `.show capacity` etc.), `kusto_list_entities` (whitelisted `canonical_entity
 hardline + blocked-keys + timedelta timeout + request-id) and DROP inspect-introspection; Task 1
 escaping already sourced here; Task 8 `sample_events` add the int-guard.
 
+## 10. rti-mcp formatter/config detail (completes §1/§9)
+- **`KustoResponseFormat` = `{format: str, data: Any}`** (frozen dataclass). Compact shapes to match:
+  `columnar` = `{colName: [values...]}` (keys once); `kusto_response` = `{"columns":[...],"rows":[[...]]}`
+  (columns once, rows positional). Avoid `json` (repeats keys/row).
+- **CRITICAL for Task 5:** every primary formatter reads only `result_set.primary_results[0]`;
+  **`QueryCompletionInformation` (CPU/extents cost) is a SECONDARY table and is DROPPED.** Our
+  cost extractor must iterate `result_set.tables` and find the `QueryCompletionInformation` table
+  (kind != PrimaryResult) — NOT `primary_results`. Match `to_full_kusto_response`'s table iteration
+  to reach it, then drop it from the returned rows (keep only the stat).
+- Config safe defaults for our adaptation: pin `KUSTO_ALLOW_UNKNOWN_SERVICES=false` +
+  `KUSTO_KNOWN_SERVICES` allowlist (main safety lever); set an explicit timeout (fail fast); leave
+  `AZ_OPENAI_EMBEDDING_ENDPOINT`/`KUSTO_SHOTS_TABLE` unset (that's the AOAI shots path we don't port);
+  `KUSTO_EAGER_CONNECT=false` (lazy, no import-time connect). Our env names stay `FABRIC_*` per the
+  existing collectors — this is a mapping reference, not adopt-their-names.
+
+## 11. Azure MCP + Fabric MCP code audit (microsoft/mcp, MIT, both C# — port TECHNIQUE)
+
+**★ HIGHEST-VALUE: `KqlQueryValidator` (core/Microsoft.Mcp.Core) — port as our universal read-only KQL gate.**
+Runs before every Kusto AND Log Analytics query: (a) max length 10,000 chars; (b) strip string
+literals then **reject boolean-tautology injection** (`or 1==1`, `or true`, `or '1'=='1'`);
+(c) **reject management/control commands at start OR after `|`/`;`**:
+`.drop .alter .create .delete .set .append .set-or-append .set-or-replace .ingest .purge .execute`.
+This is stronger than our first_statement guard (catches post-pipe/post-semicolon commands + tautology).
+Pair with `KqlSanitizer.SanitizeStringLiterals` (literal-aware re-encoder: skips `"..."`, verbatim
+`@'...'`, `h'...'`, `//` comments while re-escaping `'...'`) and `EscapeIdentifier` (`['name']`).
+**→ FOLD INTO Task 1** (upgrade the guard module to this validator) — it's the pre-firewall read-only
+gate, and belongs here not P4.
+
+**★ Kusto two-tier SCHEMA GROUNDING (Azure MCP Kusto tools) — upgrades Task 8.**
+`.show databases | project DatabaseName` → `.show tables` → **`.show table ['<t>'] cslschema`** BEFORE a
+user query. `sample` = `['<t>'] | sample <clamped 1..10000>`. Result parsing **prepends a synthesized
+column→type dict as the first row** (inline schema hint for the model — nice, adopt). Uses raw REST
+`POST {clusterUri}/v1/rest/{query|mgmt}` with body `{"db","csl","properties":{ClientRequestId}}`.
+**Anti-SSRF: cluster-URI host ALLOWLIST** (must be HTTPS + host suffix in
+`.kusto.windows.net`/`.kusto.fabric.microsoft.com`/`.adx.monitor.azure.com`/sovereign) — string match,
+ReDoS-safe. `KustoIdentifierValidator`: ≤1024 chars, start letter/underscore, reject `|;(){}[]<>'"\`/\`.
+
+**★ NAME→ID RESOLVER pattern (Monitor `GetWorkspaceInfo` + `ResolveResourceIdAsync`) — the capacity-name→id fix.**
+Pattern: `if GUID.TryParse(input): use as id; else list + case-insensitive match on displayName; if >1
+match → disambiguation error listing candidates`. **Fabric REST capacity endpoints confirmed from the
+bundled spec:** `GET https://api.fabric.microsoft.com/v1/capacities` → `[{id, displayName, sku, region,
+state}]`, `GET .../capacities/{id}`. → this is the source for the backlog **capacity-name→id resolver**
+(P4/backlog item; needs the REST collector + admin scope → note it may be P5 if the SP lacks the scope).
+Also adopt Monitor's **resource-scoped query** (`QueryResourceAsync(resourceId,...)` — query one
+resource's logs w/o naming its workspace) + `| limit N` only-if-absent + metrics `MaxBuckets=50` guard.
+
+**★ CONFIRMS a standing gap:** NEITHER server exposes live CU%/consumption. Fabric MCP is "local-first"
+(its capacity data is static spec JSON, not live). So capacity consumption still comes from our Capacity
+Events Eventhouse / Capacity Metrics / Azure Monitor metrics on `Microsoft.Fabric/capacities` — validates
+our architecture; no shortcut exists. (Azure Monitor `metrics query` against the capacity ARM resource is
+a possible FUTURE non-Eventhouse CU source → P5 note.)
+
+**DO NOT COPY (writes):** Fabric `core_create-item`, all `onelake_*` upload/delete/create/modify +
+create_shortcut_* + create_or_update_data_access_role, `datafactory_create/run/execute`,
+Assign/UnassignWorkspaceToCapacity; Monitor `WebTests create-or-update`. Auth = `TokenCredential`/
+`DefaultAzureCredential` (we keep MSAL SP per clients.py).
+
+**Plan deltas:** Task 1 → upgrade to the `KqlQueryValidator` gate (length + tautology + control-command-
+after-pipe/semicolon) + literal-aware sanitizer; Task 3/8 → add cluster-URI host allowlist + the
+`.show table cslschema` grounding + inline column→type first-row hint; NEW backlog/P4 item → capacity-name→id
+resolver via `GET /v1/capacities` (parse-else-enumerate-else-disambiguate).
+
 ## Standing rules applied to every harvest
 Line-by-line security review before adaptation; external text = untrusted input; MIT license
 attribution in adapted-file docstrings; `fabric-rest-api-specs` is license-NOASSERTION →
