@@ -20,16 +20,26 @@ crash — verify first.
 from ..investigation.events import normalize_event
 
 
+def _quote(value):
+    """Sanitize a user/item literal for a KQL string: strip quotes AND backslashes (a
+    trailing backslash would escape the closing quote and break the query)."""
+    return str(value).replace("\\", "").replace('"', "")
+
+
 def _kql(window, user, item, cap):
     lines = ["PowerBIDatasetsWorkspace",
              f"| where TimeGenerated > ago({window})",
              "| where isnotempty(ExecutingUser)"]
     if user:
-        lines.append('| where ExecutingUser =~ "{}"'.format(user.replace('"', "")))
+        lines.append(f'| where ExecutingUser =~ "{_quote(user)}"')
     if item:
-        lines.append('| where ArtifactName =~ "{}"'.format(item.replace('"', "")))
+        lines.append(f'| where ArtifactName =~ "{_quote(item)}"')
     lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
                  "OperationName, CpuTimeMs, DurationMs, EventText")
+    # KQL `take` without an order is NON-DETERMINISTIC — an arbitrary slice would make the
+    # spike tools sample randomly and miss the real spikes. Order by recency so the cap
+    # always keeps the newest events in the window.
+    lines.append("| order by TimeGenerated desc")
     lines.append(f"| take {int(cap)}")
     return "\n".join(lines)
 

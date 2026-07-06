@@ -44,6 +44,23 @@ def _has_live_event_source(env):
     return bool(env.get("FABRIC_LA_WORKSPACE_ID") and env.get("FABRIC_CLIENT_ID"))
 
 
+# Max raw events per live query. The KQL orders by TimeGenerated desc, so hitting the cap keeps
+# the NEWEST events; handlers surface ``truncated: true`` when the cap is hit so callers know
+# the window was not fully covered.
+_EVENT_CAP = 5000
+
+# query-callable memo — building a client per call creates a fresh MSAL ConfidentialClientApplication
+# each time, so its internal token cache never helps (an AAD round-trip per tool call, plus
+# throttling exposure). Keyed on the full credential tuple so a rotated secret naturally misses.
+_CLIENT_CACHE = {}
+
+
+def _memo_client(key, builder):
+    if key not in _CLIENT_CACHE:
+        _CLIENT_CACHE[key] = builder()
+    return _CLIENT_CACHE[key]
+
+
 def _run_real_or_mock(base, env):
     """Run the audit and RETURN the envelope — read-only and **write-free**. A Databricks App
     container can't write to /Volumes, and the interactive tool doesn't need to persist: history
@@ -66,20 +83,23 @@ def _run_real_or_mock(base, env):
                      config=config, agent_id="fabric-audit-agent")
 
 
-def _build_collector(env):
-    """Return a live collector if any source is configured, else None."""
+def _build_collector(env, window=None):
+    """Return a live collector if any source is configured, else None. ``window`` (e.g. "7d")
+    overrides every source's lookback -- used by tools that thread a ``days`` argument."""
     if not _has_live_source(env):
         return None
     from .job import build_collector_from_env
-    return build_collector_from_env(env)
+    return build_collector_from_env(env, window=window)
 
 
 def create_tool_definitions(base_dir=None):
     base = base_dir if base_dir is not None else _BASE
 
-    def _collector_or_mock():
-        """Return a live collector if any source is configured, else the offline mock estate."""
-        col = _build_collector(os.environ)
+    def _collector_or_mock(days=None):
+        """Return a live collector if any source is configured, else the offline mock estate.
+        ``days`` threads into every live source's lookback window (ignored on the mock path)."""
+        window = f"{int(days)}d" if days else None
+        col = _build_collector(os.environ, window=window)
         if col is None:
             col = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
         return col
@@ -160,7 +180,7 @@ def create_tool_definitions(base_dir=None):
         """Investigate a specific user's contribution to capacity: assembles evidence, baselines,
         and returns a grounded explanation. Abstains when the user is not in the collected data."""
         inp = _input or {}
-        result = _iu(_collector_or_mock(), create_investigation_reasoner(),
+        result = _iu(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
                      inp.get("user"), days=inp.get("days", 30))
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
         return result
@@ -214,56 +234,84 @@ def create_tool_definitions(base_dir=None):
     ]
 
     def _events_or_mock(*, days=None, user=None, item=None):
-        """Yield ``(events, capacity_series)``. Live LA event collector + capacity CU% series when
-        ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small offline
-        mock. Live requests are bounded (window from ``days``, capped row count) and scoped to
-        ``user``/``item`` when given -- never an unbounded whole-estate pull from a live request;
-        that mining belongs in the scheduled Job."""
+        """Yield ``(events, capacity_series, meta)``. Live LA event collector + capacity CU% series
+        when ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small
+        offline mock. Live requests are bounded (window from ``days``, capped row count) and scoped
+        to ``user``/``item`` when given -- never an unbounded whole-estate pull from a live request;
+        that mining belongs in the scheduled Job.
+
+        ``meta``: ``error`` (str -- the LA event query failed; events/series are empty and handlers
+        must return an honest error payload, not zeros dressed as data), ``seriesError`` (str -- the
+        CU% series query failed; events are still good, patterns degrade), ``truncated`` (bool --
+        the event cap was hit, so the window is only partially covered by the newest events)."""
         env = os.environ
+        meta = {"truncated": False, "error": None, "seriesError": None}
         if not _has_live_event_source(env):
-            return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES
+            return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES, meta
 
         from .job import _require
         from .adapters.clients import build_log_analytics_query
         from .adapters.collector_events_la import create_event_collector
 
         window = f"{int(days)}d" if days else "30d"
-        la_query = build_log_analytics_query(
-            env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
-            env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        tenant = _require(env, "FABRIC_TENANT_ID")
+        secret = _require(env, "FABRIC_CLIENT_SECRET")
+        la_query = _memo_client(
+            ("la", env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
+            lambda: build_log_analytics_query(
+                env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
         )
-        event_cfg = {"window": window, "cap": 5000}
+        event_cfg = {"window": window, "cap": _EVENT_CAP}
         if user:
             event_cfg["user"] = user
         if item:
             event_cfg["item"] = item
-        events = create_event_collector(la_query, event_cfg)["collect"]()
+        try:
+            events = create_event_collector(la_query, event_cfg)["collect"]()
+        except Exception as exc:   # auth/timeout/transient -- surface honestly, don't crash the tool
+            meta["error"] = f"Log Analytics event query failed: {exc}"
+            return [], [], meta
+        meta["truncated"] = len(events) >= _EVENT_CAP
 
         series = []
         if env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB"):
             from .adapters.clients import build_kusto_query
-            ce_query = build_kusto_query(
-                env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
-                _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+            ce_query = _memo_client(
+                ("kusto", env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+                 tenant, env["FABRIC_CLIENT_ID"], secret),
+                lambda: build_kusto_query(
+                    env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+                    tenant, env["FABRIC_CLIENT_ID"], secret),
             )
             ce_cfg = {"window": window}
             if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
                 ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
             # Honor the same KQL override job.py passes -- the deployed MCP app uses it to flatten
-            # the nested ``data`` envelope; skipping it here would diverge from the known-good path.
+            # the nested ``data`` envelope. The collector substitutes {window} in the override, so
+            # the threaded lookback is respected (a hardcoded ago(...) used to defeat ``days``).
             if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
                 ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
-            series = _capacity_cu_series(ce_query, ce_cfg)
+            try:
+                series = _capacity_cu_series(ce_query, ce_cfg)
+            except Exception as exc:   # events are still good; only patterns degrade
+                meta["seriesError"] = f"capacity CU% series query failed: {exc}"
 
-        return events, series
+        return events, series, meta
+
+    def _event_source_label():
+        return "live" if _has_live_event_source(os.environ) else "mock"
 
     def user_spike_history_handler(_input=None):
         """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
         inp = _input or {}
         user = inp.get("user") or ""
-        events, _ = _events_or_mock(days=inp.get("days"), user=user.lower() or None)
+        events, _, meta = _events_or_mock(days=inp.get("days"), user=user.lower() or None)
+        if meta["error"]:
+            return {"user": user, "error": meta["error"], "source": _event_source_label()}
         result = _user_spike_history(events, user.lower())
-        result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
+        result["source"] = _event_source_label()
+        if meta["truncated"]:
+            result["truncated"] = True   # cap hit: newest events only, counts are a floor
         return result
 
     def spike_events_handler(_input=None):
@@ -273,28 +321,38 @@ def create_tool_definitions(base_dir=None):
         compute_baseline p95 (not a hand-rolled percentile index)."""
         inp = _input or {}
         top_n = inp.get("topN") if inp.get("topN") is not None else 5
-        events, _ = _events_or_mock(days=inp.get("days"))
+        events, _, meta = _events_or_mock(days=inp.get("days"))
+        if meta["error"]:
+            return {"events": [], "error": meta["error"], "source": _event_source_label()}
         baseline = _compute_baseline(events)
         p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
         spike_list = [
             e for e in events
             if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
         ]
-        result_events = _top_expensive(spike_list, n=top_n)
-        return {
-            "events": result_events,
-            "source": "live" if _has_live_event_source(os.environ) else "mock",
+        result = {
+            "events": _top_expensive(spike_list, n=top_n),
+            "source": _event_source_label(),
         }
+        if meta["truncated"]:
+            result["truncated"] = True   # ranking covers the newest _EVENT_CAP events only
+        return result
 
     def capacity_patterns_handler(_input=None):
         """Temporal activity-surge ↔ CU-spike patterns across the estate."""
         inp = _input or {}
-        events, capacity_series = _events_or_mock(days=inp.get("days"))
-        patterns = _capacity_patterns(events, capacity_series)
-        return {
-            "patterns": patterns,
-            "source": "live" if _has_live_event_source(os.environ) else "mock",
+        events, capacity_series, meta = _events_or_mock(days=inp.get("days"))
+        if meta["error"]:
+            return {"patterns": [], "error": meta["error"], "source": _event_source_label()}
+        result = {
+            "patterns": _capacity_patterns(events, capacity_series),
+            "source": _event_source_label(),
         }
+        if meta["seriesError"]:
+            result["seriesError"] = meta["seriesError"]   # events fine; CU% coupling unavailable
+        if meta["truncated"]:
+            result["truncated"] = True
+        return result
 
     return [
         {

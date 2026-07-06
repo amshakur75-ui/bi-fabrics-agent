@@ -53,6 +53,16 @@ def test_no_filter_is_whole_estate():
     assert "PowerBIWorkspaceName in (" not in seen["kql"]   # no filter -> all workspaces
 
 
+def test_kql_override_window_placeholder_substituted():
+    seen = {}
+    def cap(kql):
+        seen["kql"] = kql
+        return []
+    create_log_analytics_collector(cap, {"kql": "T | where TimeGenerated > ago({window})",
+                                         "window": "14d"})["collect"]()
+    assert "ago(14d)" in seen["kql"] and "{window}" not in seen["kql"]
+
+
 def test_rows_without_user_skipped_in_attribution():
     rows = [
         {"ArtifactName": "M", "ExecutingUser": "", "cpuMs": 50},

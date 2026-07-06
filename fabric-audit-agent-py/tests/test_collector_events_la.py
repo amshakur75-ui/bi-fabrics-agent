@@ -49,6 +49,17 @@ def test_kql_defaults_to_whole_estate_no_user_or_item_filter():
     assert "| take 5000" in seen["kql"]   # default cap
 
 
+def test_kql_orders_by_recency_before_take():
+    """KQL `take` without an order is non-deterministic — an arbitrary slice would make the
+    spike tools sample randomly and miss the real spikes. The cap must keep the NEWEST events."""
+    kql = _kql("1d", None, None, 5000)
+    order_pos = kql.find("| order by TimeGenerated desc")
+    take_pos = kql.find("| take 5000")
+    assert order_pos != -1, "missing order by TimeGenerated desc"
+    assert take_pos != -1
+    assert order_pos < take_pos   # order must precede take to be meaningful
+
+
 def test_kql_scopes_to_user_and_item_when_given():
     seen = {}
     def capture(kql):
@@ -68,6 +79,17 @@ def test_kql_strips_quotes_from_user_and_item_to_avoid_injection():
     create_event_collector(capture, {"user": 'a"; drop table x', "item": 'b"c'})["collect"]()
     assert 'ExecutingUser =~ "a; drop table x"' in seen["kql"]
     assert 'ArtifactName =~ "bc"' in seen["kql"]
+
+
+def test_kql_strips_backslashes_too():
+    """A trailing backslash would escape the closing quote and break the query string."""
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_event_collector(capture, {"user": "trailing\\", "item": "mid\\dle"})["collect"]()
+    assert 'ExecutingUser =~ "trailing"' in seen["kql"]
+    assert 'ArtifactName =~ "middle"' in seen["kql"]
 
 
 def test_kql_override_bypasses_builder():
