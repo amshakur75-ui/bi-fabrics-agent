@@ -19,6 +19,7 @@ from .investigation.expensive import top_expensive as _top_expensive
 from .investigation.spike_history import user_spike_history as _user_spike_history
 from .investigation.patterns import capacity_patterns as _capacity_patterns
 from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
+from .timefmt import add_display_time
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -115,6 +116,10 @@ def create_tool_definitions(base_dir=None):
         for key in ("digest", "narrative", "roadmap", "healthScore", "staggerPlan", "correlations", "forecast"):
             if d.get(key):
                 result[key] = d[key]
+        # Raw `when` stays UTC ISO for machine use; whenLocal is the wall-clock display twin
+        # (FABRIC_DISPLAY_TZ, default Eastern) so the agent never does its own timezone math.
+        for f in result["findings"]:
+            add_display_time(f, "when", "whenLocal")
         return result
 
     def list_workspaces_handler(_input=None):
@@ -314,6 +319,8 @@ def create_tool_definitions(base_dir=None):
         result["source"] = _event_source_label()
         if meta["truncated"]:
             result["truncated"] = True   # cap hit: costliest events only, counts are a floor
+        for s in result.get("spikes") or []:
+            add_display_time(s, "ts", "tsLocal")
         return result
 
     def spike_events_handler(_input=None):
@@ -338,6 +345,8 @@ def create_tool_definitions(base_dir=None):
         }
         if meta["truncated"]:
             result["truncated"] = True   # ranking covers the costliest _EVENT_CAP events only
+        for e in result["events"]:
+            add_display_time(e, "ts", "tsLocal")
         return result
 
     def capacity_patterns_handler(_input=None):
@@ -356,6 +365,8 @@ def create_tool_definitions(base_dir=None):
             result["seriesError"] = meta["seriesError"]   # events fine; CU% coupling unavailable
         if meta["truncated"]:
             result["truncated"] = True
+        for p in result["patterns"]:
+            add_display_time(p, "windowStart", "windowStartLocal")
         return result
 
     return [
