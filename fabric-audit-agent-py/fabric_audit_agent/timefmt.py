@@ -25,12 +25,21 @@ _DEFAULT_TZ = "America/New_York"
 # Log Analytics emits 7 (e.g. ".3079171Z"). Trim to microseconds before parsing.
 _FRACTION_TRIM = re.compile(r"(\.\d{6})\d+")
 
+# Our own canonical display form, accepted back as input ("2026-07-06 15:48 UTC (11:48 AM EDT)"
+# or just "2026-07-06 15:48 UTC") — the agent naturally echoes it into `when` arguments.
+_DISPLAY_FORM = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?\s*UTC\b")
+
 
 def parse_iso_utc(ts):
-    """Parse an ISO-8601 string to an aware datetime (naive input is assumed UTC). None on failure."""
+    """Parse an ISO-8601 string — or our canonical display form ("... UTC (...)") — to an aware
+    datetime (naive input is assumed UTC). None on failure."""
     if not ts:
         return None
     s = _FRACTION_TRIM.sub(r"\1", str(ts).strip())
+    m = _DISPLAY_FORM.match(s)
+    if m:
+        d, hh, mm, ss = m.groups()
+        return datetime.fromisoformat(f"{d}T{hh}:{mm}:{ss or '00'}+00:00")
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     try:

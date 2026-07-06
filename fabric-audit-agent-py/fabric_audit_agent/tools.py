@@ -193,10 +193,25 @@ def create_tool_definitions(base_dir=None):
 
     def investigate_spike_handler(_input=None):
         """Investigate a capacity spike: identifies top-consuming items/users and explains
-        the spike with evidence. Abstains when no capacity signal is available."""
+        the spike with evidence. With `when`, additionally scopes per-event telemetry to the
+        ±30-minute window around that moment (refresh-vs-interactive attribution of THE peak).
+        Abstains when no capacity signal is available."""
         inp = _input or {}
-        result = _ics(_collector_or_mock(), create_investigation_reasoner(), inp.get("when"))
+        when = inp.get("when")
+        events = series = None
+        if when:
+            ev_events, ev_series, ev_meta = _events_or_mock(days=inp.get("days", 7), order="recent")
+            if not ev_meta["error"]:
+                events, series = ev_events, ev_series
+        result = _ics(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
+                      when, events=events, capacity_series=series)
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        # Decorate the window evidence's top events with the canonical display twin.
+        for e_item in result.get("evidence") or []:
+            if e_item.get("kind") == "window":
+                add_display_time(e_item.get("data") or {}, "when", "whenDisplay")
+                for te in (e_item.get("data") or {}).get("topEvents") or []:
+                    add_display_time(te, "ts", "tsDisplay")
         return result
 
     # ------------------------------------------------------------------
@@ -274,6 +289,13 @@ def create_tool_definitions(base_dir=None):
             event_cfg["item"] = item
         if order:
             event_cfg["order"] = order   # "recent" for time-bucketed analysis; default "cost"
+        # Optional OperationName allowlist (comma-separated env) — restrict to top-level ops
+        # (QueryEnd/CommandEnd/ProgressReportEnd) AFTER verifying live op names, to drop VertiPaq
+        # SE sub-query children that double-count cost. Off by default: an unverified allowlist
+        # on a tenant with different op names would silently return nothing.
+        ops = env.get("FABRIC_EVENT_OPERATIONS")
+        if ops:
+            event_cfg["operations"] = [o.strip() for o in ops.split(",") if o.strip()]
         try:
             events = create_event_collector(la_query, event_cfg)["collect"]()
         except Exception as exc:   # auth/timeout/transient -- surface honestly, don't crash the tool
@@ -313,7 +335,8 @@ def create_tool_definitions(base_dir=None):
         """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
         inp = _input or {}
         user = inp.get("user") or ""
-        events, _, meta = _events_or_mock(days=inp.get("days"), user=user.lower() or None)
+        events, _, meta = _events_or_mock(days=inp.get("days"), user=user.lower() or None,
+                                          item=inp.get("item"))
         if meta["error"]:
             return {"user": user, "error": meta["error"], "source": _event_source_label()}
         result = _user_spike_history(events, user.lower())
@@ -331,7 +354,7 @@ def create_tool_definitions(base_dir=None):
         compute_baseline p95 (not a hand-rolled percentile index)."""
         inp = _input or {}
         top_n = inp.get("topN") if inp.get("topN") is not None else 5
-        events, _, meta = _events_or_mock(days=inp.get("days"))
+        events, _, meta = _events_or_mock(days=inp.get("days"), item=inp.get("item"))
         if meta["error"]:
             return {"events": [], "error": meta["error"], "source": _event_source_label()}
         baseline = _compute_baseline(events)
@@ -434,12 +457,19 @@ def create_tool_definitions(base_dir=None):
             "description": (
                 "Investigate a capacity spike: identifies the top-consuming items and users, "
                 "assembles capacity evidence, and returns a grounded explanation with confidence "
-                "rating. Abstains when no capacity signal (peakCuPct) is available. Read-only."
+                "rating. Pass `when` (the spike's timestamp) to additionally analyze the ±30-minute "
+                "window around that exact moment from per-event telemetry: interactive-vs-refresh CU "
+                "split, distinct users, and the top driving events — answers whether THAT peak was a "
+                "refresh or interactive load. Abstains when no capacity signal is available. Read-only."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "when": {"type": "string", "description": "Optional ISO timestamp or label for the spike window."},
+                    "when": {"type": "string",
+                             "description": ("Spike timestamp — ISO UTC (2026-07-06T15:48:00Z) or "
+                                             "'YYYY-MM-DD HH:MM UTC'. Scopes event analysis to ±30 min.")},
+                    "days": {"type": "integer",
+                             "description": "Event lookback in days used to find the window (default 7)."},
                 },
                 "required": [],
             },
@@ -457,6 +487,8 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "user": {"type": "string", "description": "User UPN/email to look up (required)."},
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                    "item": {"type": "string",
+                             "description": "Optional item/artifact name to scope to (e.g. one semantic model)."},
                 },
                 "required": ["user"],
             },
@@ -474,6 +506,8 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
                     "topN": {"type": "integer", "description": "Maximum events to return (default 5)."},
+                    "item": {"type": "string",
+                             "description": "Optional item/artifact name to scope to (e.g. one semantic model)."},
                 },
                 "required": [],
             },

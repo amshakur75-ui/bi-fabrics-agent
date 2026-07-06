@@ -448,6 +448,56 @@ def test_investigate_user_days_threads_into_collector_window(monkeypatch):
     assert "ago(7d)" in captured["kql"]
 
 
+def test_item_scope_threads_into_la_filter(monkeypatch):
+    """spike_events/user_spike_history `item` must scope the live query to one artifact."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7, "item": "Ent-Reporting-Sales"})
+    assert 'ArtifactName =~ "Ent-Reporting-Sales"' in captured["kql"]
+
+
+def test_operations_env_threads_into_la_filter(monkeypatch):
+    """FABRIC_EVENT_OPERATIONS restricts to top-level ops (drops VertiPaq SE sub-events)."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_EVENT_OPERATIONS", "QueryEnd, CommandEnd,ProgressReportEnd")
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    assert 'OperationName in ("QueryEnd", "CommandEnd", "ProgressReportEnd")' in captured["kql"]
+
+
+def test_investigate_spike_with_when_returns_window_evidence(monkeypatch):
+    """End-to-end (mock path): `when` produces the ±30m window evidence with display twins."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    # Mock estate has capacity signal; mock events cluster at 2026-06-30T09:00-09:15Z.
+    out = h({"when": "2026-06-30T09:10:00Z", "days": 7})
+    window = next(e for e in out["evidence"] if e["kind"] == "window")
+    assert window["data"]["eventCount"] > 0
+    assert window["data"]["driver"] in ("interactive-driven", "refresh-driven", "mixed")
+    assert " UTC (" in window["data"]["whenDisplay"]          # canonical display twin
+    for te in window["data"]["topEvents"]:
+        assert " UTC (" in te["tsDisplay"]
+
+
+def test_investigate_spike_without_when_has_no_window_evidence(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    out = h({})
+    assert not [e for e in out["evidence"] if e["kind"] == "window"]
+
+
 def test_capacity_series_included_when_capacity_events_also_configured(monkeypatch):
     """When FABRIC_CAPACITY_EVENTS_CLUSTER/DB are also set, capacity_patterns must use the real
     (injected-fake) CU% series instead of the empty default, alongside live events."""

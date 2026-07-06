@@ -57,6 +57,14 @@ def test_unparseable_returns_none_never_raises():
     assert to_display(None) is None
 
 
+def test_parse_accepts_our_own_display_format_back():
+    """The agent echoes display strings into `when` arguments -- they must round-trip."""
+    dt = parse_iso_utc("2026-07-06 15:48 UTC (11:48 AM EDT)")
+    assert (dt.hour, dt.minute) == (15, 48)
+    assert parse_iso_utc("2026-07-06 15:48 UTC").hour == 15
+    assert parse_iso_utc("2026-07-06 15:48:30 UTC").second == 30
+
+
 def test_add_display_time_decorates_only_when_convertible():
     rec = {"ts": "2026-07-06T15:48:00Z"}
     add_display_time(rec, "ts", "tsDisplay")

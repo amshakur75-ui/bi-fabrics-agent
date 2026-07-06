@@ -47,6 +47,82 @@ def test_capacity_spike_abstains_without_capacity_signal():
     assert out["abstained"] is True and out["confidence"]["level"] == "insufficient"
 
 
+# --- `when` window analysis (Phase-3 events wired into the spike playbook) ---
+
+_WINDOW_EVENTS = [
+    {"ts": "2026-07-06T15:40:00Z", "user": "refresher@co", "item": "SCM", "kind": "refresh",
+     "cuSeconds": 900.0},
+    {"ts": "2026-07-06T15:50:00Z", "user": "alice@co", "item": "Sales", "kind": "interactive",
+     "cuSeconds": 100.0},
+    {"ts": "2026-07-06T09:00:00Z", "user": "faraway@co", "item": "HR", "kind": "interactive",
+     "cuSeconds": 5000.0},   # hours outside the window -- must be excluded
+]
+_WINDOW_SERIES = [
+    {"ts": "2026-07-06T15:48:00Z", "cuPct": 184.7},
+    {"ts": "2026-07-06T09:00:00Z", "cuPct": 55.0},   # outside window
+]
+
+
+def _spike_facts():
+    return _facts([{"user": "x@co", "cuSeconds": 900, "sharePct": 90,
+                    "topItems": [{"name": "A4A", "cuSeconds": 900}], "itemCount": 1}])
+
+
+def _window_ev(out):
+    return next(e for e in out["evidence"] if e["kind"] == "window")
+
+
+def test_when_scopes_events_to_window_and_names_driver():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                     when="2026-07-06T15:48:00Z",
+                                     events=_WINDOW_EVENTS, capacity_series=_WINDOW_SERIES)
+    ev = _window_ev(out)
+    d = ev["data"]
+    assert d["eventCount"] == 2                      # the 09:00 event is excluded
+    assert d["refreshCuSeconds"] == 900.0
+    assert d["interactiveCuSeconds"] == 100.0
+    assert d["driver"] == "refresh-driven"           # answers refresh-vs-interactive for THE peak
+    assert d["windowPeakCuPct"] == 184.7
+    assert d["topEvents"][0]["user"] == "refresher@co"
+    assert "faraway@co" not in str(d)
+
+
+def test_when_accepts_display_format():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                     when="2026-07-06 15:48 UTC (11:48 AM EDT)",
+                                     events=_WINDOW_EVENTS, capacity_series=_WINDOW_SERIES)
+    assert _window_ev(out)["data"]["eventCount"] == 2
+
+
+def test_when_with_no_events_in_window_is_honest():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                     when="2026-07-01T03:00:00Z",
+                                     events=_WINDOW_EVENTS, capacity_series=_WINDOW_SERIES)
+    ev = _window_ev(out)
+    assert ev["data"]["eventCount"] == 0
+    assert "no telemetry events" in ev["summary"]    # says it can't attribute, not a guess
+
+
+def test_when_unparseable_is_flagged_not_crashed():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                     when="yesterday-ish", events=_WINDOW_EVENTS)
+    assert "could not parse" in _window_ev(out)["summary"]
+
+
+def test_window_corroboration_raises_confidence():
+    base = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner())
+    scoped = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                        when="2026-07-06T15:48:00Z", events=_WINDOW_EVENTS)
+    assert base["confidence"]["level"] == "high"     # already 2 sources
+    assert scoped["confidence"]["level"] == "high"
+    assert "3 sources" in scoped["confidence"]["basis"]   # window telemetry adds a third
+
+
+def test_no_when_keeps_prior_behavior():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner())
+    assert not [e for e in out["evidence"] if e["kind"] == "window"]
+
+
 # --- Group 2: baseline wiring ---
 
 def test_investigate_user_uses_baseline_when_history_present():

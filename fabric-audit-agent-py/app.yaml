@@ -46,6 +46,12 @@ env:
   - name: FABRIC_CAPACITY_EVENTS_KQL
     value: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
 
+  # Optional: restrict event tools to top-level operations (drops VertiPaq SE sub-query events
+  # that double-count cost). Enable ONLY after verifying live OperationName values — note our
+  # tenant's biggest real spikes are DiscoverEnd ops, which this allowlist would exclude.
+  # - name: FABRIC_EVENT_OPERATIONS
+  #   value: "QueryEnd,CommandEnd,ProgressReportEnd"
+
   # Workspace Monitoring Eventhouse (per-user SemanticModelLogs) — cluster/db via resources
   - name: FABRIC_KUSTO_CLUSTER
     valueFrom: kusto_cluster

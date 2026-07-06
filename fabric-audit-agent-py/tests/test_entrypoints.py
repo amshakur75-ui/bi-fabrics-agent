@@ -121,21 +121,21 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
                           "investigate_capacity_spike", "user_spike_history", "spike_events",
                           "capacity_patterns"}
 
-    # user_spike_history: user REQUIRED, days optional -- and no phantom topN/when
+    # user_spike_history: user REQUIRED, days/item optional -- and no phantom topN/when
     ush = tools["user_spike_history"]
-    assert set(ush["properties"]) == {"user", "days"}
+    assert set(ush["properties"]) == {"user", "days", "item"}
     assert "user" in ush.get("required", [])
 
     # capacity_patterns: days only -- no phantom user/when/topN
     assert set(tools["capacity_patterns"]["properties"]) == {"days"}
 
-    # spike_events: days + topN, neither required
+    # spike_events: days + topN + item, none required
     se = tools["spike_events"]
-    assert set(se["properties"]) == {"days", "topN"}
+    assert set(se["properties"]) == {"days", "topN", "item"}
     assert "required" not in se or not se["required"]
 
-    # investigate_capacity_spike: when only
-    assert set(tools["investigate_capacity_spike"]["properties"]) == {"when"}
+    # investigate_capacity_spike: when + days
+    assert set(tools["investigate_capacity_spike"]["properties"]) == {"when", "days"}
 
     # no-arg tools advertise no properties
     assert not tools["run_audit"].get("properties")
