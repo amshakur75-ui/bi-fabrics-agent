@@ -200,7 +200,19 @@ def create_tool_definitions(base_dir=None):
         when = inp.get("when")
         events = series = None
         if when:
-            ev_events, ev_series, ev_meta = _events_or_mock(days=inp.get("days", 7), order="recent")
+            from .timefmt import parse_iso_utc as _parse
+            from datetime import timedelta as _td, timezone as _tz
+            center = _parse(when)
+            # Bound the event query to the ±30m window in KQL when `when` parses — a relative
+            # lookback + row cap could truncate away the exact slice on a busy estate. An
+            # unparseable `when` still fetches (the playbook reports the parse failure honestly).
+            between = None
+            if center is not None:
+                c = center.astimezone(_tz.utc)
+                between = ((c - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           (c + _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            ev_events, ev_series, ev_meta = _events_or_mock(days=inp.get("days", 7),
+                                                            order="recent", between=between)
             if not ev_meta["error"]:
                 events, series = ev_events, ev_series
         result = _ics(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
@@ -254,7 +266,7 @@ def create_tool_definitions(base_dir=None):
         {"ts": "2026-06-30T09:15:00Z", "cuPct": 72.0},
     ]
 
-    def _events_or_mock(*, days=None, user=None, item=None, order=None):
+    def _events_or_mock(*, days=None, user=None, item=None, order=None, between=None):
         """Yield ``(events, capacity_series, meta)``. Live LA event collector + capacity CU% series
         when ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small
         offline mock. Live requests are bounded (window from ``days``, capped row count) and scoped
@@ -289,6 +301,10 @@ def create_tool_definitions(base_dir=None):
             event_cfg["item"] = item
         if order:
             event_cfg["order"] = order   # "recent" for time-bucketed analysis; default "cost"
+        if between:
+            # Absolute window (spike investigation around a named moment) — bounded in the KQL
+            # itself so the row cap can never truncate away the exact slice being asked about.
+            event_cfg["start"], event_cfg["end"] = between
         # Optional OperationName allowlist (comma-separated env) — restrict to top-level ops
         # (QueryEnd/CommandEnd/ProgressReportEnd) AFTER verifying live op names, to drop VertiPaq
         # SE sub-query children that double-count cost. Off by default: an unverified allowlist

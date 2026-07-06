@@ -490,6 +490,26 @@ def test_investigate_spike_with_when_returns_window_evidence(monkeypatch):
         assert " UTC (" in te["tsDisplay"]
 
 
+def test_investigate_spike_when_bounds_the_live_query_absolutely(monkeypatch):
+    """Live path: `when` must reach the KQL as an absolute between(...) window, so the row cap
+    can never truncate away the slice being investigated on a busy estate."""
+    _set_la_env(monkeypatch)
+    kqls = []   # the handler runs TWO LA queries (events + attribution rollup) — capture all
+
+    def builder(*a, **kw):
+        def query(kql, timespan=None):
+            kqls.append(kql)
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", builder)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    h({"when": "2026-07-06T15:48:00Z", "days": 2})
+    assert any(("TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
+                "datetime(2026-07-06T16:18:00Z))") in k for k in kqls)
+
+
 def test_investigate_spike_without_when_has_no_window_evidence(monkeypatch):
     _no_live(monkeypatch)
     h = next(d for d in create_tool_definitions()

@@ -83,6 +83,20 @@ def test_kql_strips_backslashes_too():
     assert 'ArtifactName =~ "middle"' in seen["kql"]
 
 
+def test_absolute_window_replaces_relative_lookback():
+    """start/end bound the query in KQL itself -- the row cap can never truncate away the
+    exact window a spike investigation asks about."""
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_event_collector(capture, {"start": "2026-07-06T15:18:00Z",
+                                     "end": "2026-07-06T16:18:00Z"})["collect"]()
+    assert ("TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
+            "datetime(2026-07-06T16:18:00Z))") in seen["kql"]
+    assert "ago(" not in seen["kql"]
+
+
 def test_kql_override_bypasses_builder():
     seen = {}
     def capture(kql):

@@ -34,9 +34,16 @@ def _quote(value):
     return str(value).replace("\\", "").replace('"', "")
 
 
-def _kql(window, user, item, cap, operations=None, order="cost"):
+def _kql(window, user, item, cap, operations=None, order="cost", start=None, end=None):
+    # start/end (ISO UTC) bound the query to an ABSOLUTE window — used for spike investigation
+    # around a named moment, where a relative ago() lookback + row cap could truncate the very
+    # slice being asked about on a busy estate. Relative ago(window) otherwise.
+    if start and end:
+        time_filter = f"| where TimeGenerated between (datetime({_quote(start)}) .. datetime({_quote(end)}))"
+    else:
+        time_filter = f"| where TimeGenerated > ago({window})"
     lines = ["PowerBIDatasetsWorkspace",
-             f"| where TimeGenerated > ago({window})",
+             time_filter,
              "| where isnotempty(ExecutingUser)"]
     if user:
         lines.append(f'| where ExecutingUser =~ "{_quote(user)}"')
@@ -64,12 +71,14 @@ def create_event_collector(query, config=None):
     ``operations`` (optional OperationName allowlist — recommend ``_RECOMMENDED_TOP_LEVEL_OPS``
     after verifying live op names, to drop VertiPaq SE sub-query events that double-count),
     ``order`` ("cost" [default] keeps the most expensive events under the cap; "recent" keeps the
-    newest), ``kql`` (override the whole query).
+    newest), ``start``/``end`` (ISO UTC pair — absolute window instead of the relative lookback),
+    ``kql`` (override the whole query).
     """
     cfg = config or {}
     kql = cfg.get("kql") or _kql(
         cfg.get("window", "1d"), cfg.get("user"), cfg.get("item"),
         cfg.get("cap", 5000), cfg.get("operations"), cfg.get("order", "cost"),
+        cfg.get("start"), cfg.get("end"),
     )
 
     def collect():
