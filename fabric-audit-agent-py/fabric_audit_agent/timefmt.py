@@ -1,14 +1,19 @@
-"""Human-readable local-time display for raw UTC telemetry timestamps. Stdlib only.
+"""Human-readable display strings for raw UTC telemetry timestamps. Stdlib only.
 
 Telemetry timestamps are ISO-8601 UTC (e.g. ``2026-07-06T15:48:00.0000000Z``). The tools keep
-those raw values for machine use and attach a display twin (``tsLocal``/``whenLocal``/...) built
-here, so the agent presents wall-clock time without doing its own timezone math — LLM DST
-arithmetic is exactly the kind of silent numeric error the honesty rules exist to prevent.
+those raw values for machine use and attach a display twin (``tsDisplay``/``whenDisplay``/...)
+built here in ONE canonical format — UTC first, local wall-clock in parentheses:
 
-Timezone comes from ``FABRIC_DISPLAY_TZ`` (IANA name; default ``America/New_York``). Conversion
+    2026-07-06 15:48 UTC (11:48 AM EDT)
+
+so every surfaced time reads identically and the agent never does its own timezone math — LLM
+DST arithmetic is exactly the kind of silent numeric error the honesty rules exist to prevent.
+
+Local zone comes from ``FABRIC_DISPLAY_TZ`` (IANA name; default ``America/New_York``). Conversion
 uses ``zoneinfo`` so EDT/EST daylight-saving transitions are correct; the label is the zone's own
-abbreviation (``EDT``/``EST``). If the timestamp can't be parsed or the tz database is missing,
-returns None and callers simply omit the display field — the raw UTC value is always still there.
+abbreviation (``EDT``/``EST``). If the tz database is missing the parenthetical is omitted (the
+UTC half still renders); an unparseable timestamp yields None and callers omit the field — the
+raw value is always still there.
 """
 import os
 import re
@@ -36,23 +41,27 @@ def parse_iso_utc(ts):
 
 
 def to_display(ts, tz_name=None):
-    """Return ``"YYYY-MM-DD H:MM AM/PM TZ"`` (e.g. ``2026-07-06 11:48 AM EDT``) or None.
+    """Return ``"YYYY-MM-DD HH:MM UTC (H:MM AM/PM TZ)"`` — e.g.
+    ``2026-07-06 15:48 UTC (11:48 AM EDT)`` — or None if *ts* is unparseable.
 
-    ``tz_name`` falls back to ``FABRIC_DISPLAY_TZ``, then America/New_York. Never raises —
-    an unparseable timestamp or missing tz database yields None so callers can omit the field.
+    UTC always comes first (24-hour); the parenthetical local wall-clock uses ``tz_name`` /
+    ``FABRIC_DISPLAY_TZ`` (default America/New_York) and is omitted if the tz database is
+    unavailable. Never raises.
     """
     dt = parse_iso_utc(ts)
     if dt is None:
         return None
+    utc = dt.astimezone(timezone.utc)
+    out = f"{utc.strftime('%Y-%m-%d %H:%M')} UTC"
     name = tz_name or os.environ.get("FABRIC_DISPLAY_TZ") or _DEFAULT_TZ
     try:
         from zoneinfo import ZoneInfo   # stdlib; needs a tz database (tzdata pkg on Windows)
         local = dt.astimezone(ZoneInfo(name))
     except Exception:
-        return None
+        return out   # no tz database: UTC half still renders
     hour = local.strftime("%I").lstrip("0") or "12"   # %-I is not portable to Windows
     label = local.tzname() or name
-    return f"{local.strftime('%Y-%m-%d')} {hour}:{local.strftime('%M')} {local.strftime('%p')} {label}"
+    return f"{out} ({hour}:{local.strftime('%M')} {local.strftime('%p')} {label})"
 
 
 def add_display_time(record, src_key, dst_key, tz_name=None):

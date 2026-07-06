@@ -116,10 +116,11 @@ def create_tool_definitions(base_dir=None):
         for key in ("digest", "narrative", "roadmap", "healthScore", "staggerPlan", "correlations", "forecast"):
             if d.get(key):
                 result[key] = d[key]
-        # Raw `when` stays UTC ISO for machine use; whenLocal is the wall-clock display twin
-        # (FABRIC_DISPLAY_TZ, default Eastern) so the agent never does its own timezone math.
+        # Raw `when` stays UTC ISO for machine use; whenDisplay is the canonical display twin
+        # ("<UTC> (<Eastern>)") so the agent quotes one consistent format and never does its
+        # own timezone math.
         for f in result["findings"]:
-            add_display_time(f, "when", "whenLocal")
+            add_display_time(f, "when", "whenDisplay")
         return result
 
     def list_workspaces_handler(_input=None):
@@ -320,7 +321,7 @@ def create_tool_definitions(base_dir=None):
         if meta["truncated"]:
             result["truncated"] = True   # cap hit: costliest events only, counts are a floor
         for s in result.get("spikes") or []:
-            add_display_time(s, "ts", "tsLocal")
+            add_display_time(s, "ts", "tsDisplay")
         return result
 
     def spike_events_handler(_input=None):
@@ -346,7 +347,7 @@ def create_tool_definitions(base_dir=None):
         if meta["truncated"]:
             result["truncated"] = True   # ranking covers the costliest _EVENT_CAP events only
         for e in result["events"]:
-            add_display_time(e, "ts", "tsLocal")
+            add_display_time(e, "ts", "tsDisplay")
         return result
 
     def capacity_patterns_handler(_input=None):
@@ -366,7 +367,7 @@ def create_tool_definitions(base_dir=None):
         if meta["truncated"]:
             result["truncated"] = True
         for p in result["patterns"]:
-            add_display_time(p, "windowStart", "windowStartLocal")
+            add_display_time(p, "windowStart", "windowStartDisplay")
         return result
 
     return [
