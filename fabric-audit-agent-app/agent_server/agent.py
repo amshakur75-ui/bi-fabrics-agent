@@ -4,8 +4,10 @@ Drop-in for agent_server/agent.py in the agent-openai-agents-sdk template. Self-
 the tool loop + system prompt; MCP tools sourced via direct HTTP JSON-RPC (no external client lib
 needed). Claude endpoint bridged via the §B1-alt adapter (OpenAI chat-completions → Anthropic shape).
 """
+import asyncio
 import json
 import os
+import time
 
 from databricks.sdk import WorkspaceClient
 from mlflow.genai.agent_server import invoke, stream
@@ -16,10 +18,19 @@ from mlflow.types.responses import (
     create_text_output_item,
 )
 
+# Per-request rebuilds (WorkspaceClient + MCP client + a tools/list round-trip) added seconds of
+# latency to EVERY message for state that only changes on an MCP redeploy. Cached with a TTL.
+# NOTE: this is valid precisely BECAUSE the app runs as its service principal today — when OBO
+# lands, ws/tools must be keyed per-user (or the cache dropped for user-scoped state).
+_STATE = {"ws": None, "tools": None, "dispatch": None, "tools_at": 0.0}
+_TOOLS_TTL_SEC = 300.0
+
 
 def get_user_workspace_client() -> WorkspaceClient:
     # OBO pending admin action; SP auth is the correct fallback.
-    return WorkspaceClient()
+    if _STATE["ws"] is None:
+        _STATE["ws"] = WorkspaceClient()
+    return _STATE["ws"]
 
 _MODEL = os.environ.get("DATABRICKS_CLAUDE_ENDPOINT", "databricks-claude-opus-4-7")
 _MCP_URL = os.environ.get("FABRIC_MCP_URL", "")
@@ -87,13 +98,18 @@ def _blocks_to_dicts(content):
     return out
 
 
-async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps=6):
+async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps=6,
+                         on_tool=None):
+    """``on_tool(name, input)`` (async, optional) fires before each tool executes — the streaming
+    handler uses it to emit progress events so long investigations aren't silent for minutes."""
     messages = list(messages)
     trajectory, cache, tool_results = [], {}, []
     for step in range(max_steps):
         use_tools = tools if step < max_steps - 1 else []
-        resp = client.messages.create(model=model, max_tokens=4096, system=system,
-                                      messages=messages, tools=use_tools)
+        # The Claude call is sync (blocking requests.post) — run it OFF the event loop, or one
+        # user's multi-second model call stalls every concurrent request in the app.
+        resp = await asyncio.to_thread(client.messages.create, model=model, max_tokens=4096,
+                                       system=system, messages=messages, tools=use_tools)
         if getattr(resp, "stop_reason", None) != "tool_use":
             text = "".join(getattr(b, "text", "") for b in resp.content
                            if getattr(b, "type", None) == "text")
@@ -105,6 +121,8 @@ async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, ma
         for b in resp.content:
             if getattr(b, "type", None) != "tool_use":
                 continue
+            if on_tool is not None:
+                await on_tool(b.name, b.input)
             key = (b.name, json.dumps(b.input, sort_keys=True, ensure_ascii=False))
             if key in cache:
                 result = {"note": "duplicate read-only tool call skipped", "cached": cache[key]}
@@ -127,13 +145,33 @@ async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, ma
 # ---------------------------------------------------------------------------
 
 def _build_claude_client(ws):
-    import json as _json, requests as _req
+    import json as _json, requests as _req, time as _time
 
     endpoint_url = f"{ws.config.host}/serving-endpoints/{_MODEL}/invocations"
     # ws.config.token is a PAT-only field; for the app's SP (M2M OAuth) it's empty,
     # which silently sent "Authorization: Bearer None" and 401'd every call.
     # ws.config.authenticate() returns valid headers for whatever auth strategy is
     # active (PAT or OAuth) — the same mechanism the SDK's own HTTP client relies on.
+
+    def _post(body, headers):
+        """POST with a hard timeout (a hung endpoint call must not outlive the request) and ONE
+        retry on transient failures (connection reset / 429 / 5xx). Budget-aware: one retry only —
+        the loop makes up to 6 of these inside the Apps proxy's 120s ceiling."""
+        for attempt in (0, 1):
+            try:
+                r = _req.post(endpoint_url, json=body, headers=headers, timeout=(10, 90))
+            except _req.exceptions.ConnectionError:
+                if attempt == 0:
+                    _time.sleep(2)
+                    continue
+                raise
+            if attempt == 0 and r.status_code in (429, 500, 502, 503, 504):
+                _time.sleep(2)
+                continue
+            r.raise_for_status()
+            return r
+        r.raise_for_status()
+        return r
 
     class _Block:
         def __init__(self, **kw):
@@ -185,8 +223,7 @@ def _build_claude_client(ws):
                     "parameters": t.get("input_schema", {"type":"object","properties":{}})
                 }} for t in tools]
             headers = {**ws.config.authenticate(), "Content-Type": "application/json"}
-            r = _req.post(endpoint_url, json=body, headers=headers)
-            r.raise_for_status()
+            r = _post(body, headers)
             data = r.json()
             choice = data["choices"][0]
             msg = choice["message"]
@@ -221,6 +258,12 @@ def _build_claude_client(ws):
 # ---------------------------------------------------------------------------
 
 async def _mcp_tools_and_dispatch(ws):
+    # Tool definitions only change on an MCP redeploy — serve from the TTL cache instead of
+    # paying an MCP client build + tools/list round-trip on every message.
+    now = time.monotonic()
+    if _STATE["tools"] is not None and now - _STATE["tools_at"] < _TOOLS_TTL_SEC:
+        return _STATE["tools"], _STATE["dispatch"]
+
     from databricks_mcp import DatabricksMCPClient
     mcp = DatabricksMCPClient(server_url=_MCP_URL, workspace_client=ws)
     listed = await mcp.alist_tools()
@@ -239,6 +282,7 @@ async def _mcp_tools_and_dispatch(ws):
         return {}
 
     dispatch = {t["name"]: (lambda n: lambda inp: _call(n, inp))(t["name"]) for t in tools}
+    _STATE.update(tools=tools, dispatch=dispatch, tools_at=now)
     return tools, dispatch
 
 
@@ -267,12 +311,13 @@ def _messages_from_request(request):
 # Responses Agent handlers
 # ---------------------------------------------------------------------------
 
-async def _run(request):
+async def _run(request, on_tool=None):
     ws = get_user_workspace_client()
     tools, dispatch = await _mcp_tools_and_dispatch(ws)
     return await _run_tool_loop(
         _build_claude_client(ws), model=_MODEL, system=_SYSTEM,
-        messages=_messages_from_request(request), tools=tools, dispatch=dispatch, max_steps=6)
+        messages=_messages_from_request(request), tools=tools, dispatch=dispatch, max_steps=6,
+        on_tool=on_tool)
 
 
 @invoke()
@@ -286,10 +331,45 @@ async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentRespon
     )
 
 
+def _progress_text(name, inp):
+    args = json.dumps(inp, ensure_ascii=False) if inp else ""
+    return f"🔎 Checking {name}({args}) …"
+
+
 @stream()
 async def stream_handler(request: ResponsesAgentRequest):
-    r = await _run(request)
-    yield ResponsesAgentStreamEvent(
-        type="response.output_item.done",
-        item=create_text_output_item(text=r["text"], id="msg_1"),
-    )
+    """Emit a progress event per tool call, then the final answer. A multi-step investigation
+    was previously silent until the very end — pushing progress keeps the user informed AND
+    keeps bytes flowing through the Apps proxy during long runs."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_tool(name, inp):
+        await queue.put((name, inp))
+
+    task = asyncio.create_task(_run(request, on_tool=on_tool))
+    idx = 0
+    while True:
+        getter = asyncio.create_task(queue.get())
+        done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+        if getter in done:
+            name, inp = getter.result()
+            idx += 1
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item=create_text_output_item(text=_progress_text(name, inp), id=f"progress_{idx}"),
+            )
+            continue
+        getter.cancel()
+        r = task.result()   # re-raises if the run failed
+        while not queue.empty():   # drain progress that landed with the final result
+            name, inp = queue.get_nowait()
+            idx += 1
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item=create_text_output_item(text=_progress_text(name, inp), id=f"progress_{idx}"),
+            )
+        yield ResponsesAgentStreamEvent(
+            type="response.output_item.done",
+            item=create_text_output_item(text=r["text"], id="msg_1"),
+        )
+        break
