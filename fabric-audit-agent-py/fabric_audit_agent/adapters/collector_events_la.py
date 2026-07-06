@@ -20,7 +20,15 @@ crash — verify first.
 from ..investigation.events import normalize_event
 
 
-def _kql(window, user, item, cap):
+# Top-level operation events (the complete query / refresh). VertiPaq storage-engine sub-query
+# events (``VertiPaqSEQueryEnd``, ...) are CHILDREN of a ``QueryEnd`` — summing them double-counts
+# cost and surfaces meaningless "spikes" (a raw SE scan). A deployer can restrict to top-level ops
+# via ``config["operations"]`` AFTER confirming the live OperationName values (getschema). Default
+# is unfiltered so this can never return empty on a tenant whose op names differ.
+_RECOMMENDED_TOP_LEVEL_OPS = ("QueryEnd", "CommandEnd", "ProgressReportEnd")
+
+
+def _kql(window, user, item, cap, operations=None, order="cost"):
     lines = ["PowerBIDatasetsWorkspace",
              f"| where TimeGenerated > ago({window})",
              "| where isnotempty(ExecutingUser)"]
@@ -28,9 +36,16 @@ def _kql(window, user, item, cap):
         lines.append('| where ExecutingUser =~ "{}"'.format(user.replace('"', "")))
     if item:
         lines.append('| where ArtifactName =~ "{}"'.format(item.replace('"', "")))
+    if operations:
+        ops = ", ".join('"{}"'.format(str(o).replace('"', "")) for o in operations)
+        lines.append(f"| where OperationName in ({ops})")
     lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
                  "OperationName, CpuTimeMs, DurationMs, EventText")
-    lines.append(f"| take {int(cap)}")
+    # Deterministic + complete-for-cost: a bare ``take`` returns an ARBITRARY, non-repeatable subset
+    # (results shift between calls and the true peak can be missed entirely). ``top ... by cost``
+    # keeps the most expensive events under the cap. ``order="recent"`` keeps newest-first instead.
+    sort_key = "TimeGenerated" if order == "recent" else "coalesce(CpuTimeMs, DurationMs)"
+    lines.append(f"| top {int(cap)} by {sort_key} desc")
     return "\n".join(lines)
 
 
@@ -39,11 +54,16 @@ def create_event_collector(query, config=None):
 
     ``config`` keys: ``window`` (KQL lookback, default "1d"), ``user`` (scope to one
     ExecutingUser), ``item`` (scope to one ArtifactName), ``cap`` (row cap, default 5000),
-    ``kql`` (override the whole query).
+    ``operations`` (optional OperationName allowlist — recommend ``_RECOMMENDED_TOP_LEVEL_OPS``
+    after verifying live op names, to drop VertiPaq SE sub-query events that double-count),
+    ``order`` ("cost" [default] keeps the most expensive events under the cap; "recent" keeps the
+    newest), ``kql`` (override the whole query).
     """
     cfg = config or {}
-    kql = cfg.get("kql") or _kql(cfg.get("window", "1d"), cfg.get("user"),
-                                 cfg.get("item"), cfg.get("cap", 5000))
+    kql = cfg.get("kql") or _kql(
+        cfg.get("window", "1d"), cfg.get("user"), cfg.get("item"),
+        cfg.get("cap", 5000), cfg.get("operations"), cfg.get("order", "cost"),
+    )
 
     def collect():
         return [normalize_event(r) for r in (query(kql) or [])]

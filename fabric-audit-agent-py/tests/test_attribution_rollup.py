@@ -18,7 +18,8 @@ def test_rollup_resolves_identity_and_duration_proxy():
     ]
     out = rollup_attribution(rows)
     item = out["items"][0]
-    assert item["name"] == "M" and item["cuSeconds"] == 400
+    # 300ms + 100ms = 400ms -> 0.4 CU-seconds (ms converted to seconds, matching normalize_event).
+    assert item["name"] == "M" and item["cuSeconds"] == 0.4
     assert item["topUsers"][0]["user"] == "a@x.com" and item["userCount"] == 2
     users = {u["user"]: u for u in out["users"]}
     assert round(users["a@x.com"]["sharePct"]) == 75
@@ -29,7 +30,23 @@ def test_rollup_skips_nondict_rows():
     # A real query returns dict rows; a stray string/None must never crash the audit.
     rows = [{"ItemName": "M", "ExecutingUser": "u@x.com", "cpuMs": 5}, "PowerBIDatasetsWorkspace", None, 42]
     out = rollup_attribution(rows)
-    assert out["items"][0]["name"] == "M" and out["items"][0]["cuSeconds"] == 5
+    assert out["items"][0]["name"] == "M" and out["items"][0]["cuSeconds"] == 0.005   # 5ms -> 0.005s
+
+
+def test_rollup_converts_ms_to_cu_seconds_matching_event_path():
+    # A 9000ms CpuTimeMs op must roll up to 9.0 cuSeconds — the SAME scale normalize_event emits
+    # (round(9000/1000, 3) == 9.0). Guards against the ~1000x aggregate/event mismatch regression.
+    from fabric_audit_agent.investigation.events import normalize_event
+    ev = normalize_event({"CpuTimeMs": 9000, "OperationName": "QueryEnd", "ExecutingUser": "x@co"})
+    out = rollup_attribution([{"ItemName": "M", "ExecutingUser": "x@co", "CpuTimeMs": 9000}])
+    assert out["items"][0]["cuSeconds"] == 9.0 == ev["cuSeconds"]
+    assert out["users"][0]["cuSeconds"] == 9.0
+
+
+def test_rollup_preexisting_cu_seconds_input_is_not_rescaled():
+    # If a source already provides cuSeconds (real seconds), don't divide it again.
+    out = rollup_attribution([{"ItemName": "M", "ExecutingUser": "x@co", "cuSeconds": 12.5}])
+    assert out["items"][0]["cuSeconds"] == 12.5
 
 
 def test_rollup_empty():
