@@ -4,34 +4,51 @@ Port of the Node MCP/data-agent wiring. Uses the Python ``mcp`` package (lazy im
 ``mcp`` extra). The exact server wiring is finalized against the MCP host at deploy; the tool
 *logic* lives in ``tools.create_tool_definitions`` and is fully testable offline.
 """
+import inspect
 import os
 
 from .tools import create_tool_definitions
 from .data_agent import build_data_agent_manifest
 
-
-def _make_no_arg(handler):
-    """Return a zero-parameter tool function wrapping *handler*."""
-    def _tool():
-        return handler()
-    return _tool
+_JSON_TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
 
-def _make_with_args(handler):
-    """Return a union-signature tool function wrapping *handler*.
+def _make_tool_fn(handler, input_schema):
+    """Return a wrapper whose SIGNATURE mirrors *input_schema* exactly.
 
-    Covers the union of all arg-taking tool schemas:
-      user  (user_activity, investigate_user, user_spike_history)
-      days  (investigate_user, user_spike_history, spike_events, capacity_patterns)
-      when  (investigate_capacity_spike)
-      topN  (spike_events)
-    Only non-None values are forwarded so handlers can apply their own defaults.
+    FastMCP derives the schema MCP clients see from the function signature (via
+    ``inspect.signature``, which honors ``__signature__``) — the ``input_schema`` dict in the
+    tool definition is never read by FastMCP. A previous union-signature wrapper therefore
+    advertised phantom params on every tool (e.g. ``capacity_patterns`` showing ``user``/``topN``
+    it ignores) and lost ``required`` enforcement (``user_spike_history`` without ``user``
+    returned zeros instead of a validation error). Mirroring the schema per tool fixes both:
+    required props have no default (client MUST supply them), optional props default to None
+    and are dropped from the payload so handler-side defaults apply.
     """
-    def _tool(user: str = None, days: int = 30, when: str = None, topN: int = 5):
-        payload = {k: v for k, v in
-                   {"user": user, "days": days, "when": when, "topN": topN}.items()
-                   if v is not None}
+    props = (input_schema or {}).get("properties") or {}
+    required = set((input_schema or {}).get("required") or [])
+
+    if not props:
+        def _tool():
+            return handler()
+        return _tool
+
+    params = [
+        inspect.Parameter(
+            name,
+            inspect.Parameter.KEYWORD_ONLY,
+            default=(inspect.Parameter.empty if name in required else None),
+            annotation=_JSON_TYPE_MAP.get(spec.get("type"), str),
+        )
+        for name, spec in props.items()
+    ]
+
+    def _tool(**kwargs):
+        payload = {k: v for k, v in kwargs.items() if v is not None}
         return handler(payload)
+
+    _tool.__signature__ = inspect.Signature(params)
+    _tool.__annotations__ = {p.name: p.annotation for p in params}
     return _tool
 
 
@@ -44,23 +61,15 @@ def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
     (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
     ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``,
-    ``capacity_patterns``). No-arg tools are registered without parameters; arg-taking
-    tools expose ``user``, ``days``, ``when``, and ``topN`` as optional FastMCP params.
-    Requires the optional ``mcp`` dep."""
+    ``capacity_patterns``). Each tool's advertised MCP schema mirrors its authored
+    ``input_schema`` exactly (see ``_make_tool_fn``). Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
     server = FastMCP("fabric-audit-agent", host=host, port=port)
 
     for _def in create_tool_definitions(base_dir):
-        props = (_def.get("input_schema") or {}).get("properties") or {}
-        if not props:
-            # No-arg tools: register a zero-parameter function.
-            server.tool(name=_def["name"], description=_def["description"])(_make_no_arg(_def["handler"]))
-        else:
-            # Arg-taking tools (user_activity, investigate_user, investigate_capacity_spike):
-            # expose the union of possible params; FastMCP will pass only those provided.
-            # The shared signature covers all three tools' schemas (user: str, days: int, when: str).
-            server.tool(name=_def["name"], description=_def["description"])(_make_with_args(_def["handler"]))
+        server.tool(name=_def["name"], description=_def["description"])(
+            _make_tool_fn(_def["handler"], _def.get("input_schema")))
 
     return server
 

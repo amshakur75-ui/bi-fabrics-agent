@@ -106,6 +106,67 @@ def test_build_mcp_server_if_mcp_installed(tmp_path):
     assert build_mcp_server(base_dir=_temp_base(tmp_path)) is not None
 
 
+def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
+    """FastMCP derives the client-visible schema from the wrapper signature, NOT from the
+    input_schema dict -- so the wrapper signature must mirror each tool's schema exactly.
+    Regression: a union-signature wrapper used to advertise phantom params on every tool and
+    lose the `required` constraint on user_spike_history."""
+    pytest.importorskip("mcp")
+    from fabric_audit_agent.mcp_server import build_mcp_server
+
+    server = build_mcp_server(base_dir=_temp_base(tmp_path))
+    tools = {t.name: t.parameters for t in server._tool_manager.list_tools()}
+
+    assert set(tools) == {"run_audit", "list_workspaces", "user_activity", "investigate_user",
+                          "investigate_capacity_spike", "user_spike_history", "spike_events",
+                          "capacity_patterns"}
+
+    # user_spike_history: user REQUIRED, days optional -- and no phantom topN/when
+    ush = tools["user_spike_history"]
+    assert set(ush["properties"]) == {"user", "days"}
+    assert "user" in ush.get("required", [])
+
+    # capacity_patterns: days only -- no phantom user/when/topN
+    assert set(tools["capacity_patterns"]["properties"]) == {"days"}
+
+    # spike_events: days + topN, neither required
+    se = tools["spike_events"]
+    assert set(se["properties"]) == {"days", "topN"}
+    assert "required" not in se or not se["required"]
+
+    # investigate_capacity_spike: when only
+    assert set(tools["investigate_capacity_spike"]["properties"]) == {"when"}
+
+    # no-arg tools advertise no properties
+    assert not tools["run_audit"].get("properties")
+    assert not tools["list_workspaces"].get("properties")
+
+
+def test_mcp_required_param_enforced_and_call_flows(tmp_path):
+    """Through FastMCP's own validation layer: a missing required param must be rejected,
+    and a valid call must reach the real handler."""
+    pytest.importorskip("mcp")
+    import anyio
+    from fabric_audit_agent.mcp_server import build_mcp_server
+
+    server = build_mcp_server(base_dir=_temp_base(tmp_path))
+
+    async def _run():
+        # valid call reaches the handler (offline -> mock-labeled result)
+        ok = await server._tool_manager.call_tool("user_spike_history", {"user": "alice@co"})
+        # missing required user -> rejected by validation, not silently zeros
+        try:
+            await server._tool_manager.call_tool("user_spike_history", {"days": 7})
+            rejected = False
+        except Exception:
+            rejected = True
+        return ok, rejected
+
+    ok, rejected = anyio.run(_run)
+    assert ok is not None
+    assert rejected is True
+
+
 # ---- Databricks job wiring ----
 def _opt_facts():
     return {"capacity": {"tenant": "Acme", "capacityId": "P", "sku": "F64", "memoryGB": 64,
