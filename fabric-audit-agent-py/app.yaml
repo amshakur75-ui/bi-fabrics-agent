@@ -41,8 +41,10 @@ env:
     valueFrom: capacity_events_cluster
   - name: FABRIC_CAPACITY_EVENTS_DB
     valueFrom: capacity_events_db
+  # {window} is substituted by the collector with the threaded lookback (tool `days` arg, or the
+  # configured window) so a tool asking for 7d isn't silently served a hardcoded 1d.
   - name: FABRIC_CAPACITY_EVENTS_KQL
-    value: "CapacityEvents | where ingestion_time() > ago(1d) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
+    value: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
 
   # Workspace Monitoring Eventhouse (per-user SemanticModelLogs) — cluster/db via resources
   - name: FABRIC_KUSTO_CLUSTER
@@ -50,4 +52,4 @@ env:
   - name: FABRIC_KUSTO_DB
     valueFrom: kusto_db
   - name: FABRIC_KUSTO_KQL
-    value: "SemanticModelLogs | where Timestamp > ago(1d) | where isnotempty(ExecutingUser) | summarize cpuMs=sum(CpuTimeMs) by Workspace=WorkspaceName, Item=ItemName, ExecutingUser"
+    value: "SemanticModelLogs | where Timestamp > ago({window}) | where isnotempty(ExecutingUser) | summarize cpuMs=sum(CpuTimeMs) by Workspace=WorkspaceName, Item=ItemName, ExecutingUser"

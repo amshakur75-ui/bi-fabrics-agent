@@ -231,6 +231,10 @@ def _set_la_env(monkeypatch):
     monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
     monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
     monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    # The query-callable memo is keyed on these (identical) values -- clear it so each test's
+    # monkeypatched fake builder is actually used instead of a previous test's cached fake.
+    import fabric_audit_agent.tools as tools_mod
+    tools_mod._CLIENT_CACHE.clear()
 
 
 def _fake_la_query_builder(rows, captured=None):
@@ -305,6 +309,143 @@ def test_user_scope_threads_into_la_filter(monkeypatch):
     h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
     h({"user": "Alice@Co", "days": 30})
     assert 'ExecutingUser =~ "alice@co"' in captured["kql"]
+
+
+def test_event_tools_return_error_payload_when_la_fails(monkeypatch):
+    """A live LA failure (401 mid-rotation, timeout) must yield an honest error payload --
+    not a crashed tool call, and not zeros dressed up as data."""
+    _set_la_env(monkeypatch)
+
+    def broken_builder(*a, **kw):
+        def query(kql, timespan=None):
+            raise RuntimeError("401 Unauthorized")
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", broken_builder)
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+
+    ush = by_name["user_spike_history"]["handler"]({"user": "a@co", "days": 7})
+    assert "401" in ush["error"] and ush["source"] == "live" and "spikeCount" not in ush
+
+    se = by_name["spike_events"]["handler"]({"days": 7})
+    assert "401" in se["error"] and se["events"] == []
+
+    cp = by_name["capacity_patterns"]["handler"]({"days": 7})
+    assert "401" in cp["error"] and cp["patterns"] == []
+
+
+def test_spike_events_truncated_flag_when_cap_hit(monkeypatch):
+    """Hitting the row cap must be disclosed -- the ranking covers only the newest slice."""
+    import fabric_audit_agent.tools as tools_mod
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(tools_mod, "_EVENT_CAP", 2)
+    rows = [
+        {"TimeGenerated": f"2026-07-01T10:0{i}:00Z", "ExecutingUser": f"u{i}@co",
+         "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 1000 * (i + 1)}
+        for i in range(2)   # exactly the (patched) cap
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    out = next(d for d in create_tool_definitions()
+               if d["name"] == "spike_events")["handler"]({"days": 1, "topN": 5})
+    assert out["truncated"] is True
+
+    # Under the cap -> no truncated key (absence means full window coverage)
+    tools_mod._CLIENT_CACHE.clear()
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows[:1]),
+    )
+    out2 = next(d for d in create_tool_definitions()
+                if d["name"] == "spike_events")["handler"]({"days": 1, "topN": 5})
+    assert "truncated" not in out2
+
+
+def test_capacity_patterns_degrades_honestly_when_series_fails(monkeypatch):
+    """A CU%-series failure must not kill the tool -- events are still good; the tool returns
+    empty patterns plus a seriesError note so the agent can explain the gap."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    rows = [{"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co",
+             "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 5000}]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+
+    def broken_kusto_builder(*a, **kw):
+        def query(kql):
+            raise RuntimeError("Kusto unreachable")
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", broken_kusto_builder)
+    out = next(d for d in create_tool_definitions()
+               if d["name"] == "capacity_patterns")["handler"]({"days": 1})
+    assert out["patterns"] == []
+    assert "Kusto unreachable" in out["seriesError"]
+    assert "error" not in out   # the events side succeeded
+
+
+def test_query_client_is_memoized_across_calls(monkeypatch):
+    """The LA query callable must be built once and reused -- a fresh MSAL app per call means
+    an AAD token round-trip per tool call and throttling exposure."""
+    _set_la_env(monkeypatch)
+    builds = {"n": 0}
+
+    def counting_builder(*a, **kw):
+        builds["n"] += 1
+        return lambda kql, timespan=None: []
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", counting_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    h({"days": 7})
+    h({"days": 30})
+    assert builds["n"] == 1
+
+
+def test_capacity_events_kql_override_respects_days(monkeypatch):
+    """Regression: the deployed FABRIC_CAPACITY_EVENTS_KQL override used to hardcode ago(1d),
+    silently defeating the days arg for the CU% series. With the {window} placeholder the
+    threaded lookback must reach the Kusto query."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_KQL",
+                       "CapacityEvents | where ingestion_time() > ago({window}) | project x")
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    captured = {}
+
+    def fake_kusto_builder(*a, **kw):
+        def query(kql):
+            captured["kql"] = kql
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    next(d for d in create_tool_definitions()
+         if d["name"] == "capacity_patterns")["handler"]({"days": 7})
+    assert "ago(7d)" in captured["kql"] and "{window}" not in captured["kql"]
+
+
+def test_investigate_user_days_threads_into_collector_window(monkeypatch):
+    """investigate_user's days arg must reach the live collector's lookback, not just the
+    baseline math -- previously the collector window was pinned to FABRIC_LA_WINDOW/1d."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "investigate_user")["handler"]
+    h({"user": "a@co", "days": 7})
+    assert "ago(7d)" in captured["kql"]
 
 
 def test_capacity_series_included_when_capacity_events_also_configured(monkeypatch):

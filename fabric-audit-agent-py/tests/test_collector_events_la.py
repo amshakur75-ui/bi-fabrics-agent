@@ -72,6 +72,17 @@ def test_kql_strips_quotes_from_user_and_item_to_avoid_injection():
     assert 'ArtifactName =~ "bc"' in seen["kql"]
 
 
+def test_kql_strips_backslashes_too():
+    """A trailing backslash would escape the closing quote and break the query string."""
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_event_collector(capture, {"user": "trailing\\", "item": "mid\\dle"})["collect"]()
+    assert 'ExecutingUser =~ "trailing"' in seen["kql"]
+    assert 'ArtifactName =~ "middle"' in seen["kql"]
+
+
 def test_kql_override_bypasses_builder():
     seen = {}
     def capture(kql):

@@ -28,22 +28,29 @@ from ..investigation.events import normalize_event
 _RECOMMENDED_TOP_LEVEL_OPS = ("QueryEnd", "CommandEnd", "ProgressReportEnd")
 
 
+def _quote(value):
+    """Sanitize a literal for interpolation into a KQL string: strip quotes AND backslashes
+    (a trailing backslash would escape the closing quote and break the query)."""
+    return str(value).replace("\\", "").replace('"', "")
+
+
 def _kql(window, user, item, cap, operations=None, order="cost"):
     lines = ["PowerBIDatasetsWorkspace",
              f"| where TimeGenerated > ago({window})",
              "| where isnotempty(ExecutingUser)"]
     if user:
-        lines.append('| where ExecutingUser =~ "{}"'.format(user.replace('"', "")))
+        lines.append(f'| where ExecutingUser =~ "{_quote(user)}"')
     if item:
-        lines.append('| where ArtifactName =~ "{}"'.format(item.replace('"', "")))
+        lines.append(f'| where ArtifactName =~ "{_quote(item)}"')
     if operations:
-        ops = ", ".join('"{}"'.format(str(o).replace('"', "")) for o in operations)
+        ops = ", ".join(f'"{_quote(o)}"' for o in operations)
         lines.append(f"| where OperationName in ({ops})")
     lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
                  "OperationName, CpuTimeMs, DurationMs, EventText")
     # Deterministic + complete-for-cost: a bare ``take`` returns an ARBITRARY, non-repeatable subset
     # (results shift between calls and the true peak can be missed entirely). ``top ... by cost``
-    # keeps the most expensive events under the cap. ``order="recent"`` keeps newest-first instead.
+    # keeps the most expensive events under the cap. ``order="recent"`` keeps newest-first instead
+    # (use for time-bucketed analysis that needs contiguous coverage, e.g. capacity_patterns).
     sort_key = "TimeGenerated" if order == "recent" else "coalesce(CpuTimeMs, DurationMs)"
     lines.append(f"| top {int(cap)} by {sort_key} desc")
     return "\n".join(lines)

@@ -169,12 +169,15 @@ def csv_main():
 
 # ---- unified production sweep (CSV now; live sources auto-included once configured) ----
 
-def build_collector_from_env(env):
+def build_collector_from_env(env, window=None):
     """Compose the collector from whatever is configured — the SAME deployment grows as access lands.
 
     CSV (no permissions) is included whenever ``FABRIC_CSV_PATHS`` is set; the live sources switch on
     automatically once their env + SP secrets exist. CSV is listed first so its authoritative CU
     share wins on merge (see ``collector_merge``).
+
+    ``window`` (e.g. ``"7d"``) overrides every telemetry source's lookback — used by tools that
+    thread a ``days`` argument; when None, each source keeps its own env-configured window.
     """
     collectors = []
 
@@ -195,7 +198,7 @@ def build_collector_from_env(env):
             env["FABRIC_KUSTO_CLUSTER"], env["FABRIC_KUSTO_DB"],
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
         )
-        wm_cfg = {"window": env.get("FABRIC_KUSTO_WINDOW", "1d")}
+        wm_cfg = {"window": window if window is not None else env.get("FABRIC_KUSTO_WINDOW", "1d")}
         if env.get("FABRIC_KUSTO_KQL"):
             wm_cfg["kql"] = env["FABRIC_KUSTO_KQL"]
         collectors.append(create_workspace_monitoring_collector(query, wm_cfg))
@@ -209,7 +212,7 @@ def build_collector_from_env(env):
             env["FABRIC_LA_WORKSPACE_ID"],
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
         )
-        la_cfg = {"window": env.get("FABRIC_LA_WINDOW", "1d")}
+        la_cfg = {"window": window if window is not None else env.get("FABRIC_LA_WINDOW", "1d")}
         if env.get("FABRIC_LA_WORKSPACE_FILTER"):   # comma-string -> scope to named workspaces (else whole-estate)
             la_cfg["workspaceFilter"] = env["FABRIC_LA_WORKSPACE_FILTER"]
         if env.get("FABRIC_LA_KQL"):
@@ -228,7 +231,7 @@ def build_collector_from_env(env):
             env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
         )
-        ce_cfg = {"window": env.get("FABRIC_CAPACITY_EVENTS_WINDOW", "1d")}
+        ce_cfg = {"window": window if window is not None else env.get("FABRIC_CAPACITY_EVENTS_WINDOW", "1d")}
         if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
             ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
         if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
