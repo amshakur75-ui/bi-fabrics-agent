@@ -199,6 +199,7 @@ def create_tool_definitions(base_dir=None):
         inp = _input or {}
         when = inp.get("when")
         events = series = None
+        events_truncated = False
         if when:
             from .timefmt import parse_iso_utc as _parse
             from datetime import timedelta as _td, timezone as _tz
@@ -215,8 +216,10 @@ def create_tool_definitions(base_dir=None):
                                                             order="recent", between=between)
             if not ev_meta["error"]:
                 events, series = ev_events, ev_series
+                events_truncated = ev_meta["truncated"]
         result = _ics(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
-                      when, events=events, capacity_series=series)
+                      when, events=events, capacity_series=series,
+                      events_truncated=events_truncated)
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
         # Decorate the window evidence's top events with the canonical display twin.
         for e_item in result.get("evidence") or []:

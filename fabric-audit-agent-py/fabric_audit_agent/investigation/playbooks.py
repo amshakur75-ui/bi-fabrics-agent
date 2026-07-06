@@ -55,9 +55,11 @@ def investigate_user(collector, reasoner, user, days=30):
     return _finish(f"user {match['user']}", coverage, confidence, ev, False, reasoner)
 
 
-def _spike_window_evidence(when, events, capacity_series, window_minutes):
+def _spike_window_evidence(when, events, capacity_series, window_minutes, truncated=False):
     """Evidence for the ±window around *when* from per-event telemetry: interactive-vs-refresh CU
-    split, distinct users, top events, and the in-window CU% peak. Returns (evidence, found)."""
+    split, distinct users, top events, and the in-window CU% peak. Returns (evidence, found).
+    ``truncated`` = the event fetch hit its row cap, so the split covers only a slice of the
+    window — disclosed in the summary and data, per the honesty rules."""
     center = parse_iso_utc(when)
     if center is None:
         return (evidence_item(
@@ -100,17 +102,21 @@ def _spike_window_evidence(when, events, capacity_series, window_minutes):
     summary = (f"±{window_minutes}m around {when}: {len(in_win)} events from {users} users — "
                f"interactive {interactive} vs refresh {refresh} CU-s ({driver})"
                + (f"; window peak {peak}% CU" if peak is not None else "")
-               + (f"; top: {top_txt}" if top_txt else ""))
+               + (f"; top: {top_txt}" if top_txt else "")
+               + (" [event cap hit — split covers only the newest slice of the window]"
+                  if truncated else ""))
     data = {"when": when, "windowMinutes": window_minutes, "eventCount": len(in_win),
             "distinctUsers": users, "interactiveCuSeconds": interactive,
             "refreshCuSeconds": refresh, "driver": driver, "windowPeakCuPct": peak,
             "topEvents": [{"ts": e.get("ts"), "user": e.get("user"), "item": e.get("item"),
                            "kind": e.get("kind"), "cuSeconds": e.get("cuSeconds")} for e in top]}
+    if truncated:
+        data["eventsTruncated"] = True
     return evidence_item("window", summary, data), True
 
 
 def investigate_capacity_spike(collector, reasoner, when=None, events=None, capacity_series=None,
-                               window_minutes=30):
+                               window_minutes=30, events_truncated=False):
     """``when`` + pre-fetched Phase-3 ``events``/``capacity_series`` scope the analysis to the
     ±``window_minutes`` around the named moment — answering "was THIS peak a refresh or
     interactive load, and whose?" instead of restating the whole-window rollup."""
@@ -137,7 +143,8 @@ def investigate_capacity_spike(collector, reasoner, when=None, events=None, capa
                                 + (f" (top user {tu})" if tu else ""), top))
 
     if when and (events is not None or capacity_series is not None):
-        window_ev, found = _spike_window_evidence(when, events, capacity_series, window_minutes)
+        window_ev, found = _spike_window_evidence(when, events, capacity_series, window_minutes,
+                                                  truncated=events_truncated)
         ev.append(window_ev)
         if found:
             corroborating += 1   # per-event telemetry corroborates the rollup signals

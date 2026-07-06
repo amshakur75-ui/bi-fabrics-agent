@@ -510,6 +510,36 @@ def test_investigate_spike_when_bounds_the_live_query_absolutely(monkeypatch):
                 "datetime(2026-07-06T16:18:00Z))") in k for k in kqls)
 
 
+def test_investigate_spike_window_truncation_threads_from_fetch_meta(monkeypatch):
+    """When the ±30m fetch hits the row cap, the window evidence must disclose it."""
+    import fabric_audit_agent.tools as tools_mod
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(tools_mod, "_EVENT_CAP", 2)
+    rows = [
+        {"TimeGenerated": "2026-07-06T15:40:00Z", "ExecutingUser": "a@co",
+         "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 1000},
+        {"TimeGenerated": "2026-07-06T15:50:00Z", "ExecutingUser": "b@co",
+         "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 2000},
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    # The playbook abstains without a capacity signal — fake the capacity-events source too.
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    ce_rows = [{"capacityId": "c", "windowStartTime": "2026-07-06T15:48:00Z",
+                "baseCapacityUnits": 64, "capacityUnitMs": 1920000}]   # 100%
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **kw: (lambda kql: ce_rows))
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    out = h({"when": "2026-07-06T15:48:00Z", "days": 2})
+    window = next(e for e in out["evidence"] if e["kind"] == "window")
+    assert window["data"]["eventsTruncated"] is True
+    assert "cap hit" in window["summary"]
+
+
 def test_investigate_spike_without_when_has_no_window_evidence(monkeypatch):
     _no_live(monkeypatch)
     h = next(d for d in create_tool_definitions()

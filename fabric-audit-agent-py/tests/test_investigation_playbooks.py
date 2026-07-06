@@ -123,6 +123,24 @@ def test_no_when_keeps_prior_behavior():
     assert not [e for e in out["evidence"] if e["kind"] == "window"]
 
 
+def test_window_truncation_is_disclosed():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                     when="2026-07-06T15:48:00Z",
+                                     events=_WINDOW_EVENTS, capacity_series=_WINDOW_SERIES,
+                                     events_truncated=True)
+    ev = _window_ev(out)
+    assert ev["data"]["eventsTruncated"] is True
+    assert "cap hit" in ev["summary"]              # summary discloses the partial-slice caveat
+
+
+def test_window_not_truncated_has_no_flag():
+    out = investigate_capacity_spike(_collector(_spike_facts()), create_investigation_reasoner(),
+                                     when="2026-07-06T15:48:00Z", events=_WINDOW_EVENTS)
+    ev = _window_ev(out)
+    assert "eventsTruncated" not in ev["data"]     # absence means the window was fully covered
+    assert "cap hit" not in ev["summary"]
+
+
 # --- Group 2: baseline wiring ---
 
 def test_investigate_user_uses_baseline_when_history_present():
