@@ -177,12 +177,16 @@ def create_tool_definitions(base_dir=None):
         source = "live" if _has_live_source(os.environ) else "mock"
         users = facts.get("users") or []
         who = (_input or {}).get("user")
+        cu_unit = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
+        denominator = "monitored user-attributable activity"
         if who:
             u = next((x for x in users if (x.get("user") or "").lower() == who.lower()), None)
             return {"user": who, "found": u is not None, "detail": u,
-                    "source": source, "coverage": cov}
+                    "source": source, "coverage": cov,
+                    "cuUnit": cu_unit, "denominator": denominator}
         return {"topUsers": users[:10], "userCount": len(users),
-                "source": source, "coverage": cov}
+                "source": source, "coverage": cov,
+                "cuUnit": cu_unit, "denominator": denominator}
 
     def investigate_user_handler(_input=None):
         """Investigate a specific user's contribution to capacity: assembles evidence, baselines,
@@ -363,6 +367,7 @@ def create_tool_definitions(base_dir=None):
             )
             result = _user_spike_history(events, user.lower())
             result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
+            result["cuUnit"] = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
             capped_spikes, cap_meta = _cap_rows(result["spikes"])
             result["spikes"] = capped_spikes
             cap_meta["windowLabel"] = meta["windowLabel"]
@@ -395,6 +400,7 @@ def create_tool_definitions(base_dir=None):
             out = _finish({
                 "events": result_events,
                 "source": "live" if _has_live_event_source(os.environ) else "mock",
+                "cuUnit": "cuSeconds (CPU-time proxy; not authoritative capacity CU)",
             }, rows_key="events", kql=meta["eventKql"], extra=cap_meta)
             if inp.get("format") == "columnar":
                 # rowCount must stay the TRUE row count (finish already computed it above from the
@@ -734,7 +740,9 @@ def create_tool_definitions(base_dir=None):
                 "by monitored CU (a CPU-time proxy, not authoritative capacity CU). With a 'user' "
                 "argument, returns that user's detail (items, "
                 "sharePct, cuSeconds). Falls back to the offline mock estate when no live source "
-                "is configured. Read-only."
+                "is configured. Its sharePct uses a different denominator (monitored "
+                "user-attributable activity) than run_audit's capacity estimator, so the two "
+                "shares are not directly comparable. Read-only."
             ),
             "input_schema": {
                 "type": "object",

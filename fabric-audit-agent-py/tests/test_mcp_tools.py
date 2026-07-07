@@ -58,6 +58,42 @@ def test_user_activity_labels_mock_source_offline(monkeypatch):
     assert out["source"] == "mock" and "coverage" in out
 
 
+_CU_UNIT = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
+_USER_ACTIVITY_DENOMINATOR = "monitored user-attributable activity"
+
+
+def test_user_activity_no_arg_envelope_carries_cu_unit_and_denominator(monkeypatch):
+    """Mock path (unit label is source-independent): no-arg branch."""
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_activity")["handler"]
+    out = h()
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert out["denominator"] == _USER_ACTIVITY_DENOMINATOR
+
+
+def test_user_activity_who_branch_envelope_carries_cu_unit_and_denominator(monkeypatch):
+    """Mock path: user= branch."""
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_activity")["handler"]
+    out = h({"user": "anyone@co"})
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert out["denominator"] == _USER_ACTIVITY_DENOMINATOR
+
+
+def test_user_activity_description_explains_denominator_mismatch():
+    d = next(d for d in create_tool_definitions() if d["name"] == "user_activity")
+    desc = d["description"]
+    assert "denominator" in desc.lower()
+    assert "run_audit" in desc
+    assert desc.rstrip().endswith("Read-only.")
+
+
 # ---------------------------------------------------------------------------
 # Phase-3 Task-7: user_spike_history, spike_events, capacity_patterns tools
 # ---------------------------------------------------------------------------
@@ -105,6 +141,16 @@ def test_user_spike_history_handler_offline_shape(monkeypatch):
     assert "interactiveVsRefresh" in out
 
 
+def test_user_spike_history_handler_envelope_carries_cu_unit(monkeypatch):
+    """cuUnit is present but denominator is NOT (only user_activity gets denominator)."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "days": 30})
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert "denominator" not in out
+
+
 def test_user_spike_history_handler_abstains_unknown_user(monkeypatch):
     """Unknown user returns spikeCount=0 and an empty spikes list."""
     _no_live(monkeypatch)
@@ -127,6 +173,16 @@ def test_spike_events_handler_offline_shape(monkeypatch):
         assert "user" in ev and "item" in ev and "ts" in ev and "cuSeconds" in ev
     # topN respected: at most 3
     assert len(out["events"]) <= 3
+
+
+def test_spike_events_handler_envelope_carries_cu_unit(monkeypatch):
+    """cuUnit is present but denominator is NOT (only user_activity gets denominator)."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 3})
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert "denominator" not in out
 
 
 def test_spike_events_default_topN(monkeypatch):
