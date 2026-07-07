@@ -1340,3 +1340,110 @@ def test_make_with_args_surge_users_zero_forwarded_not_dropped():
     tool(surgeUsers=0, cuSpikePct=0.0)
     assert captured["payload"]["surgeUsers"] == 0
     assert captured["payload"]["cuSpikePct"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 11: verify-in-Fabric deeplinks -- verifyUrl on live capacity-Kusto envelopes
+# ---------------------------------------------------------------------------
+
+def test_describe_source_capacity_live_carries_verify_url(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            return [{"Schema": "ts:datetime, cuPct:real"}]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "live"
+    assert out["verifyUrl"].startswith("https://dataexplorer.azure.com/")
+
+
+def test_describe_source_capacity_mock_has_no_verify_url(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+    assert "verifyUrl" not in out
+
+
+def test_describe_source_events_live_has_no_verify_url(monkeypatch):
+    """Log Analytics (events) envelopes get nothing -- no clean web-explorer equivalent."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([{"ColumnName": "TimeGenerated", "ColumnType": "datetime"}]),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "events"})
+    assert out["sourceLabel"] == "live"
+    assert "verifyUrl" not in out
+
+
+def test_sample_events_capacity_live_carries_verify_url(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    rows = [{"capacityId": "cap1", "cuPct": 80.0}]
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        return lambda kql: rows
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity", "n": 2})
+    assert out["sourceLabel"] == "live"
+    assert out["verifyUrl"].startswith("https://dataexplorer.azure.com/")
+
+
+def test_sample_events_capacity_mock_has_no_verify_url(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+    assert "verifyUrl" not in out
+
+
+def test_sample_events_events_live_has_no_verify_url(monkeypatch):
+    _set_la_env(monkeypatch)
+    rows = [{"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co"}]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 4})
+    assert out["sourceLabel"] == "live"
+    assert "verifyUrl" not in out
+
+
+def test_capacity_diagnostics_live_carries_verify_urls_for_successful_sections(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                raise RuntimeError("cluster endpoint unavailable")
+            return [{"ok": True}]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    # every successful section gets a verify URL; the failed section does not.
+    assert set(out["verifyUrls"].keys()) == {"capacity", "workloadGroups", "diagnostics"}
+    for url in out["verifyUrls"].values():
+        assert url.startswith("https://dataexplorer.azure.com/")
+    assert "cluster" not in out["verifyUrls"]
+
+
+def test_capacity_diagnostics_no_config_has_no_verify_urls(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert "verifyUrls" not in out

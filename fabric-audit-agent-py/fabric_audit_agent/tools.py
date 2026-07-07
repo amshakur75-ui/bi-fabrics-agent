@@ -26,6 +26,7 @@ from .adapters.collector_capacity_events import capacity_series as _capacity_cu_
 from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columnar as _to_columnar
 from .query.windows import resolve_window as _resolve_window
 from .query.kql_guard import assert_kusto_host as _assert_kusto_host, escape_entity as _escape_entity
+from .query.deeplinks import kusto_deeplink as _kusto_deeplink
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -570,7 +571,11 @@ def create_tool_definitions(base_dir=None):
                         continue
                     name, _, ctype = part.partition(":")
                     columns.append({"name": name.strip(), "type": ctype.strip() or None})
-            return {"source": source, "table": table, "columns": columns, "sourceLabel": "live"}
+            result = {"source": source, "table": table, "columns": columns, "sourceLabel": "live"}
+            deeplink = _kusto_deeplink(env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"], kql)
+            if deeplink:
+                result["verifyUrl"] = deeplink
+            return result
         except Exception as exc:
             return {"error": str(exc), "source": source}
 
@@ -616,7 +621,11 @@ def create_tool_definitions(base_dir=None):
             # keep it simple -- no time filter, just a bounded take.
             kql = f"{_escape_entity(table)}\n| take {n}"
             rows = kusto_query(kql) or []
-            return {"source": source, "table": table, "n": n, "rows": rows, "sourceLabel": "live"}
+            result = {"source": source, "table": table, "n": n, "rows": rows, "sourceLabel": "live"}
+            deeplink = _kusto_deeplink(env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"], kql)
+            if deeplink:
+                result["verifyUrl"] = deeplink
+            return result
         except Exception as exc:
             return {"error": str(exc), "source": source}
 
@@ -653,15 +662,22 @@ def create_tool_definitions(base_dir=None):
 
         sections = {}
         errors = {}
+        verify_urls = {}
         for name, kql in _CAPACITY_DIAGNOSTICS_COMMANDS.items():
             try:
                 if not kql.startswith(".show "):
                     raise ValueError(f"capacity_diagnostics: non read-only command rejected: {kql!r}")
                 sections[name] = kusto_query(kql) or []
+                deeplink = _kusto_deeplink(env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"], kql)
+                if deeplink:
+                    verify_urls[name] = deeplink
             except Exception as exc:
                 errors[name] = str(exc)
 
-        return {"sections": sections, "errors": errors, "source": "live"}
+        result = {"sections": sections, "errors": errors, "source": "live"}
+        if verify_urls:
+            result["verifyUrls"] = verify_urls
+        return result
 
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
     # spike_events, capacity_patterns) -- merged into each tool's "days"-carrying input_schema so
