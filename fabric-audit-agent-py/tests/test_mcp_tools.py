@@ -1046,3 +1046,89 @@ def test_dry_run_invalid_on_exception():
     out = dry_run(fake_query, "SomeTable | where Foo == 1")
     assert out["valid"] is False
     assert "bad column" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Task 9: capacity_diagnostics — read-only .show capacity/cluster suite
+# ---------------------------------------------------------------------------
+
+def test_capacity_diagnostics_is_defined_and_registered():
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "capacity_diagnostics" in by_name
+    cd = by_name["capacity_diagnostics"]
+    assert cd["input_schema"]["properties"] == {}
+    assert cd["input_schema"]["required"] == []
+    assert callable(cd["handler"])
+
+
+def test_capacity_diagnostics_no_config_returns_source_none(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert out["sections"] == {}
+    assert "note" in out
+    assert "error" not in out
+
+
+def test_capacity_diagnostics_live_runs_fixed_show_commands_with_per_section_isolation(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    captured_kqls = []
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured_kqls.append(kql)
+            if kql.startswith(".show cluster"):
+                raise RuntimeError("cluster endpoint unavailable")
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    # failing section isolated to errors, others still land in sections
+    assert "cluster" in out["errors"]
+    assert "cluster endpoint unavailable" in out["errors"]["cluster"]
+    assert "cluster" not in out["sections"]
+
+    assert out["sections"]["capacity"] == [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+    assert out["sections"]["workloadGroups"] == [{"Name": "default"}]
+    assert out["sections"]["diagnostics"] == [{"Status": "ok"}]
+
+    # every command actually executed must be a read-only .show command
+    assert captured_kqls
+    for kql in captured_kqls:
+        assert kql.startswith(".show ")
+
+
+def test_capacity_diagnostics_rejects_non_allowlisted_cluster(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://evil.example.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_capacity_diagnostics_partial_config_returns_error_envelope_not_keyerror(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.delenv("FABRIC_TENANT_ID", raising=False)
+    monkeypatch.delenv("FABRIC_CLIENT_SECRET", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert "error" in out
+    assert out["source"] == "capacity"

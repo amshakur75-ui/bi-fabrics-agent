@@ -581,6 +581,49 @@ def create_tool_definitions(base_dir=None):
         except Exception as exc:
             return {"error": str(exc), "source": source}
 
+    # ------------------------------------------------------------------
+    # Task 9: capacity_diagnostics -- read-only .show capacity/cluster suite
+    # ------------------------------------------------------------------
+    # Fixed dict of read-only .show commands against the Capacity Events Eventhouse (audited from
+    # microsoft/fabric-rti-mcp's kusto_diagnostics, MIT). Literals only -- no interpolation, no
+    # injection surface -- but every command is still passed through the ".show " guard below
+    # (belt-and-suspenders) so no non-.show command can ever be executed via this path.
+    _CAPACITY_DIAGNOSTICS_COMMANDS = {
+        "capacity": ".show capacity | project Resource, Total, Consumed, Remaining",
+        "cluster": ".show cluster",
+        "workloadGroups": ".show workload_groups",
+        "diagnostics": ".show diagnostics",
+    }
+
+    def capacity_diagnostics_handler(_input=None):
+        """Run the fixed read-only .show capacity/cluster diagnostic suite against the Capacity
+        Events Eventhouse. Each section runs independently -- one failing section never kills the
+        others. Falls back to {source:"none"} when the capacity cluster isn't configured."""
+        env = os.environ
+        if not _has_live_capacity_kusto(env):
+            return {
+                "source": "none",
+                "note": ("Capacity Events cluster not configured; set "
+                          "FABRIC_CAPACITY_EVENTS_CLUSTER/_DB."),
+                "sections": {},
+            }
+        try:
+            kusto_query = _capacity_kusto_query(env)
+        except Exception as exc:
+            return {"error": str(exc), "source": "capacity"}
+
+        sections = {}
+        errors = {}
+        for name, kql in _CAPACITY_DIAGNOSTICS_COMMANDS.items():
+            try:
+                if not kql.startswith(".show "):
+                    raise ValueError(f"capacity_diagnostics: non read-only command rejected: {kql!r}")
+                sections[name] = kusto_query(kql) or []
+            except Exception as exc:
+                errors[name] = str(exc)
+
+        return {"sections": sections, "errors": errors, "source": "live"}
+
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
     # spike_events, capacity_patterns) -- merged into each tool's "days"-carrying input_schema so
     # a caller can ask for "last 6 hours" or an absolute "12:45pm-1pm yesterday" window, not just
@@ -850,5 +893,17 @@ def create_tool_definitions(base_dir=None):
                 "required": [],
             },
             "handler": sample_events_handler,
+        },
+        {
+            "name": "capacity_diagnostics",
+            "description": (
+                "Return live capacity/cluster diagnostics from the Capacity Events Eventhouse: "
+                "capacity (Resource/Total/Consumed/Remaining), cluster health, workload groups, "
+                "and diagnostics. Runs a fixed set of read-only '.show' commands, each isolated "
+                "so one failing section never blocks the others (see 'errors'). Falls back to "
+                "{source:'none'} when the capacity cluster isn't configured. Read-only."
+            ),
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+            "handler": capacity_diagnostics_handler,
         },
     ]
