@@ -19,6 +19,7 @@ from .investigation.expensive import top_expensive as _top_expensive
 from .investigation.spike_history import user_spike_history as _user_spike_history
 from .investigation.patterns import capacity_patterns as _capacity_patterns
 from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
+from .query.envelope import cap_rows as _cap_rows, finish as _finish
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -130,13 +131,14 @@ def create_tool_definitions(base_dir=None):
             entry["totalCuSeconds"] += item.get("cuSeconds", 0)
 
         workspaces = sorted(ws_map.values(), key=lambda x: -x["totalCuSeconds"])
-        return {
-            "workspaces": workspaces,
+        capped_workspaces, cap_meta = _cap_rows(workspaces)
+        return _finish({
+            "workspaces": capped_workspaces,
             "topUsers": users[:10],
             "totalWorkspaces": len(workspaces),
             "totalItems": len(items),
             "source": "Log Analytics + Eventhouse (merged)",
-        }
+        }, rows_key="workspaces", extra=cap_meta)
 
     def user_activity_handler(_input=None):
         """Return ranked top users (no arg) or a specific user's detail (user arg).
@@ -264,7 +266,9 @@ def create_tool_definitions(base_dir=None):
         events, _ = _events_or_mock(days=inp.get("days"), user=user.lower() or None)
         result = _user_spike_history(events, user.lower())
         result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
-        return result
+        capped_spikes, cap_meta = _cap_rows(result["spikes"])
+        result["spikes"] = capped_spikes
+        return _finish(result, rows_key="spikes", extra=cap_meta)
 
     def spike_events_handler(_input=None):
         """Ranked spike events across the estate: top-N by cuSeconds, each with
@@ -280,11 +284,12 @@ def create_tool_definitions(base_dir=None):
             e for e in events
             if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
         ]
-        result_events = _top_expensive(spike_list, n=top_n)
-        return {
+        capped_spike_list, cap_meta = _cap_rows(spike_list)
+        result_events = _top_expensive(capped_spike_list, n=top_n)
+        return _finish({
             "events": result_events,
             "source": "live" if _has_live_event_source(os.environ) else "mock",
-        }
+        }, rows_key="events", extra=cap_meta)
 
     def capacity_patterns_handler(_input=None):
         """Temporal activity-surge ↔ CU-spike patterns across the estate."""

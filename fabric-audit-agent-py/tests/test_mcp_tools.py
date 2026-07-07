@@ -372,3 +372,91 @@ def test_capacity_events_kql_override_is_passed_through(monkeypatch):
     h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
     h({"days": 1})
     assert captured["kql"] == override
+
+
+# ---------------------------------------------------------------------------
+# Task 4: result envelope (rowCount/queryKql) + char-budget cap_rows on list tools.
+# Small mock fixtures fit well under the 12000-char default budget, so truncated=False
+# is expected here; cap_rows' own truncation behavior is covered in test_envelope.py.
+# ---------------------------------------------------------------------------
+
+def test_spike_events_handler_has_envelope_fields(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 3})
+    # Envelope fields present
+    assert out["rowCount"] == len(out["events"])
+    assert out["queryKql"] is None
+    assert out["truncated"] is False
+    assert out["originalRowCount"] >= out["rowCount"]
+    # Pre-existing fields preserved
+    assert "source" in out
+    assert isinstance(out["events"], list)
+    for ev in out["events"]:
+        assert "user" in ev and "item" in ev and "ts" in ev and "cuSeconds" in ev
+    # topN still respected (cap applied AFTER truncation, on the capped-then-topN'd... see below)
+    assert len(out["events"]) <= 3
+
+
+def test_spike_events_original_row_count_reflects_full_spike_list_not_topn_slice(monkeypatch):
+    """originalRowCount must reflect the FULL spike list (pre-topN), not the already-sliced
+    top_expensive output -- topN=1 must not make originalRowCount collapse to 1."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out_small = h({"days": 30, "topN": 1})
+    out_large = h({"days": 30, "topN": 10})
+    assert out_small["originalRowCount"] == out_large["originalRowCount"]
+    assert len(out_small["events"]) <= 1
+
+
+def test_user_spike_history_handler_has_envelope_fields(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "days": 30})
+    assert out["rowCount"] == len(out["spikes"])
+    assert out["queryKql"] is None
+    assert out["truncated"] is False
+    # Pre-existing fields preserved
+    assert out["source"] == "mock"
+    assert "user" in out
+    assert "spikeCount" in out
+    assert "topItems" in out
+    assert "byHour" in out
+    assert "interactiveVsRefresh" in out
+
+
+def test_list_workspaces_handler_has_envelope_fields(monkeypatch):
+    monkeypatch.setenv("FABRIC_KUSTO_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_KUSTO_DB", "db")
+    monkeypatch.setattr(
+        "fabric_audit_agent.job.build_collector_from_env",
+        lambda env: {"collect": lambda: {
+            "items": [
+                {"name": "Report A", "workspace": "WS1", "cuSeconds": 10, "sharePct": 50.0,
+                 "topUsers": ["a@co"], "userCount": 1},
+            ],
+            "users": [{"user": "a@co", "cuSeconds": 10}],
+        }},
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "list_workspaces")["handler"]
+    out = h()
+    assert out["rowCount"] == len(out["workspaces"])
+    assert out["queryKql"] is None
+    assert out["truncated"] is False
+    # Pre-existing fields preserved
+    assert out["source"] == "Log Analytics + Eventhouse (merged)"
+    assert out["totalWorkspaces"] == 1
+    assert out["totalItems"] == 1
+    assert out["topUsers"] == [{"user": "a@co", "cuSeconds": 10}]
+
+
+def test_list_workspaces_no_source_still_has_no_envelope_pollution():
+    """The no-live-source early-return path is unaffected -- it's not a cap_rows/finish path."""
+    import os
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        os.environ.pop(v, None)
+    h = next(d for d in create_tool_definitions() if d["name"] == "list_workspaces")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert out["workspaces"] == []
