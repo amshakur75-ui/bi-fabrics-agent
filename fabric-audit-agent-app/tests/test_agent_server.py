@@ -498,6 +498,22 @@ class TestStreamingProgress(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("run_audit" in t for t in texts[:-1]))   # progress names the tool
         self.assertEqual(texts[-1], "Audit done.")                   # final answer last
 
+    async def test_stream_failure_ends_with_honest_message_not_broken_stream(self):
+        """A raised exception mid-run would abort the SSE stream and the chat UI shows a
+        broken/blank response -- the stream must end with a readable failure event instead."""
+        async def exploding_tools(ws):
+            raise RuntimeError("MCP unreachable")
+
+        _agent.create_text_output_item.reset_mock()
+        request = types.SimpleNamespace(input=[{"role": "user", "content": "audit"}])
+        with patch.object(_agent, "_mcp_tools_and_dispatch", new=exploding_tools):
+            events = [e async for e in _agent.stream_handler(request)]   # must NOT raise
+
+        self.assertEqual(len(events), 1)
+        final = _agent.create_text_output_item.call_args_list[-1].kwargs.get("text", "")
+        self.assertIn("MCP unreachable", final)
+        self.assertIn("read-only", final)   # reassures nothing was modified
+
 
 if __name__ == "__main__":
     unittest.main()

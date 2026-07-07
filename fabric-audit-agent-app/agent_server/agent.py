@@ -360,7 +360,6 @@ async def stream_handler(request: ResponsesAgentRequest):
             )
             continue
         getter.cancel()
-        r = task.result()   # re-raises if the run failed
         while not queue.empty():   # drain progress that landed with the final result
             name, inp = queue.get_nowait()
             idx += 1
@@ -368,8 +367,18 @@ async def stream_handler(request: ResponsesAgentRequest):
                 type="response.output_item.done",
                 item=create_text_output_item(text=_progress_text(name, inp), id=f"progress_{idx}"),
             )
+        try:
+            r = task.result()
+            final_text = r["text"]
+        except Exception as exc:
+            # A raised exception here would abort the SSE stream mid-flight and the chat UI
+            # shows a broken/blank response. End the stream with an honest, readable failure
+            # instead (the non-streaming /invocations path still surfaces a proper 500).
+            final_text = (f"The investigation failed before completing: {exc}. "
+                          "Nothing was modified (all tools are read-only) — please retry, "
+                          "or rephrase the question.")
         yield ResponsesAgentStreamEvent(
             type="response.output_item.done",
-            item=create_text_output_item(text=r["text"], id="msg_1"),
+            item=create_text_output_item(text=final_text, id="msg_1"),
         )
         break

@@ -140,8 +140,8 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
     assert set(tools["raw_events"]["properties"]) == {
         "user", "item", "days", "hours", "start", "end", "topN", "order", "format"}
 
-    # investigate_capacity_spike: when + days
-    assert set(tools["investigate_capacity_spike"]["properties"]) == {"when", "days"}
+    # investigate_capacity_spike: when + days + windowMinutes
+    assert set(tools["investigate_capacity_spike"]["properties"]) == {"when", "days", "windowMinutes"}
 
     # grounding tools
     assert set(tools["describe_source"]["properties"]) == {"source", "table"}

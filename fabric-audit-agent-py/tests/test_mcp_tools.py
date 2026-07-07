@@ -599,6 +599,86 @@ def test_investigate_spike_window_truncation_threads_from_fetch_meta(monkeypatch
     assert "cap hit" in window["summary"]
 
 
+def test_raw_events_rejects_invalid_order(monkeypatch):
+    """The MCP wrapper can't enforce the enum -- a typo'd order must error honestly, not
+    silently become cost-ordered."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"order": "newest"})
+    assert "order must be" in out["error"] and out["events"] == []
+
+
+def test_raw_events_truncates_huge_query_text(monkeypatch):
+    """Raw queryText is unbounded (tens of KB per MDX capture) and was eating the whole char
+    budget -- 3 rows returned when 100 were asked for. Truncate per-row and disclose."""
+    _set_la_env(monkeypatch)
+    rows = [
+        {"TimeGenerated": "2026-07-06T15:40:00Z", "ExecutingUser": "a@co", "ArtifactName": "I",
+         "OperationName": "QueryEnd", "CpuTimeMs": 1000, "EventText": "X" * 5000},
+        {"TimeGenerated": "2026-07-06T15:41:00Z", "ExecutingUser": "b@co", "ArtifactName": "I",
+         "OperationName": "QueryEnd", "CpuTimeMs": 900, "EventText": "short"},
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"hours": 2})
+    big = next(e for e in out["events"] if e["user"] == "a@co")
+    small = next(e for e in out["events"] if e["user"] == "b@co")
+    assert len(big["queryText"]) == 400 and big["queryTextTruncated"] is True
+    assert small["queryText"] == "short" and "queryTextTruncated" not in small
+
+
+def test_raw_events_does_not_mutate_mock_fixture(monkeypatch):
+    """raw_events decorates copies -- calling it must not write tsDisplay/truncation flags into
+    the shared mock event fixture other tools read."""
+    _no_live(monkeypatch)
+    defs = create_tool_definitions()
+    h = next(d for d in defs if d["name"] == "raw_events")["handler"]
+    h({})
+    sample = next(d for d in defs if d["name"] == "sample_events")["handler"]({"n": 1})
+    assert "tsDisplay" not in sample["rows"][0]   # fixture untouched by raw_events' decoration
+
+
+def test_investigate_spike_window_minutes_widens_the_kql_window(monkeypatch):
+    """windowMinutes must reach BOTH the KQL between() bound and the playbook filter."""
+    _set_la_env(monkeypatch)
+    kqls = []
+
+    def builder(*a, **kw):
+        def query(kql, timespan=None):
+            kqls.append(kql)
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", builder)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    h({"when": "2026-07-06T15:48:00Z", "windowMinutes": 45})
+    assert any(("TimeGenerated between (datetime(2026-07-06T15:03:00Z) .. "
+                "datetime(2026-07-06T16:33:00Z))") in k for k in kqls)
+
+
+def test_investigate_spike_window_minutes_clamped(monkeypatch):
+    """An oversized windowMinutes is clamped to 240 so it can't become a huge absolute pull."""
+    _set_la_env(monkeypatch)
+    kqls = []
+
+    def builder(*a, **kw):
+        def query(kql, timespan=None):
+            kqls.append(kql)
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", builder)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    h({"when": "2026-07-06T12:00:00Z", "windowMinutes": 10000})
+    assert any(("TimeGenerated between (datetime(2026-07-06T08:00:00Z) .. "
+                "datetime(2026-07-06T16:00:00Z))") in k for k in kqls)   # ±240m
+
+
 def test_investigate_spike_without_when_has_no_window_evidence(monkeypatch):
     _no_live(monkeypatch)
     h = next(d for d in create_tool_definitions()
@@ -695,6 +775,13 @@ def test_absolute_window_derives_proportional_series_lookback_not_30d(monkeypatc
         return query
     monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
 
+    # Pin "now" to the window end: the lookback anchors at `start` (start->now), so with
+    # now == end it equals the span and the proportional labels below hold deterministically.
+    import fabric_audit_agent.tools as tools_mod
+    from datetime import datetime, timezone
+    monkeypatch.setattr(tools_mod, "_utcnow",
+                        lambda: datetime(2026, 7, 5, 13, 0, 0, tzinfo=timezone.utc))
+
     h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
     out = h({"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z"})   # 15-min window
 
@@ -718,9 +805,47 @@ def test_absolute_multi_hour_window_derives_hour_lookback(monkeypatch):
         "fabric_audit_agent.adapters.clients.build_kusto_query",
         lambda *a, **k: (lambda kql: []),
     )
+    import fabric_audit_agent.tools as tools_mod
+    from datetime import datetime, timezone
+    monkeypatch.setattr(tools_mod, "_utcnow",
+                        lambda: datetime(2026, 7, 5, 12, 15, 0, tzinfo=timezone.utc))
     h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
     out = h({"start": "2026-07-05T10:00:00Z", "end": "2026-07-05T12:15:00Z"})   # 2h15m span
     assert out["seriesWindowLabel"] == "last 3h"         # ceil(2.25h) -> 3h, covers >= the span
+
+
+def test_past_absolute_window_series_lookback_reaches_back_to_start(monkeypatch):
+    """Regression (review batch 3): ago() anchors at NOW, so a spike window from days ago with a
+    span-only lookback (e.g. ago(1h) for a 1h window) missed the window entirely -- the CU%
+    corroboration silently vanished from old-`when` investigations. The lookback must anchor at
+    `start`: cover start->now, not just the span."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    captured = {}
+
+    def fake_kusto_builder(*a, **k):
+        def query(kql):
+            captured["kql"] = kql
+            return []
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    import fabric_audit_agent.tools as tools_mod
+    from datetime import datetime, timezone
+    # "now" is 2 days after the window -- the 1h window from 2 days ago needs ~2d of lookback.
+    monkeypatch.setattr(tools_mod, "_utcnow",
+                        lambda: datetime(2026, 7, 7, 12, 30, 0, tzinfo=timezone.utc))
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "2026-07-05T12:00:00Z", "end": "2026-07-05T13:00:00Z"})
+    # ceil((now-start)/86400) = ceil(2.02d) = 3d -- covers the window; span-only would be ago(1h).
+    assert out["seriesWindowLabel"] == "last 3d"
+    assert "ago(3d)" in captured["kql"]
+    assert "ago(1h)" not in captured["kql"]
 
 
 # ---------------------------------------------------------------------------
@@ -1171,6 +1296,10 @@ def _set_capacity_kusto_env(monkeypatch):
     monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
     monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
     monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    # The grounding tools' kusto client is memoized on these (identical) values -- clear so each
+    # test's monkeypatched fake builder is used, not a previous test's cached fake.
+    import fabric_audit_agent.tools as tools_mod
+    tools_mod._CLIENT_CACHE.clear()
 
 
 def test_describe_source_and_sample_events_are_defined():

@@ -8,6 +8,7 @@ published manifest (keeps name/description/input_schema).
 import json
 import math
 import os
+from datetime import datetime, timezone
 
 from .adapters import create_mock_collector, create_stub_reasoner
 from .pipeline import run_audit
@@ -16,7 +17,7 @@ from .investigation.playbooks import investigate_user as _iu, investigate_capaci
 from .adapters.reasoner_investigation import create_investigation_reasoner
 from .investigation import events as _events_mod
 from .investigation.baseline import compute_baseline as _compute_baseline
-from .investigation.expensive import top_expensive as _top_expensive
+from .investigation.expensive import top_expensive as _top_expensive, _QUERY_TEXT_MAX_CHARS
 from .investigation.spike_history import user_spike_history as _user_spike_history
 from .investigation.patterns import (
     capacity_patterns as _capacity_patterns,
@@ -77,6 +78,11 @@ def _has_live_event_source(env):
 # recency for time-bucketed analysis); handlers surface ``truncated: true`` when the cap is
 # hit so callers know the window was not fully covered.
 _EVENT_CAP = 5000
+
+def _utcnow():
+    """Injectable clock seam (monkeypatched in tests for deterministic window math)."""
+    return datetime.now(timezone.utc)
+
 
 # query-callable memo — building a client per call creates a fresh MSAL ConfidentialClientApplication
 # each time, so its internal token cache never helps (an AAD round-trip per tool call, plus
@@ -233,28 +239,35 @@ def create_tool_definitions(base_dir=None):
         when = inp.get("when")
         events = series = None
         events_truncated = False
+        # ±window half-width around `when` -- clamped to [5, 240] minutes so an oversized ask
+        # can't become a huge absolute pull and a degenerate one can't return an empty sliver.
+        try:
+            window_minutes = int(inp.get("windowMinutes")) if inp.get("windowMinutes") is not None else 30
+        except (TypeError, ValueError):
+            window_minutes = 30
+        window_minutes = max(5, min(240, window_minutes))
         if when:
             from .timefmt import parse_iso_utc as _parse
-            from datetime import timedelta as _td, timezone as _tz
+            from datetime import timedelta as _td
             center = _parse(when)
-            # Bound the event query to the ±30m window in KQL when `when` parses — a relative
+            # Bound the event query to the ±window in KQL when `when` parses — a relative
             # lookback + row cap could truncate away the exact slice on a busy estate. The window
-            # is built by resolve_window(start=, end=) as an absolute between() clause (feat's
-            # mechanism); ±30m matches the playbook's window_minutes=30 Python filter. An
+            # is built by resolve_window(start=, end=) as an absolute between() clause; the same
+            # half-width is passed to the playbook's Python filter so KQL and analysis agree. An
             # unparseable `when` falls back to the relative lookback (the playbook reports the
             # parse failure honestly).
             spike_kwargs = {"days": inp.get("days", 7), "order": "recent"}
             if center is not None:
-                c = center.astimezone(_tz.utc)
-                spike_kwargs["start"] = (c - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                spike_kwargs["end"] = (c + _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                c = center.astimezone(timezone.utc)
+                spike_kwargs["start"] = (c - _td(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                spike_kwargs["end"] = (c + _td(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
             ev_events, ev_series, ev_meta = _events_or_mock(**spike_kwargs)
             if not ev_meta["error"]:
                 events, series = ev_events, ev_series
                 events_truncated = ev_meta["truncated"]
         result = _ics(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
                       when, events=events, capacity_series=series,
-                      events_truncated=events_truncated)
+                      window_minutes=window_minutes, events_truncated=events_truncated)
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
         # Decorate the window evidence's top events with the canonical display twin.
         for e_item in result.get("evidence") or []:
@@ -331,21 +344,25 @@ def create_tool_definitions(base_dir=None):
         interpolates it directly into ``ago(...)`` (unlike the event collector, it does not take
         a full WHERE clause / absolute between() window -- see collector_capacity_events._default_kql).
 
-        For an absolute ``start``+``end`` window the CU series can't express a between(), so derive a
-        PROPORTIONAL lookback from the window SPAN (``end - start``) -- computed purely from the two
-        timestamps (no now()) via the same Z-safe parser ``resolve_window`` uses. ``ago()`` still
-        anchors at server-now, so the series aligns with the events only when the window is recent
-        (an inherent limit of the bare-lookback collector); but this stops pulling a full 30 days of
-        CU% for, say, a 15-minute event window. Ceils to the enclosing unit so the lookback always
-        covers >= the span. Mirrors resolve_window's hours-over-days precedence otherwise; default 30d."""
+        For an absolute ``start``+``end`` window the CU series can't express a between(), so derive
+        the lookback from the window itself. ``ago()`` anchors at server-now — a lookback equal to
+        the mere SPAN (``end - start``) only covers the window when it ends near now, so a spike
+        investigated hours/days later silently lost its CU% corroboration. Anchor at ``start``
+        instead: the lookback covers from ``start`` to now (floor: the span, in case of clock skew
+        or a future window). Over-pulling is harmless — every consumer (the spike playbook's
+        ±window filter, capacity_patterns' event-anchored buckets) re-filters points in Python.
+        Ceils to the enclosing unit so the lookback always covers >= the target. Mirrors
+        resolve_window's hours-over-days precedence otherwise; default 30d."""
         if start is not None and end is not None:
-            span_seconds = max(1, math.ceil(
-                (_parse_iso_utc(end, "end") - _parse_iso_utc(start, "start")).total_seconds()))
-            if span_seconds < 3600:
-                return f"{math.ceil(span_seconds / 60)}m"
-            if span_seconds < 86400:
-                return f"{math.ceil(span_seconds / 3600)}h"
-            return f"{math.ceil(span_seconds / 86400)}d"
+            start_dt = _parse_iso_utc(start, "start")
+            span_seconds = max(1, math.ceil((_parse_iso_utc(end, "end") - start_dt).total_seconds()))
+            to_now_seconds = math.ceil((_utcnow() - start_dt).total_seconds())
+            lookback = max(span_seconds, to_now_seconds)
+            if lookback < 3600:
+                return f"{math.ceil(lookback / 60)}m"
+            if lookback < 86400:
+                return f"{math.ceil(lookback / 3600)}h"
+            return f"{math.ceil(lookback / 86400)}d"
         if hours is not None:
             return f"{hours}h"
         if days is not None:
@@ -543,6 +560,11 @@ def create_tool_definitions(base_dir=None):
         try:
             requested_top_n = inp.get("topN") if inp.get("topN") is not None else 100
             order = inp.get("order") if inp.get("order") is not None else "recent"
+            # The MCP wrapper's signature can't enforce the enum -- validate here so a typo'd
+            # order (e.g. "newest") errors honestly instead of silently becoming cost-ordered.
+            if order not in ("recent", "cost"):
+                return {"error": f"order must be 'recent' or 'cost', got {order!r}",
+                        "events": [], "source": source}
             clamped = requested_top_n > _RAW_EVENTS_HARD_CAP
             effective_top_n = min(requested_top_n, _RAW_EVENTS_HARD_CAP)
 
@@ -555,9 +577,17 @@ def create_tool_definitions(base_dir=None):
             if meta["error"]:
                 # Live event query failed: return an honest error payload, not zeros dressed as data.
                 return {"events": [], "error": meta["error"], "source": source}
-            result_events = events[:effective_top_n]
+            # Copies: never mutate the shared mock fixture (or a caller's list) in place.
+            result_events = [dict(e) for e in events[:effective_top_n]]
             for e in result_events:
                 add_display_time(e, "ts", "tsDisplay")
+                # Raw queryText is unbounded (a single MDX/DAX capture can be tens of KB) and
+                # was eating the whole char budget -- 3 rows returned when 100 were asked for.
+                # Truncate to the same ~400 chars top_expensive uses; disclose per-row.
+                qt = e.get("queryText")
+                if qt is not None and len(qt) > _QUERY_TEXT_MAX_CHARS:
+                    e["queryText"] = qt[:_QUERY_TEXT_MAX_CHARS]
+                    e["queryTextTruncated"] = True
             capped_events, cap_meta = _cap_rows(result_events)
             if clamped:
                 cap_meta["truncated"] = True
@@ -664,13 +694,33 @@ def create_tool_definitions(base_dir=None):
         source, built the SAME way ``_events_or_mock`` acquires it (``clients.build_kusto_query``
         gated on FABRIC_CAPACITY_EVENTS_CLUSTER/_DB). The cluster URI is passed through
         ``assert_kusto_host`` FIRST (anti-SSRF) -- raises ``ValueError`` on a bad scheme/host,
-        exactly like a missing-env ``_require`` failure, so callers can catch either uniformly."""
+        exactly like a missing-env ``_require`` failure, so callers can catch either uniformly.
+        Memoized on the same credential-tuple key shape as ``_events_or_mock`` (fresh MSAL per
+        call would defeat its token cache -- one AAD round-trip per grounding call)."""
         from .job import _require
         from .adapters.clients import build_kusto_query
         cluster_uri = _assert_kusto_host(env["FABRIC_CAPACITY_EVENTS_CLUSTER"])
-        return build_kusto_query(
-            cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
-            _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        tenant = _require(env, "FABRIC_TENANT_ID")
+        secret = _require(env, "FABRIC_CLIENT_SECRET")
+        return _memo_client(
+            ("kusto", cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
+             tenant, env["FABRIC_CLIENT_ID"], secret),
+            lambda: build_kusto_query(
+                cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
+                tenant, env["FABRIC_CLIENT_ID"], secret),
+        )
+
+    def _la_query(env):
+        """Memoized LA query callable -- the same client ``_events_or_mock`` uses (identical
+        cache key, so grounding tools and event tools share one MSAL token cache)."""
+        from .job import _require
+        from .adapters.clients import build_log_analytics_query
+        tenant = _require(env, "FABRIC_TENANT_ID")
+        secret = _require(env, "FABRIC_CLIENT_SECRET")
+        return _memo_client(
+            ("la", env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
+            lambda: build_log_analytics_query(
+                env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
         )
 
     def describe_source_handler(_input=None):
@@ -687,12 +737,7 @@ def create_tool_definitions(base_dir=None):
             if not _has_live_event_source(env):
                 return {"source": source, "table": table, "columns": _MOCK_EVENTS_COLUMNS, "sourceLabel": "mock"}
             try:
-                from .job import _require
-                from .adapters.clients import build_log_analytics_query
-                la_query = build_log_analytics_query(
-                    env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
-                    env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
-                )
+                la_query = _la_query(env)
                 kql = f"{_escape_entity(table)}\n| getschema\n| project ColumnName, ColumnType"
                 rows = la_query(kql) or []
                 columns = [{"name": r.get("ColumnName"), "type": r.get("ColumnType")} for r in rows]
@@ -744,12 +789,7 @@ def create_tool_definitions(base_dir=None):
                 return {"source": source, "table": table, "n": n,
                         "rows": _MOCK_EVENTS[:n], "sourceLabel": "mock"}
             try:
-                from .job import _require
-                from .adapters.clients import build_log_analytics_query
-                la_query = build_log_analytics_query(
-                    env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
-                    env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
-                )
+                la_query = _la_query(env)
                 kql = f"{_escape_entity(table)}\n| where TimeGenerated > ago(1d)\n| take {n}"
                 rows = la_query(kql) or []
                 return {"source": source, "table": table, "n": n, "rows": rows, "sourceLabel": "live"}
@@ -925,9 +965,13 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "when": {"type": "string",
                              "description": ("Spike timestamp — ISO UTC (2026-07-06T15:48:00Z) or "
-                                             "'YYYY-MM-DD HH:MM UTC'. Scopes event analysis to ±30 min.")},
+                                             "'YYYY-MM-DD HH:MM UTC'. Scopes event analysis to the "
+                                             "±windowMinutes around it.")},
                     "days": {"type": "integer",
                              "description": "Event lookback in days used to find the window (default 7)."},
+                    "windowMinutes": {"type": "integer",
+                                      "description": ("Half-width of the analysis window around 'when', "
+                                                      "in minutes (default 30, clamped to 5–240).")},
                 },
                 "required": [],
             },
