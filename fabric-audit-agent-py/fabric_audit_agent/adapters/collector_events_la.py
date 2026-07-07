@@ -18,6 +18,7 @@ are tolerant, so a mismatch here is a silent-miss risk (wrong ``kind``/empty ``q
 crash — verify first.
 """
 from ..investigation.events import normalize_event
+from ..query.kql_guard import escape_string, first_statement
 
 
 # Top-level operation events (the complete query / refresh). VertiPaq storage-engine sub-query
@@ -33,11 +34,11 @@ def _kql(window, user, item, cap, operations=None, order="cost"):
              f"| where TimeGenerated > ago({window})",
              "| where isnotempty(ExecutingUser)"]
     if user:
-        lines.append('| where ExecutingUser =~ "{}"'.format(user.replace('"', "")))
+        lines.append('| where ExecutingUser =~ "{}"'.format(escape_string(user)))
     if item:
-        lines.append('| where ArtifactName =~ "{}"'.format(item.replace('"', "")))
+        lines.append('| where ArtifactName =~ "{}"'.format(escape_string(item)))
     if operations:
-        ops = ", ".join('"{}"'.format(str(o).replace('"', "")) for o in operations)
+        ops = ", ".join('"{}"'.format(escape_string(o)) for o in operations)
         lines.append(f"| where OperationName in ({ops})")
     lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
                  "OperationName, CpuTimeMs, DurationMs, EventText")
@@ -60,10 +61,15 @@ def create_event_collector(query, config=None):
     newest), ``kql`` (override the whole query).
     """
     cfg = config or {}
-    kql = cfg.get("kql") or _kql(
+    built = _kql(
         cfg.get("window", "1d"), cfg.get("user"), cfg.get("item"),
         cfg.get("cap", 5000), cfg.get("operations"), cfg.get("order", "cost"),
     )
+    # A cfg["kql"] override is trusted (e.g. FABRIC_CAPACITY_EVENTS_KQL, a multi-line/`let`
+    # flatten) and passed through UNMODIFIED -- first_statement() would wrongly truncate it.
+    # A BUILT query, however, is guarded: truncate at the first top-level `;` in case an
+    # unescaped/unquoted interpolation seam (e.g. `window`) lets one slip through.
+    kql = cfg.get("kql") or first_statement(built)
 
     def collect():
         return [normalize_event(r) for r in (query(kql) or [])]

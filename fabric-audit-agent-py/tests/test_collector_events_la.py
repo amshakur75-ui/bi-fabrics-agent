@@ -62,14 +62,14 @@ def test_kql_scopes_to_user_and_item_when_given():
     assert "top 100 by coalesce(CpuTimeMs, DurationMs) desc" in seen["kql"]
 
 
-def test_kql_strips_quotes_from_user_and_item_to_avoid_injection():
+def test_kql_escapes_quotes_from_user_and_item_preserving_content_no_breakout():
     seen = {}
     def capture(kql):
         seen["kql"] = kql
         return []
-    create_event_collector(capture, {"user": 'a"; drop table x', "item": 'b"c'})["collect"]()
-    assert 'ExecutingUser =~ "a; drop table x"' in seen["kql"]
-    assert 'ArtifactName =~ "bc"' in seen["kql"]
+    create_event_collector(capture, {"user": 'a"; drop | take 1', "item": 'b"c'})["collect"]()
+    assert 'ExecutingUser =~ "a\\"; drop | take 1"' in seen["kql"]
+    assert 'ArtifactName =~ "b\\"c"' in seen["kql"]
 
 
 def test_kql_override_bypasses_builder():
@@ -79,6 +79,31 @@ def test_kql_override_bypasses_builder():
         return []
     create_event_collector(capture, {"kql": "CustomTable | take 1"})["collect"]()
     assert seen["kql"] == "CustomTable | take 1"
+
+
+def test_built_kql_with_injected_semicolon_is_truncated_to_first_statement():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    # `window` is interpolated unescaped/unquoted into `ago(...)`, so a top-level `;` injected
+    # there is a realistic defense-in-depth case for first_statement() to catch on a BUILT query
+    # (escape_string already prevents breakout via the quoted user/item literals -- this covers
+    # the unquoted seam). The BUILT query must be truncated before the injected `; second`.
+    create_event_collector(capture, {"window": "1d; second"})["collect"]()
+    assert "second" not in seen["kql"]
+    assert seen["kql"] == seen["kql"].rstrip()
+
+
+def test_kql_override_with_let_and_semicolon_passes_through_untouched():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    override = "let x = 1; x | take 5"
+    create_event_collector(capture, {"kql": override})["collect"]()
+    # The trusted override (e.g. FABRIC_CAPACITY_EVENTS_KQL) is NOT run through first_statement.
+    assert seen["kql"] == override
 
 
 def test_window_default_and_override():

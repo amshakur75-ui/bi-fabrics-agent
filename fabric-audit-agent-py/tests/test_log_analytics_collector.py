@@ -1,5 +1,8 @@
 """Tests for the Log Analytics user-attribution collector (offline; injected query)."""
-from fabric_audit_agent.adapters.collector_log_analytics import create_log_analytics_collector
+from fabric_audit_agent.adapters.collector_log_analytics import (
+    create_log_analytics_collector,
+    _build_default_kql,
+)
 
 
 def test_groups_ranks_and_shares():
@@ -51,6 +54,34 @@ def test_no_filter_is_whole_estate():
         return []
     create_log_analytics_collector(cap, {})["collect"]()
     assert "PowerBIWorkspaceName in (" not in seen["kql"]   # no filter -> all workspaces
+
+
+def test_workspace_filter_escapes_quotes_preserving_content_no_breakout():
+    kql = _build_default_kql("1d", ['a"; drop | take 1'])
+    assert 'PowerBIWorkspaceName in ("a\\"; drop | take 1")' in kql
+
+
+def test_kql_override_with_let_and_semicolon_passes_through_untouched():
+    seen = {}
+    def cap(kql):
+        seen["kql"] = kql
+        return []
+    override = "let x = 1; x | take 5"
+    create_log_analytics_collector(cap, {"kql": override})["collect"]()
+    assert seen["kql"] == override
+
+
+def test_built_kql_with_injected_semicolon_is_truncated_to_first_statement():
+    seen = {}
+    def cap(kql):
+        seen["kql"] = kql
+        return []
+    # `window` is interpolated unescaped/unquoted into `ago(...)` -- a realistic defense-in-depth
+    # case for first_statement() to catch on a BUILT query (escape_string already prevents
+    # breakout via the quoted workspaceFilter literals -- this covers the unquoted seam).
+    create_log_analytics_collector(cap, {"window": "1d; second"})["collect"]()
+    assert "second" not in seen["kql"]
+    assert seen["kql"] == seen["kql"].rstrip()
 
 
 def test_rows_without_user_skipped_in_attribution():
