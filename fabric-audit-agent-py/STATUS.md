@@ -13,7 +13,7 @@ reads + advises + notifies; it never edits/refreshes/scales/deletes.
 
 ## Current state
 - **Build: complete & verified.** All-Python port of the Node reference (`../fabric-audit-agent/`).
-  `python -m pytest -q` → **460 passed, 1 skipped** (skip = optional `mcp` SDK). Audit/eval output is
+  `python -m pytest -q` → **666 passed, 1 skipped** (skip = optional `mcp` SDK). Audit/eval output is
   byte-identical to Node; zero Node in the runtime path.
 - **Rollout: Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** — the read-only
   agent App + MCP app are **deployed and verified end-to-end** on Databricks (see [`docs/DEPLOY-STATUS.md`](docs/DEPLOY-STATUS.md));

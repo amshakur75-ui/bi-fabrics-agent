@@ -1,0 +1,32 @@
+name: CI (fabric-audit-agent-py)
+
+# Runs the read-only Fabric audit agent's offline test suite on every push/PR.
+# The matrix pins Python 3.10 (the package's stated minimum, requires-python >=3.10)
+# alongside 3.12 specifically so the query/windows.py `Z`-suffix normalization
+# (datetime.fromisoformat rejects a trailing "Z" before 3.11) is exercised on 3.10,
+# where it is load-bearing — not only on 3.12 where "Z" parses natively.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    defaults:
+      run:
+        working-directory: fabric-audit-agent-py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (offline core + dev)
+        run: pip install -e ".[dev]"
+      - name: Run test suite
+        run: python -m pytest -q

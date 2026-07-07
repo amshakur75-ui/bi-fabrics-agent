@@ -126,3 +126,40 @@ def test_peak_at_resolves_windowStart_field():
     cap = create_capacity_events_collector(lambda kql: rows)["collect"]()["capacity"]
     assert cap["peakCuPct"] == 105.0
     assert cap["peakAt"] == "w1"     # was "" before the _windows() unification
+
+
+# ---------------------------------------------------------------------------
+# kql_guard consistency (mirrors tests/test_collector_events_la.py)
+# ---------------------------------------------------------------------------
+
+def test_kql_override_with_let_and_semicolon_passes_through_untouched():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    override = "let x = 1; x | take 5"
+    create_capacity_events_collector(capture, {"kql": override})["collect"]()
+    # The trusted override (e.g. FABRIC_CAPACITY_EVENTS_KQL) is NOT run through first_statement.
+    assert seen["kql"] == override
+
+
+def test_default_kql_contains_bracket_escaped_table_name():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_capacity_events_collector(capture, {"table": "CapacityEvents"})["collect"]()
+    assert "['CapacityEvents']" in seen["kql"]
+
+
+def test_default_kql_escapes_table_name_via_escape_entity():
+    # Distinguishes escape_entity(table) from the old bare f"['{table}']" literal: a table name
+    # containing a single quote must come back with the quote backslash-escaped inside the
+    # brackets, proving _default_kql routes through kql_guard.escape_entity rather than
+    # interpolating the raw name between literal brackets.
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_capacity_events_collector(capture, {"table": "Cap'Events"})["collect"]()
+    assert "['Cap\\'Events']" in seen["kql"]

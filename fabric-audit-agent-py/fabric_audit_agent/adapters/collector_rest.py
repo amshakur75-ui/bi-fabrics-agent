@@ -9,6 +9,7 @@ at deploy. If a domain URL isn't configured, the domain is passed as ``[]``/``{}
 ``to_facts`` tolerates it.
 """
 from ..mappers import to_facts
+from ..query.redact import redact_secrets
 
 
 def fetch_all_pages(http, url):
@@ -26,7 +27,7 @@ def fetch_all_pages(http, url):
             all_rows.append(page)
         next_url = page.get("nextLink") if isinstance(page, dict) else None
     if guard >= 1000:
-        print(f"[fetch_all_pages] page guard reached — results may be truncated {url}")
+        print(f"[fetch_all_pages] page guard reached — results may be truncated {redact_secrets(url)}")
     return all_rows
 
 

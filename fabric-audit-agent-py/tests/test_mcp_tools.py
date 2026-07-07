@@ -58,6 +58,42 @@ def test_user_activity_labels_mock_source_offline(monkeypatch):
     assert out["source"] == "mock" and "coverage" in out
 
 
+_CU_UNIT = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
+_USER_ACTIVITY_DENOMINATOR = "monitored user-attributable activity"
+
+
+def test_user_activity_no_arg_envelope_carries_cu_unit_and_denominator(monkeypatch):
+    """Mock path (unit label is source-independent): no-arg branch."""
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_activity")["handler"]
+    out = h()
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert out["denominator"] == _USER_ACTIVITY_DENOMINATOR
+
+
+def test_user_activity_who_branch_envelope_carries_cu_unit_and_denominator(monkeypatch):
+    """Mock path: user= branch."""
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_activity")["handler"]
+    out = h({"user": "anyone@co"})
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert out["denominator"] == _USER_ACTIVITY_DENOMINATOR
+
+
+def test_user_activity_description_explains_denominator_mismatch():
+    d = next(d for d in create_tool_definitions() if d["name"] == "user_activity")
+    desc = d["description"]
+    assert "denominator" in desc.lower()
+    assert "run_audit" in desc
+    assert desc.rstrip().endswith("Read-only.")
+
+
 # ---------------------------------------------------------------------------
 # Phase-3 Task-7: user_spike_history, spike_events, capacity_patterns tools
 # ---------------------------------------------------------------------------
@@ -84,6 +120,7 @@ def test_phase3_tools_are_defined():
     se = by_name["spike_events"]
     assert se["input_schema"]["properties"]["days"]["type"] == "integer"
     assert se["input_schema"]["properties"]["topN"]["type"] == "integer"
+    assert se["input_schema"]["properties"]["format"]["enum"] == ["records", "columnar"]
 
     cp = by_name["capacity_patterns"]
     assert cp["input_schema"]["properties"]["days"]["type"] == "integer"
@@ -102,6 +139,16 @@ def test_user_spike_history_handler_offline_shape(monkeypatch):
     assert "topItems" in out
     assert "byHour" in out
     assert "interactiveVsRefresh" in out
+
+
+def test_user_spike_history_handler_envelope_carries_cu_unit(monkeypatch):
+    """cuUnit is present but denominator is NOT (only user_activity gets denominator)."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "days": 30})
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert "denominator" not in out
 
 
 def test_user_spike_history_handler_abstains_unknown_user(monkeypatch):
@@ -126,6 +173,16 @@ def test_spike_events_handler_offline_shape(monkeypatch):
         assert "user" in ev and "item" in ev and "ts" in ev and "cuSeconds" in ev
     # topN respected: at most 3
     assert len(out["events"]) <= 3
+
+
+def test_spike_events_handler_envelope_carries_cu_unit(monkeypatch):
+    """cuUnit is present but denominator is NOT (only user_activity gets denominator)."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 3})
+    assert out["source"] == "mock"
+    assert out["cuUnit"] == _CU_UNIT
+    assert "denominator" not in out
 
 
 def test_spike_events_default_topN(monkeypatch):
@@ -352,7 +409,9 @@ def test_spike_events_truncated_flag_when_cap_hit(monkeypatch):
                if d["name"] == "spike_events")["handler"]({"days": 1, "topN": 5})
     assert out["truncated"] is True
 
-    # Under the cap -> no truncated key (absence means full window coverage)
+    # Under the cap -> truncated is False. (The unified query.envelope.finish contract ALWAYS
+    # reports truncated explicitly as a bool, rather than omitting the key -- an event-cap hit
+    # sets it True; full coverage is an explicit False, not an absent key.)
     tools_mod._CLIENT_CACHE.clear()
     monkeypatch.setattr(
         "fabric_audit_agent.adapters.clients.build_log_analytics_query",
@@ -360,7 +419,7 @@ def test_spike_events_truncated_flag_when_cap_hit(monkeypatch):
     )
     out2 = next(d for d in create_tool_definitions()
                 if d["name"] == "spike_events")["handler"]({"days": 1, "topN": 5})
-    assert "truncated" not in out2
+    assert out2["truncated"] is False
 
 
 def test_capacity_patterns_degrades_honestly_when_series_fails(monkeypatch):
@@ -613,3 +672,1135 @@ def test_capacity_events_kql_override_is_passed_through(monkeypatch):
     h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
     h({"days": 1})
     assert captured["kql"] == override
+
+
+def test_absolute_window_derives_proportional_series_lookback_not_30d(monkeypatch):
+    """Follow-up M-1: with an absolute start+end window, the CU series (which can't take a
+    between() clause) must derive a lookback PROPORTIONAL to the window span (end-start),
+    not silently fall back to the 30d default. A 15-minute window -> ago(15m) / 'last 15m'."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured["kql"] = kql
+            return []
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z"})   # 15-min window
+
+    assert out["source"] == "live"
+    assert out["seriesWindowLabel"] == "last 15m"        # derived from span, NOT "last 30d"
+    assert out["seriesWindowLabel"] != "last 30d"
+    assert out["patternsDiagnostics"]["seriesWindowLabel"] == "last 15m"
+    assert "ago(15m)" in captured["kql"]                 # threaded into the capacity-series KQL
+
+
+def test_absolute_multi_hour_window_derives_hour_lookback(monkeypatch):
+    """A multi-hour absolute window ceils to the enclosing hour unit (2h15m -> 'last 3h')."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_kusto_query",
+        lambda *a, **k: (lambda kql: []),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "2026-07-05T10:00:00Z", "end": "2026-07-05T12:15:00Z"})   # 2h15m span
+    assert out["seriesWindowLabel"] == "last 3h"         # ceil(2.25h) -> 3h, covers >= the span
+
+
+# ---------------------------------------------------------------------------
+# Task 4: result envelope (rowCount/queryKql) + char-budget cap_rows on list tools.
+# Small mock fixtures fit well under the 12000-char default budget, so truncated=False
+# is expected here; cap_rows' own truncation behavior is covered in test_envelope.py.
+# ---------------------------------------------------------------------------
+
+def test_spike_events_handler_has_envelope_fields(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 3})
+    # Envelope fields present
+    assert out["rowCount"] == len(out["events"])
+    assert out["queryKql"] is None
+    assert out["truncated"] is False
+    assert out["originalRowCount"] >= out["rowCount"]
+    # Pre-existing fields preserved
+    assert "source" in out
+    assert isinstance(out["events"], list)
+    for ev in out["events"]:
+        assert "user" in ev and "item" in ev and "ts" in ev and "cuSeconds" in ev
+    # topN still respected (cap applied AFTER truncation, on the capped-then-topN'd... see below)
+    assert len(out["events"]) <= 3
+
+
+def test_spike_events_original_row_count_reflects_full_spike_list_not_topn_slice(monkeypatch):
+    """originalRowCount must reflect the FULL spike list (pre-topN), not the already-sliced
+    top_expensive output -- topN=1 must not make originalRowCount collapse to 1."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out_small = h({"days": 30, "topN": 1})
+    out_large = h({"days": 30, "topN": 10})
+    assert out_small["originalRowCount"] == out_large["originalRowCount"]
+    assert len(out_small["events"]) <= 1
+
+
+def test_spike_events_default_format_is_records(monkeypatch):
+    """With no 'format' input (or format='records'), events stays a list[dict] as before."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 3})
+    assert isinstance(out["events"], list)
+    if out["events"]:
+        assert isinstance(out["events"][0], dict)
+
+    out_explicit = h({"days": 30, "topN": 3, "format": "records"})
+    assert isinstance(out_explicit["events"], list)
+    if out_explicit["events"]:
+        assert isinstance(out_explicit["events"][0], dict)
+
+
+def test_spike_events_format_columnar_returns_columnar_dict_with_correct_row_count(monkeypatch):
+    """format:'columnar' returns the events list as to_columnar(events) under the same key,
+    and rowCount must still reflect the true row count (not e.g. the column count)."""
+    _no_live(monkeypatch)
+    from fabric_audit_agent.query.envelope import to_columnar
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out_records = h({"days": 30, "topN": 5})
+    out_columnar = h({"days": 30, "topN": 5, "format": "columnar"})
+
+    assert "columns" in out_columnar["events"]
+    assert out_columnar["events"] == to_columnar(out_records["events"])
+    assert out_columnar["rowCount"] == len(out_records["events"])
+    assert out_columnar["rowCount"] == out_records["rowCount"]
+
+
+def test_user_spike_history_handler_has_envelope_fields(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "days": 30})
+    assert out["rowCount"] == len(out["spikes"])
+    assert out["queryKql"] is None
+    assert out["truncated"] is False
+    # Pre-existing fields preserved
+    assert out["source"] == "mock"
+    assert "user" in out
+    assert "spikeCount" in out
+    assert "topItems" in out
+    assert "byHour" in out
+    assert "interactiveVsRefresh" in out
+
+
+def test_list_workspaces_handler_has_envelope_fields(monkeypatch):
+    monkeypatch.setenv("FABRIC_KUSTO_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_KUSTO_DB", "db")
+    monkeypatch.setattr(
+        "fabric_audit_agent.job.build_collector_from_env",
+        lambda env, window=None: {"collect": lambda: {
+            "items": [
+                {"name": "Report A", "workspace": "WS1", "cuSeconds": 10, "sharePct": 50.0,
+                 "topUsers": ["a@co"], "userCount": 1},
+            ],
+            "users": [{"user": "a@co", "cuSeconds": 10}],
+        }},
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "list_workspaces")["handler"]
+    out = h()
+    assert out["rowCount"] == len(out["workspaces"])
+    assert out["queryKql"] is None
+    assert out["truncated"] is False
+    # Pre-existing fields preserved
+    assert out["source"] == "Log Analytics + Eventhouse (merged)"
+    assert out["totalWorkspaces"] == 1
+    assert out["totalItems"] == 1
+    assert out["topUsers"] == [{"user": "a@co", "cuSeconds": 10}]
+
+
+def test_list_workspaces_no_source_still_has_no_envelope_pollution():
+    """The no-live-source early-return path is unaffected -- it's not a cap_rows/finish path."""
+    import os
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        os.environ.pop(v, None)
+    h = next(d for d in create_tool_definitions() if d["name"] == "list_workspaces")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert out["workspaces"] == []
+
+
+# ---------------------------------------------------------------------------
+# Task 6: real sub-day / absolute time windows; collector kql/window meta;
+# _events_or_mock returns a 3-tuple (events, series, meta).
+# ---------------------------------------------------------------------------
+
+def test_phase3_tool_schemas_gain_hours_start_end(monkeypatch):
+    """user_spike_history, spike_events, capacity_patterns all gain hours/start/end inputs."""
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    for name in ("user_spike_history", "spike_events", "capacity_patterns"):
+        props = by_name[name]["input_schema"]["properties"]
+        assert "hours" in props
+        assert "start" in props
+        assert "end" in props
+
+
+def test_user_spike_history_handler_echoes_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "hours": 6})
+    assert out["windowLabel"] == "last 6h"
+
+
+def test_spike_events_handler_echoes_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 7})
+    assert out["windowLabel"] == "last 7d"
+
+
+def test_spike_events_handler_default_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({})
+    assert out["windowLabel"] == "last 30d"
+
+
+def test_capacity_patterns_handler_echoes_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"hours": 0.25})
+    assert "windowLabel" in out
+    assert out["windowLabel"] != ""
+
+
+def test_handler_malformed_start_returns_error_envelope_not_crash(monkeypatch):
+    """A malformed window must never propagate a raw exception out of the handler."""
+    _no_live(monkeypatch)
+    for name in ("user_spike_history", "spike_events", "capacity_patterns"):
+        h = next(d for d in create_tool_definitions() if d["name"] == name)["handler"]
+        inp = {"start": "not-a-date", "end": "2026-07-05T13:00:00Z"}
+        if name == "user_spike_history":
+            inp["user"] = "alice@co"
+        out = h(inp)
+        assert "error" in out, f"{name} did not return an error envelope: {out}"
+        assert "source" in out
+
+
+def test_spike_events_hours_reaches_live_kql_as_ago_clause(monkeypatch):
+    """hours must thread into the live LA query as an ago(<hours>h) clause, not be ignored."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"hours": 6})
+    assert "ago(6h)" in captured["kql"]
+
+
+def test_spike_events_hours_fractional_reaches_live_kql(monkeypatch):
+    """hours=0.25 ('right now' / last 15 min) must reach the live query unrounded."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"hours": 0.25})
+    assert "ago(0.25h)" in captured["kql"]
+
+
+def test_spike_events_start_end_reaches_live_kql_as_between_clause(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z"})
+    assert (
+        "between (datetime(2026-07-05T12:45:00Z) .. datetime(2026-07-05T13:00:00Z))"
+        in captured["kql"]
+    )
+
+
+def test_spike_events_handler_populates_query_kql_when_live(monkeypatch):
+    """The live event kql built for the request must surface as queryKql on the envelope
+    (threaded via _events_or_mock's meta -> finish), not stay None once live."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 7})
+    assert out["queryKql"] is not None
+    assert "ago(7d)" in out["queryKql"]
+
+
+def test_user_spike_history_handler_populates_query_kql_when_live(monkeypatch):
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "days": 7})
+    assert out["queryKql"] is not None
+
+
+def test_fabric_event_operations_env_threads_into_allowlist(monkeypatch):
+    """FABRIC_EVENT_OPERATIONS (comma-separated) must restrict the live event query's
+    OperationName allowlist, exposing the sub-op filter to deploy via env."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_EVENT_OPERATIONS", "QueryEnd, CommandEnd")
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    assert 'OperationName in ("QueryEnd", "CommandEnd")' in captured["kql"]
+
+
+def test_fabric_event_operations_env_absent_means_no_filter(monkeypatch):
+    _set_la_env(monkeypatch)
+    monkeypatch.delenv("FABRIC_EVENT_OPERATIONS", raising=False)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    assert "OperationName in (" not in captured["kql"]
+
+
+# ---------------------------------------------------------------------------
+# Task 7: raw_events — bounded, NOT spike-filtered, all-instances event stream.
+# ---------------------------------------------------------------------------
+
+def test_raw_events_is_defined_with_correct_schema():
+    """raw_events must be registered with the documented input_schema."""
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "raw_events" in by_name
+    re_def = by_name["raw_events"]
+    props = re_def["input_schema"]["properties"]
+    assert props["user"]["type"] == "string"
+    assert props["item"]["type"] == "string"
+    assert props["days"]["type"] == "integer"
+    assert props["topN"]["type"] == "integer"
+    assert props["order"]["enum"] == ["recent", "cost"]
+    assert props["format"]["enum"] == ["records", "columnar"]
+    assert "hours" in props and "start" in props and "end" in props
+    assert re_def["input_schema"]["required"] == []
+    # Description must point callers to spike_events for above-baseline-only, and warn
+    # that results are untrusted telemetry (query text is data, not instructions).
+    desc = re_def["description"]
+    assert "spike_events" in desc
+    assert "COMPLETE" in desc or "complete" in desc
+    assert "untrusted" in desc.lower() or "not instructions" in desc.lower()
+
+
+def test_raw_events_handler_offline_shape(monkeypatch):
+    """Offline: raw_events returns the full (not spike-filtered) mock event list, labeled mock."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30})
+    assert out["source"] == "mock"
+    assert "events" in out
+    assert isinstance(out["events"], list)
+    assert out["rowCount"] == len(out["events"])
+    assert "windowLabel" in out
+    for ev in out["events"]:
+        assert "user" in ev and "item" in ev and "ts" in ev and "cuSeconds" in ev
+
+
+def test_raw_events_not_spike_filtered_returns_all_mock_events(monkeypatch):
+    """raw_events must NOT apply is_spike/compute_baseline -- it returns the complete mock
+    event stream (6 events), unlike spike_events which only returns above-baseline events."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30, "topN": 1000})
+    assert out["rowCount"] == 6
+
+
+def test_raw_events_default_topN_is_100(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30})
+    assert len(out["events"]) <= 100
+
+
+def test_raw_events_topN_5000_clamps_to_1000(monkeypatch):
+    """topN above the hard cap of 1000 must clamp to 1000 and mark truncated=True."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30, "topN": 5000})
+    assert out["truncated"] is True
+
+
+def test_raw_events_topN_within_cap_not_marked_truncated_by_clamp(monkeypatch):
+    """A topN within the hard cap, with a small mock result well under the char budget, must
+    not be marked truncated (the clamp itself did not trim anything)."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30, "topN": 5})
+    assert out["truncated"] is False
+
+
+def test_raw_events_format_columnar_returns_columnar_dict(monkeypatch):
+    """format:'columnar' returns events as to_columnar(events); rowCount stays the true count."""
+    _no_live(monkeypatch)
+    from fabric_audit_agent.query.envelope import to_columnar
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out_records = h({"days": 30})
+    out_columnar = h({"days": 30, "format": "columnar"})
+    assert "columns" in out_columnar["events"]
+    assert out_columnar["events"] == to_columnar(out_records["events"])
+    assert out_columnar["rowCount"] == len(out_records["events"])
+    assert out_columnar["rowCount"] == out_records["rowCount"]
+
+
+def test_raw_events_malformed_start_returns_error_envelope(monkeypatch):
+    """A malformed window must never propagate a raw exception out of the handler."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"start": "not-a-date", "end": "2026-07-05T13:00:00Z"})
+    assert "error" in out
+    assert "source" in out
+
+
+def test_raw_events_order_and_cap_reach_collector_kql(monkeypatch):
+    """order + the clamped topN must reach the live collector config -- visible in the built
+    KQL as 'top <cap> by TimeGenerated desc' for order='recent' (the raw_events default)."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    h({"days": 7, "topN": 50, "order": "recent"})
+    assert "top 50 by TimeGenerated desc" in captured["kql"]
+
+
+def test_raw_events_order_cost_reaches_collector_kql(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    h({"days": 7, "topN": 50, "order": "cost"})
+    assert "top 50 by coalesce(CpuTimeMs, DurationMs) desc" in captured["kql"]
+
+
+def test_raw_events_topN_clamp_reaches_collector_cap(monkeypatch):
+    """The CLAMPED (not raw) topN must reach the collector's KQL top-N, so the server-side
+    bound actually protects the live query -- not just the post-hoc Python slice."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    h({"days": 7, "topN": 5000})
+    assert "top 1000 by" in captured["kql"]
+
+
+def test_raw_events_source_live_when_la_configured(monkeypatch):
+    _set_la_env(monkeypatch)
+    la_rows = [
+        {"TimeGenerated": "2026-07-01T09:00:00Z", "ExecutingUser": "zeynep@co",
+         "ArtifactName": "Live Item", "OperationName": "QueryEnd", "CpuTimeMs": 1000},
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(la_rows),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 7})
+    assert out["source"] == "live"
+    assert out["rowCount"] == 1
+
+
+def test_raw_events_existing_events_or_mock_callers_still_work_without_cap_order(monkeypatch):
+    """Extending _events_or_mock with optional cap/order kwargs must not break existing
+    callers (spike_events, user_spike_history, capacity_patterns) that omit them."""
+    _no_live(monkeypatch)
+    for name in ("spike_events", "user_spike_history", "capacity_patterns"):
+        h = next(d for d in create_tool_definitions() if d["name"] == name)["handler"]
+        inp = {"days": 30}
+        if name == "user_spike_history":
+            inp["user"] = "alice@co"
+        out = h(inp)
+        assert "error" not in out
+
+
+# ---------------------------------------------------------------------------
+# Task 8: describe_source, sample_events, dry_run (schema discovery + sampling)
+# ---------------------------------------------------------------------------
+
+_KUSTO_URI = "https://mycluster.kusto.windows.net"
+
+
+def _set_capacity_kusto_env(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+
+
+def test_describe_source_and_sample_events_are_defined():
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "describe_source" in by_name
+    assert "sample_events" in by_name
+
+    ds = by_name["describe_source"]
+    assert ds["input_schema"]["properties"]["source"]["enum"] == ["events", "capacity"]
+    assert callable(ds["handler"])
+
+    se = by_name["sample_events"]
+    assert se["input_schema"]["properties"]["source"]["enum"] == ["events", "capacity"]
+    assert "n" in se["input_schema"]["properties"]
+    assert callable(se["handler"])
+
+
+def test_describe_source_events_mock_returns_fixture_columns(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "events"})
+    assert out["source"] == "events"
+    assert out["sourceLabel"] == "mock"
+    names = {c["name"] for c in out["columns"]}
+    assert "TimeGenerated" in names and "ExecutingUser" in names
+
+
+def test_describe_source_capacity_mock_returns_fixture_columns(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["source"] == "capacity"
+    assert out["sourceLabel"] == "mock"
+    names = {c["name"] for c in out["columns"]}
+    assert "capacityId" in names or "cuPct" in names or "ts" in names
+
+
+def test_describe_source_events_live_emits_getschema(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(
+            [{"ColumnName": "TimeGenerated", "ColumnType": "datetime"}], captured=captured
+        ),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "events"})
+    assert out["sourceLabel"] == "live"
+    assert "getschema" in captured["kql"]
+    assert "['" in captured["kql"]   # bracket-escaped table name
+    assert out["columns"] == [{"name": "TimeGenerated", "type": "datetime"}]
+
+
+def test_describe_source_capacity_live_emits_cslschema(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    captured = {}
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        captured["cluster_uri"] = cluster_uri
+
+        def query(kql):
+            captured["kql"] = kql
+            return [{"Schema": "ts:datetime, cuPct:real"}]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "live"
+    assert "cslschema" in captured["kql"]
+    assert "['" in captured["kql"]
+    assert captured["cluster_uri"] == _KUSTO_URI
+
+
+def test_describe_source_capacity_rejects_non_allowlisted_cluster(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://evil.example.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_describe_source_capacity_no_config_falls_back_to_mock(monkeypatch):
+    """No capacity env at all -> the mock path, same as every other tool (not an error)."""
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+
+
+def test_describe_source_capacity_partial_config_returns_error_envelope_not_keyerror(monkeypatch):
+    """Cluster+client_id set (so the live gate fires) but FABRIC_TENANT_ID missing -> must
+    surface an error envelope, never raise/KeyError."""
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.delenv("FABRIC_TENANT_ID", raising=False)
+    monkeypatch.delenv("FABRIC_CLIENT_SECRET", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_sample_events_mock_returns_raw_rows(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 3})
+    assert out["source"] == "events"
+    assert out["sourceLabel"] == "mock"
+    assert isinstance(out["rows"], list)
+    assert len(out["rows"]) <= 3
+
+
+def test_sample_events_n_clamps_to_20(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 99})
+    assert out["n"] == 20
+
+
+def test_sample_events_n_clamps_to_1_minimum(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 0})
+    assert out["n"] == 1
+
+
+def test_sample_events_n_default_is_5(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events"})
+    assert out["n"] == 5
+
+
+def test_sample_events_n_is_cast_from_string(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": "7"})
+    assert out["n"] == 7
+
+
+def test_sample_events_events_live_emits_take_query(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    rows = [{"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co"}]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows, captured=captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 4})
+    assert out["sourceLabel"] == "live"
+    assert "take 4" in captured["kql"]
+    assert out["rows"] == rows
+
+
+def test_sample_events_capacity_live_emits_take_query(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    captured = {}
+    rows = [{"capacityId": "cap1", "cuPct": 80.0}]
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured["kql"] = kql
+            return rows
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity", "n": 2})
+    assert out["sourceLabel"] == "live"
+    assert "take 2" in captured["kql"]
+    assert "['" in captured["kql"]
+    assert out["rows"] == rows
+
+
+def test_sample_events_capacity_no_config_falls_back_to_mock(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+
+
+def test_sample_events_capacity_partial_config_returns_error_envelope_not_keyerror(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.delenv("FABRIC_TENANT_ID", raising=False)
+    monkeypatch.delenv("FABRIC_CLIENT_SECRET", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity"})
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_dry_run_valid_on_empty_success():
+    from fabric_audit_agent.tools import dry_run
+
+    def fake_query(kql):
+        assert kql.endswith("\n| take 0")
+        return []
+
+    out = dry_run(fake_query, "SomeTable | take 5")
+    assert out == {"valid": True, "error": None}
+
+
+def test_dry_run_invalid_on_exception():
+    from fabric_audit_agent.tools import dry_run
+
+    def fake_query(kql):
+        raise RuntimeError("bad column 'Foo'")
+
+    out = dry_run(fake_query, "SomeTable | where Foo == 1")
+    assert out["valid"] is False
+    assert "bad column" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Task 9: capacity_diagnostics — read-only .show capacity/cluster suite
+# ---------------------------------------------------------------------------
+
+def test_capacity_diagnostics_is_defined_and_registered():
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "capacity_diagnostics" in by_name
+    cd = by_name["capacity_diagnostics"]
+    assert cd["input_schema"]["properties"] == {}
+    assert cd["input_schema"]["required"] == []
+    assert callable(cd["handler"])
+
+
+def test_capacity_diagnostics_no_config_returns_source_none(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert out["sections"] == {}
+    assert "note" in out
+    assert "error" not in out
+
+
+def test_capacity_diagnostics_live_runs_fixed_show_commands_with_per_section_isolation(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    captured_kqls = []
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured_kqls.append(kql)
+            if kql.startswith(".show cluster"):
+                raise RuntimeError("cluster endpoint unavailable")
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    # failing section isolated to errors, others still land in sections
+    assert "cluster" in out["errors"]
+    assert "cluster endpoint unavailable" in out["errors"]["cluster"]
+    assert "cluster" not in out["sections"]
+
+    assert out["sections"]["capacity"] == [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+    assert out["sections"]["workloadGroups"] == [{"Name": "default"}]
+    assert out["sections"]["diagnostics"] == [{"Status": "ok"}]
+
+    # every command actually executed must be a read-only .show command
+    assert captured_kqls
+    for kql in captured_kqls:
+        assert kql.startswith(".show ")
+
+
+def test_capacity_diagnostics_rejects_non_allowlisted_cluster(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://evil.example.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_capacity_diagnostics_partial_config_returns_error_envelope_not_keyerror(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.delenv("FABRIC_TENANT_ID", raising=False)
+    monkeypatch.delenv("FABRIC_CLIENT_SECRET", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+# ---------------------------------------------------------------------------
+# Task 10: capacity_patterns live-fix -- recent-ordered narrow window, tunable
+# thresholds (tool input > env > default), non-silent patternsDiagnostics.
+# ---------------------------------------------------------------------------
+
+def test_capacity_patterns_handler_passes_recent_order_and_default_days_1(monkeypatch):
+    """Root-cause fix: with no window given, the handler must pull events RECENT-ordered
+    (not cost-ordered) over a narrow days=1 default -- cost-ordered 30-day sampling was
+    scattering events too thin per bucket, collapsing distinct-user counts below threshold."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    h({})
+    assert "ago(1d)" in captured["kql"]
+    # order="recent" sorts by TimeGenerated, not the cost-order coalesce(...) expression.
+    assert "TimeGenerated" in captured["kql"]
+
+
+def test_capacity_patterns_handler_explicit_days_still_overrides_default(monkeypatch):
+    """An explicit days= input must still be honored (not clobbered by the days=1 default)."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    h({"days": 7})
+    assert "ago(7d)" in captured["kql"]
+
+
+def _sparse_live_rows():
+    """A sparse, live-shaped fixture: only 2 distinct users in the same 15-min bucket --
+    below the default surge_users=4 threshold, and a CU series peaking below cu_spike_pct=70.
+    Mirrors the actual live-bug shape (capacity_patterns silently returning [])."""
+    return [
+        {"TimeGenerated": "2026-07-06T09:00:00Z", "ExecutingUser": "a@co",
+         "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 20000},
+        {"TimeGenerated": "2026-07-06T09:02:00Z", "ExecutingUser": "b@co",
+         "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 25000},
+    ]
+
+
+def _set_la_and_capacity_env(monkeypatch, ce_rows):
+    """LA events + a capacity Eventhouse series, both live-configured (injected fakes)."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        return lambda kql: ce_rows
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+
+def test_sparse_fixture_yields_empty_patterns_with_explanatory_diagnostics(monkeypatch):
+    """Live-bug regression: a sparse fixture that returns patterns == [] must now surface
+    patternsDiagnostics explaining the observed maxima -- never silent."""
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-06T09:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 1536000},   # 55% (< default 70 threshold)
+    ]
+    _set_la_and_capacity_env(monkeypatch, ce_rows)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(_sparse_live_rows()),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["patterns"] == []
+    assert "patternsDiagnostics" in out
+    diag = out["patternsDiagnostics"]
+    assert diag["maxActiveUsers"] == 2
+    assert diag["thresholds"]["surgeUsers"] == 4
+    assert diag["thresholds"]["cuSpikePct"] == 70.0
+    assert "windowLabel" in diag
+    assert "seriesWindowLabel" in diag
+
+
+def test_lowering_surge_users_via_tool_input_yields_nonempty_pattern(monkeypatch):
+    """Passing surgeUsers <= observed maxActiveUsers (2) via the TOOL INPUT (not env) must
+    flip the same sparse fixture from empty to a detected pattern -- also needs cuSpikePct
+    lowered to at/below the observed CU max since the mock capacity series is low too."""
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-06T09:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 1536000},   # 55%
+    ]
+    _set_la_and_capacity_env(monkeypatch, ce_rows)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(_sparse_live_rows()),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "surgeUsers": 2, "cuSpikePct": 0.0})
+    assert len(out["patterns"]) == 1
+    assert out["patterns"][0]["activeUsers"] == 2
+
+
+def test_surge_users_zero_is_honored_not_falsy_coerced(monkeypatch):
+    """surgeUsers=0 is a legitimate (if extreme) threshold -- must be honored via
+    'x if x is not None else default', NOT treated as falsy/omitted."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "surgeUsers": 0, "cuSpikePct": 0.0})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 0
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 0.0
+
+
+def test_cu_spike_pct_zero_is_honored_not_falsy_coerced(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "cuSpikePct": 0.0})
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 0.0
+
+
+def test_thresholds_read_from_env_when_no_tool_input(monkeypatch):
+    """FABRIC_PATTERNS_SURGE_USERS / _CU_SPIKE_PCT env vars apply when the tool input omits
+    surgeUsers/cuSpikePct."""
+    _no_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_PATTERNS_SURGE_USERS", "2")
+    monkeypatch.setenv("FABRIC_PATTERNS_CU_SPIKE_PCT", "10.0")
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 2
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 10.0
+
+
+def test_tool_input_threshold_takes_precedence_over_env(monkeypatch):
+    _no_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_PATTERNS_SURGE_USERS", "99")
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "surgeUsers": 3})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 3
+
+
+def test_default_thresholds_when_no_input_and_no_env(monkeypatch):
+    _no_live(monkeypatch)
+    monkeypatch.delenv("FABRIC_PATTERNS_SURGE_USERS", raising=False)
+    monkeypatch.delenv("FABRIC_PATTERNS_CU_SPIKE_PCT", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 4
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 70.0
+
+
+def test_capacity_patterns_handler_preserves_preexisting_fields(monkeypatch):
+    """source/windowLabel/seriesWindowLabel/queryKql must still be present alongside the
+    new patternsDiagnostics -- Task 10 must not drop existing envelope fields."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["source"] == "mock"
+    assert "windowLabel" in out
+    assert "seriesWindowLabel" in out
+    assert "queryKql" in out
+    assert "patterns" in out
+    assert "patternsDiagnostics" in out
+    assert out["patternsDiagnostics"]["windowLabel"] == out["windowLabel"]
+    assert out["patternsDiagnostics"]["seriesWindowLabel"] == out["seriesWindowLabel"]
+
+
+def test_capacity_patterns_handler_malformed_window_returns_error_envelope(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "not-a-date", "end": "2026-07-05T13:00:00Z"})
+    assert "error" in out
+    assert "source" in out
+
+
+def test_capacity_patterns_input_schema_gains_surge_users_and_cu_spike_pct():
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    props = by_name["capacity_patterns"]["input_schema"]["properties"]
+    assert "surgeUsers" in props
+    assert "cuSpikePct" in props
+
+
+_PATTERNS_SCHEMA = {"type": "object", "properties": {
+    "days": {"type": "integer"},
+    "surgeUsers": {"type": "integer"}, "cuSpikePct": {"type": "number"},
+}, "required": []}
+
+
+def test_make_tool_fn_forwards_surge_users_and_cu_spike_pct():
+    # _make_tool_fn derives the per-tool signature from input_schema; surgeUsers/cuSpikePct reach
+    # the handler as the capacity_patterns schema advertises them.
+    from fabric_audit_agent.mcp_server import _make_tool_fn
+    captured = {}
+
+    def handler(payload):
+        captured["payload"] = payload
+        return payload
+
+    tool = _make_tool_fn(handler, _PATTERNS_SCHEMA)
+    tool(surgeUsers=2, cuSpikePct=55.0)
+    assert captured["payload"]["surgeUsers"] == 2
+    assert captured["payload"]["cuSpikePct"] == 55.0
+
+
+def test_make_tool_fn_surge_users_zero_forwarded_not_dropped():
+    # 0 is a meaningful threshold value (nullish, not falsy) -- must still be forwarded.
+    from fabric_audit_agent.mcp_server import _make_tool_fn
+    captured = {}
+
+    def handler(payload):
+        captured["payload"] = payload
+        return payload
+
+    tool = _make_tool_fn(handler, _PATTERNS_SCHEMA)
+    tool(surgeUsers=0, cuSpikePct=0.0)
+    assert captured["payload"]["surgeUsers"] == 0
+    assert captured["payload"]["cuSpikePct"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 11: verify-in-Fabric deeplinks -- verifyUrl on live capacity-Kusto envelopes
+# ---------------------------------------------------------------------------
+
+def test_describe_source_capacity_live_carries_verify_url(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            return [{"Schema": "ts:datetime, cuPct:real"}]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "live"
+    assert out["verifyUrl"].startswith("https://dataexplorer.azure.com/")
+
+
+def test_describe_source_capacity_mock_has_no_verify_url(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+    assert "verifyUrl" not in out
+
+
+def test_describe_source_events_live_has_no_verify_url(monkeypatch):
+    """Log Analytics (events) envelopes get nothing -- no clean web-explorer equivalent."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([{"ColumnName": "TimeGenerated", "ColumnType": "datetime"}]),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "events"})
+    assert out["sourceLabel"] == "live"
+    assert "verifyUrl" not in out
+
+
+def test_sample_events_capacity_live_carries_verify_url(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    rows = [{"capacityId": "cap1", "cuPct": 80.0}]
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        return lambda kql: rows
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity", "n": 2})
+    assert out["sourceLabel"] == "live"
+    assert out["verifyUrl"].startswith("https://dataexplorer.azure.com/")
+
+
+def test_sample_events_capacity_mock_has_no_verify_url(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+    assert "verifyUrl" not in out
+
+
+def test_sample_events_events_live_has_no_verify_url(monkeypatch):
+    _set_la_env(monkeypatch)
+    rows = [{"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co"}]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 4})
+    assert out["sourceLabel"] == "live"
+    assert "verifyUrl" not in out
+
+
+def test_capacity_diagnostics_live_carries_verify_urls_for_successful_sections(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                raise RuntimeError("cluster endpoint unavailable")
+            return [{"ok": True}]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    # every successful section gets a verify URL; the failed section does not.
+    assert set(out["verifyUrls"].keys()) == {"capacity", "workloadGroups", "diagnostics"}
+    for url in out["verifyUrls"].values():
+        assert url.startswith("https://dataexplorer.azure.com/")
+    assert "cluster" not in out["verifyUrls"]
+
+
+def test_capacity_diagnostics_no_config_has_no_verify_urls(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert "verifyUrls" not in out

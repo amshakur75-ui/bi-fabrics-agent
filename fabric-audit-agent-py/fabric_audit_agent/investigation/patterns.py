@@ -86,22 +86,57 @@ def capacity_patterns(
     capacity_series: list[dict],
     *,
     bucket_minutes: int = 15,
-) -> list[dict]:
+    surge_users: int = SURGE_USER_THRESHOLD,
+    cu_spike_pct: float = CU_SPIKE_THRESHOLD,
+    lag_buckets: int = LAG_BUCKETS,
+    return_diagnostics: bool = False,
+):
     """Correlate event-level activity surges with capacity CU% spikes.
 
     Args:
         events:          Normalized event dicts ({ts,user,item,kind,cuSeconds,...}).
         capacity_series: Capacity CU% time-series ({ts, cuPct}).
         bucket_minutes:  Time-bucket width in minutes (default 15).
+        surge_users:     Minimum distinct users in a bucket to qualify as a surge
+                          (default ``SURGE_USER_THRESHOLD``).
+        cu_spike_pct:    Minimum cuPct in/near the bucket to qualify as a CU spike
+                          (default ``CU_SPIKE_THRESHOLD``).
+        lag_buckets:     How many additional buckets after the surge to look for a CU spike
+                          (default ``LAG_BUCKETS``).
+        return_diagnostics: When True, return ``(patterns, diagnostics)`` instead of just
+                          ``patterns`` -- see below. Default False preserves the original
+                          plain-list return exactly, so existing callers are unaffected.
 
     Returns:
-        List of pattern dicts, one per coupled (surge, spike) pair:
+        When ``return_diagnostics`` is False (default): a list of pattern dicts, one per
+        coupled (surge, spike) pair:
         {windowStart, activeUsers, cuPeakPct, drivingItem, drivingUser, kind, narrative}.
         Only buckets with a surge AND a nearby CU spike are emitted.
         Sorted by windowStart ascending for deterministic ordering.
+
+        When ``return_diagnostics`` is True: a tuple ``(patterns, diagnostics)`` where
+        ``diagnostics = {"bucketsScanned": int, "maxActiveUsers": int, "maxCuPeakPct": float,
+        "thresholds": {"surgeUsers", "cuSpikePct", "bucketMinutes", "lagBuckets"}}`` --
+        computed from the SAME bucketing pass as pattern detection (no second re-bucket), so
+        an empty ``patterns`` result is always explainable (e.g. "maxActiveUsers 2 vs
+        threshold 4") rather than silent.
     """
     if not events or not capacity_series:
-        return []
+        empty_patterns: list[dict] = []
+        if return_diagnostics:
+            diagnostics = {
+                "bucketsScanned": 0,
+                "maxActiveUsers": 0,
+                "maxCuPeakPct": 0.0,
+                "thresholds": {
+                    "surgeUsers": surge_users,
+                    "cuSpikePct": cu_spike_pct,
+                    "bucketMinutes": bucket_minutes,
+                    "lagBuckets": lag_buckets,
+                },
+            }
+            return empty_patterns, diagnostics
+        return empty_patterns
 
     # ------------------------------------------------------------------
     # Step 1: Bucket events → per-bucket aggregates
@@ -152,26 +187,37 @@ def capacity_patterns(
     # ------------------------------------------------------------------
     # Step 3: Detect coupled patterns
     # ------------------------------------------------------------------
-    # For each bucket with a surge, look for a CU spike within LAG_BUCKETS
-    # additional windows (same bucket or next N buckets).
+    # For each bucket with a surge, look for a CU spike within lag_buckets
+    # additional windows (same bucket or next N buckets). Also accumulate diagnostics
+    # (bucketsScanned/maxActiveUsers/maxCuPeakPct) from this SAME pass -- no second
+    # re-bucket needed even when the caller doesn't want diagnostics back.
     patterns: list[dict] = []
+    max_active_users = 0
+    max_cu_peak_pct = 0.0
+    buckets_scanned = len(buckets)
 
     for bk in sorted(buckets.keys()):   # sorted → deterministic
         b = buckets[bk]
         active_users = len(b["users"])
+        if active_users > max_active_users:
+            max_active_users = active_users
 
-        if active_users < SURGE_USER_THRESHOLD:
-            continue  # not a surge
-
-        # Check this bucket and the next LAG_BUCKETS buckets for a CU spike
+        # Check this bucket and the next lag_buckets buckets for a CU spike (used both for
+        # pattern detection below AND the maxCuPeakPct diagnostic, so every bucket's nearby
+        # peak is tracked regardless of whether it ends up qualifying as a surge).
         cu_peak_pct = 0.0
-        for lag in range(LAG_BUCKETS + 1):
+        for lag in range(lag_buckets + 1):
             candidate_bk = bk + lag * bucket_minutes
             cap_val = cap_buckets.get(candidate_bk)
             if cap_val is not None and cap_val > cu_peak_pct:
                 cu_peak_pct = cap_val
+        if cu_peak_pct > max_cu_peak_pct:
+            max_cu_peak_pct = cu_peak_pct
 
-        if cu_peak_pct < CU_SPIKE_THRESHOLD:
+        if active_users < surge_users:
+            continue  # not a surge
+
+        if cu_peak_pct < cu_spike_pct:
             continue  # no CU spike nearby
 
         # ------ Driving item: highest cumulative cuSeconds in this bucket ------
@@ -224,4 +270,17 @@ def capacity_patterns(
         })
 
     # Already sorted by windowStart (ascending) because we iterated sorted(buckets.keys())
+    if return_diagnostics:
+        diagnostics = {
+            "bucketsScanned": buckets_scanned,
+            "maxActiveUsers": max_active_users,
+            "maxCuPeakPct": max_cu_peak_pct,
+            "thresholds": {
+                "surgeUsers": surge_users,
+                "cuSpikePct": cu_spike_pct,
+                "bucketMinutes": bucket_minutes,
+                "lagBuckets": lag_buckets,
+            },
+        }
+        return patterns, diagnostics
     return patterns

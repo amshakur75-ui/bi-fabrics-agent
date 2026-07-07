@@ -60,9 +60,11 @@ def manifest(base_dir=None):
 def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
     (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
-    ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``,
-    ``capacity_patterns``). Each tool's advertised MCP schema mirrors its authored
-    ``input_schema`` exactly (see ``_make_tool_fn``). Requires the optional ``mcp`` dep."""
+    ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``, ``raw_events``,
+    ``capacity_patterns``, ``describe_source``, ``sample_events``, ``capacity_diagnostics``).
+    Each tool's advertised MCP schema mirrors its authored ``input_schema`` exactly (per-tool
+    signature derived by ``_make_tool_fn``), so required props are enforced and no phantom params
+    are advertised. Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
     server = FastMCP("fabric-audit-agent", host=host, port=port)

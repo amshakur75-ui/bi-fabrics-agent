@@ -28,5 +28,15 @@
     ],
     "expectTool": "spike_events",
     "expectAbstain": false
+  },
+  {
+    "name": "windowed-raw-events-12to13",
+    "messages": [{"role": "user", "content": "what ran between 12:45 and 13:00 today?"}],
+    "script": [
+      {"type": "tool_use", "name": "raw_events", "input": {"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z", "order": "recent"}},
+      {"type": "text", "text": "In that window, alice@co ran a query against Sales costing 12.0 CU-seconds."}
+    ],
+    "expectTool": "raw_events",
+    "expectAbstain": false
   }
 ]

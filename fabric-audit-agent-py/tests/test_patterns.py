@@ -275,3 +275,141 @@ class TestKindMajority:
         patterns = capacity_patterns(events, cap)
         if patterns:
             assert patterns[0]["kind"] in ("refresh", "mixed")
+
+
+# ---------------------------------------------------------------------------
+# return_diagnostics=False (default) — unchanged plain-list behavior (Task 10)
+# ---------------------------------------------------------------------------
+
+class TestDefaultReturnListUnchanged:
+    """Every pre-Task-10 call site omits return_diagnostics -- the default MUST still return
+    the plain patterns list exactly as before (no tuple, no wrapping)."""
+
+    def test_default_returns_plain_list_surge_plus_spike(self):
+        result = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY
+        )
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_default_returns_plain_list_quiet_period(self):
+        result = capacity_patterns(TestQuietPeriod.QUIET_EVENTS, TestQuietPeriod.LOW_CAPACITY)
+        assert result == []
+
+    def test_explicit_false_same_as_default(self):
+        r1 = capacity_patterns(TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY)
+        r2 = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            return_diagnostics=False,
+        )
+        assert r1 == r2
+
+
+# ---------------------------------------------------------------------------
+# return_diagnostics=True — (patterns, diagnostics) tuple (Task 10)
+# ---------------------------------------------------------------------------
+
+class TestReturnDiagnosticsTrue:
+    def test_returns_tuple_of_patterns_and_diagnostics(self):
+        result = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            return_diagnostics=True,
+        )
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        patterns, diagnostics = result
+        assert isinstance(patterns, list)
+        assert isinstance(diagnostics, dict)
+
+    def test_patterns_half_matches_default_call(self):
+        patterns, _diag = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            return_diagnostics=True,
+        )
+        plain = capacity_patterns(TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY)
+        assert patterns == plain
+
+    def test_diagnostics_keys_present(self):
+        _patterns, diag = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            return_diagnostics=True,
+        )
+        assert set(diag.keys()) >= {"bucketsScanned", "maxActiveUsers", "maxCuPeakPct", "thresholds"}
+        assert set(diag["thresholds"].keys()) == {
+            "surgeUsers", "cuSpikePct", "bucketMinutes", "lagBuckets",
+        }
+
+    def test_diagnostics_thresholds_reflect_args(self):
+        _patterns, diag = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            bucket_minutes=15, surge_users=3, cu_spike_pct=60.0, lag_buckets=2,
+            return_diagnostics=True,
+        )
+        assert diag["thresholds"] == {
+            "surgeUsers": 3, "cuSpikePct": 60.0, "bucketMinutes": 15, "lagBuckets": 2,
+        }
+
+    def test_diagnostics_max_active_users_matches_observed_peak(self):
+        # SURGE_EVENTS has 8 distinct users in a single bucket -> max is 8.
+        _patterns, diag = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            return_diagnostics=True,
+        )
+        assert diag["maxActiveUsers"] == 8
+
+    def test_diagnostics_max_cu_peak_pct_matches_series_max(self):
+        _patterns, diag = capacity_patterns(
+            TestSurgePlusSpike.SURGE_EVENTS, TestSurgePlusSpike.SPIKE_CAPACITY,
+            return_diagnostics=True,
+        )
+        # SPIKE_CAPACITY max cuPct is 92.0
+        assert diag["maxCuPeakPct"] == 92.0
+
+    def test_diagnostics_buckets_scanned_counts_event_buckets(self):
+        # TestMultiBucketOnlySpikeBucketMatches has 2 distinct 15-min buckets of events.
+        _patterns, diag = capacity_patterns(
+            TestMultiBucketOnlySpikeBucketMatches.EVENTS,
+            TestMultiBucketOnlySpikeBucketMatches.CAPACITY,
+            return_diagnostics=True,
+        )
+        assert diag["bucketsScanned"] == 2
+
+    def test_sparse_fixture_empty_patterns_still_yields_useful_diagnostics(self):
+        """The live-bug scenario: a sparse fixture with few distinct users/bucket yields
+        patterns == [] but diagnostics must explain WHY (observed maxima below threshold)."""
+        sparse_events = [
+            _ev("2026-06-30T09:00:00Z", "user1@co", "Sales", 20.0),
+            _ev("2026-06-30T09:02:00Z", "user2@co", "Sales", 25.0),
+        ]
+        sparse_capacity = [_cap("2026-06-30T09:05:00Z", 55.0)]
+        patterns, diag = capacity_patterns(
+            sparse_events, sparse_capacity, return_diagnostics=True,
+        )
+        assert patterns == []
+        assert diag["maxActiveUsers"] == 2   # below default surge_users=4
+        assert diag["maxCuPeakPct"] == 55.0  # below default cu_spike_pct=70.0
+        assert diag["thresholds"]["surgeUsers"] == 4
+        assert diag["thresholds"]["cuSpikePct"] == 70.0
+
+    def test_lowering_surge_users_to_observed_max_yields_pattern(self):
+        """Same sparse fixture: lowering surge_users to the observed maxActiveUsers (2) and
+        cu_spike_pct to at/below the observed peak (55.0) makes the pattern appear."""
+        sparse_events = [
+            _ev("2026-06-30T09:00:00Z", "user1@co", "Sales", 20.0),
+            _ev("2026-06-30T09:02:00Z", "user2@co", "Sales", 25.0),
+        ]
+        sparse_capacity = [_cap("2026-06-30T09:05:00Z", 55.0)]
+        patterns, diag = capacity_patterns(
+            sparse_events, sparse_capacity,
+            surge_users=2, cu_spike_pct=55.0,
+            return_diagnostics=True,
+        )
+        assert len(patterns) == 1
+        assert patterns[0]["activeUsers"] == 2
+
+    def test_empty_inputs_still_returns_tuple_with_zeroed_diagnostics(self):
+        patterns, diag = capacity_patterns([], [], return_diagnostics=True)
+        assert patterns == []
+        assert diag["bucketsScanned"] == 0
+        assert diag["maxActiveUsers"] == 0
+        assert diag["maxCuPeakPct"] == 0.0

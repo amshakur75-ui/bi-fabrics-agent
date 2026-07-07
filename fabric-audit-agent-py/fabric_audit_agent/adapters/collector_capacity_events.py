@@ -19,6 +19,7 @@ Operational caveats baked in (from the docs):
 deploy (same Kusto/KQL API as Workspace Monitoring). The default KQL windows by ``ingestion_time()`` (a
 Kusto built-in, schema-independent); set ``FABRIC_CAPACITY_EVENTS_KQL`` if your landed column names differ.
 """
+from ..query.kql_guard import escape_entity, first_statement
 
 _WINDOW_SEC = 30
 
@@ -46,18 +47,21 @@ def _num(v):
 def _default_kql(table, window):
     # ingestion_time() is always available regardless of how the Eventstream mapped the JSON columns,
     # so the default query never errors on a schema mismatch. Dedupe + math happen in Python below.
-    return f"['{table}']\n| where ingestion_time() > ago({window})"
+    return f"{escape_entity(table)}\n| where ingestion_time() > ago({window})"
 
 
 def _resolve_kql(cfg):
-    """Resolve the query: the ``kql`` override when present (with ``{window}`` substituted from the
-    config window so a threaded lookback isn't silently defeated by a hardcoded ``ago(...)``), else
-    the schema-independent default. Overrides without the placeholder behave exactly as before."""
+    """Resolve the query: a trusted ``kql`` override when present (with ``{window}`` substituted
+    from the config window so a threaded lookback isn't silently defeated by a hardcoded
+    ``ago(...)``; overrides without the placeholder behave exactly as before) is passed through
+    UNMODIFIED otherwise -- first_statement() would wrongly truncate a multi-line/`let` flatten. The
+    schema-independent BUILT default is guarded with first_statement() as defense-in-depth against
+    an unescaped/unquoted interpolation seam (e.g. ``window``)."""
     window = cfg.get("window", "1d")
     override = cfg.get("kql")
     if override:
         return override.replace("{window}", window)
-    return _default_kql(cfg.get("table", "CapacityEvents"), window)
+    return first_statement(_default_kql(cfg.get("table", "CapacityEvents"), window))
 
 
 def _windows(rows):

@@ -1,5 +1,9 @@
+import json
 import os
-from fabric_audit_agent.eval.score_investigations import run_agent_suite, score_agent_case
+import pathlib
+from fabric_audit_agent.eval.score_investigations import (
+    run_agent_suite, score_agent_case, _client_from_script,
+)
 from fabric_audit_agent.agent.scripted_client import Block, Message, ScriptedClient
 from fabric_audit_agent.agent.investigator import investigate
 
@@ -72,6 +76,29 @@ def test_agent_suite_includes_new_depth_case(monkeypatch):
         "agent_cases.json must include at least one case that exercises a Phase-3 depth tool "
         f"(one of {new_tools}); found none"
     )
+
+
+def test_windowed_raw_events_case_passes_structured_start_end(monkeypatch):
+    """review #25: the windowed raw_events golden case must pass 'start'/'end' as STRUCTURED
+    tool input (not just echo the digits in prose) AND ground on the mock raw_events result."""
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    cases_path = pathlib.Path(__file__).parent.parent / "fabric_audit_agent" / "eval" / "agent_cases.json"
+    with open(cases_path, encoding="utf-8") as fh:
+        cases = json.load(fh)
+    case = next((c for c in cases if c["name"] == "windowed-raw-events-12to13"), None)
+    assert case is not None, "agent_cases.json must include the windowed raw_events golden case"
+
+    out = investigate(case["messages"], _client_from_script(case["script"]))
+    raw_events_calls = [t for t in out["trajectory"] if t["tool"] == "raw_events"]
+    assert raw_events_calls, "trajectory must contain a raw_events tool call"
+    assert "start" in raw_events_calls[0]["input"] and "end" in raw_events_calls[0]["input"], (
+        "raw_events tool input must carry structured 'start'/'end' keys, not just prose digits"
+    )
+
+    result = score_agent_case(case)
+    assert result["passed"] is True
 
 
 def test_runbook_files_exist_and_name_real_tools():

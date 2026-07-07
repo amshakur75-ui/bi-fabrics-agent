@@ -62,36 +62,43 @@ def test_kql_scopes_to_user_and_item_when_given():
     assert "top 100 by coalesce(CpuTimeMs, DurationMs) desc" in seen["kql"]
 
 
-def test_kql_strips_quotes_from_user_and_item_to_avoid_injection():
+def test_kql_escapes_quotes_from_user_and_item_preserving_content_no_breakout():
     seen = {}
     def capture(kql):
         seen["kql"] = kql
         return []
-    create_event_collector(capture, {"user": 'a"; drop table x', "item": 'b"c'})["collect"]()
-    assert 'ExecutingUser =~ "a; drop table x"' in seen["kql"]
-    assert 'ArtifactName =~ "bc"' in seen["kql"]
+    create_event_collector(capture, {"user": 'a"; drop | take 1', "item": 'b"c'})["collect"]()
+    assert 'ExecutingUser =~ "a\\"; drop | take 1"' in seen["kql"]
+    assert 'ArtifactName =~ "b\\"c"' in seen["kql"]
 
 
-def test_kql_strips_backslashes_too():
-    """A trailing backslash would escape the closing quote and break the query string."""
+def test_kql_escapes_backslashes_too():
+    """A trailing backslash would escape the closing quote and break the query string. The unified
+    design uses kql_guard.escape_string (stricter than the dropped _quote strip): it ESCAPES the
+    backslash (\\ -> \\\\) so the literal content is preserved AND the closing quote can't be
+    escaped away -- no breakout."""
     seen = {}
     def capture(kql):
         seen["kql"] = kql
         return []
     create_event_collector(capture, {"user": "trailing\\", "item": "mid\\dle"})["collect"]()
-    assert 'ExecutingUser =~ "trailing"' in seen["kql"]
-    assert 'ArtifactName =~ "middle"' in seen["kql"]
+    # escape_string doubles each backslash; the closing quote stays intact (no breakout).
+    assert 'ExecutingUser =~ "trailing\\\\"' in seen["kql"]
+    assert 'ArtifactName =~ "mid\\\\dle"' in seen["kql"]
 
 
 def test_absolute_window_replaces_relative_lookback():
-    """start/end bound the query in KQL itself -- the row cap can never truncate away the
-    exact window a spike investigation asks about."""
+    """An absolute window bounds the query in KQL itself -- the row cap can never truncate away
+    the exact window a spike investigation asks about. Under the unified design the absolute
+    between() clause is produced by query.windows.resolve_window(start=, end=) and passed in AS
+    the ``window`` config (verbatim), NOT via start/end keys on the collector."""
     seen = {}
     def capture(kql):
         seen["kql"] = kql
         return []
-    create_event_collector(capture, {"start": "2026-07-06T15:18:00Z",
-                                     "end": "2026-07-06T16:18:00Z"})["collect"]()
+    between_clause = ("| where TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
+                      "datetime(2026-07-06T16:18:00Z))")
+    create_event_collector(capture, {"window": between_clause})["collect"]()
     assert ("TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
             "datetime(2026-07-06T16:18:00Z))") in seen["kql"]
     assert "ago(" not in seen["kql"]
@@ -106,22 +113,59 @@ def test_kql_override_bypasses_builder():
     assert seen["kql"] == "CustomTable | take 1"
 
 
+def test_built_kql_with_injected_semicolon_is_truncated_to_first_statement():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    # `window` is spliced in verbatim as its own line, so a top-level `;` injected into it is a
+    # realistic defense-in-depth case for first_statement() to catch on a BUILT query (escape_string
+    # already prevents breakout via the quoted user/item literals -- this covers the window seam).
+    # The BUILT query must be truncated before the injected `; second`.
+    create_event_collector(capture, {"window": "| where TimeGenerated > ago(1d); second"})["collect"]()
+    assert "second" not in seen["kql"]
+    assert seen["kql"] == seen["kql"].rstrip()
+
+
+def test_kql_override_with_let_and_semicolon_passes_through_untouched():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    override = "let x = 1; x | take 5"
+    create_event_collector(capture, {"kql": override})["collect"]()
+    # The trusted override (e.g. FABRIC_CAPACITY_EVENTS_KQL) is NOT run through first_statement.
+    assert seen["kql"] == override
+
+
+_CLAUSE_1D = "| where TimeGenerated > ago(1d)"
+_CLAUSE_7D = "| where TimeGenerated > ago(7d)"
+
+
 def test_window_default_and_override():
-    default_kql = _kql("1d", None, None, 5000)
+    default_kql = _kql(_CLAUSE_1D, None, None, 5000)
     assert "ago(1d)" in default_kql
-    custom_kql = _kql("7d", None, None, 5000)
+    custom_kql = _kql(_CLAUSE_7D, None, None, 5000)
     assert "ago(7d)" in custom_kql
 
 
+def test_window_clause_is_spliced_in_verbatim():
+    # _kql accepts a FULL WHERE-clause string (as built by query.windows.resolve_window),
+    # not a bare lookback -- e.g. an absolute between() clause must pass through untouched.
+    clause = "| where TimeGenerated between (datetime(2026-07-05T12:45:00Z) .. datetime(2026-07-05T13:00:00Z))"
+    kql = _kql(clause, None, None, 5000)
+    assert clause in kql
+
+
 def test_order_recent_sorts_by_time_not_cost():
-    kql = _kql("1d", None, None, 5000, order="recent")
+    kql = _kql(_CLAUSE_1D, None, None, 5000, order="recent")
     assert "top 5000 by TimeGenerated desc" in kql
     assert "coalesce(CpuTimeMs, DurationMs)" not in kql
 
 
 def test_operations_allowlist_filters_when_given_but_not_by_default():
     # Default: no OperationName filter (so a differently-named tenant never returns empty).
-    assert "OperationName in (" not in _kql("1d", None, None, 5000)
+    assert "OperationName in (" not in _kql(_CLAUSE_1D, None, None, 5000)
     # When set: restrict to the allowlist (drops VertiPaq SE sub-query events).
-    kql = _kql("1d", None, None, 5000, operations=("QueryEnd", "CommandEnd", "ProgressReportEnd"))
+    kql = _kql(_CLAUSE_1D, None, None, 5000, operations=("QueryEnd", "CommandEnd", "ProgressReportEnd"))
     assert 'OperationName in ("QueryEnd", "CommandEnd", "ProgressReportEnd")' in kql
