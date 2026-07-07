@@ -17,7 +17,11 @@ from .investigation import events as _events_mod
 from .investigation.baseline import compute_baseline as _compute_baseline
 from .investigation.expensive import top_expensive as _top_expensive
 from .investigation.spike_history import user_spike_history as _user_spike_history
-from .investigation.patterns import capacity_patterns as _capacity_patterns
+from .investigation.patterns import (
+    capacity_patterns as _capacity_patterns,
+    SURGE_USER_THRESHOLD as _PATTERNS_SURGE_USERS_DEFAULT,
+    CU_SPIKE_THRESHOLD as _PATTERNS_CU_SPIKE_PCT_DEFAULT,
+)
 from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
 from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columnar as _to_columnar
 from .query.windows import resolve_window as _resolve_window
@@ -443,23 +447,58 @@ def create_tool_definitions(base_dir=None):
             return {"error": str(exc), "source": source}
 
     def capacity_patterns_handler(_input=None):
-        """Temporal activity-surge ↔ CU-spike patterns across the estate."""
+        """Temporal activity-surge ↔ CU-spike patterns across the estate.
+
+        Root-cause fix (Task 10): the flagship temporal detector was silently returning []
+        on live data because the default 30-day COST-ordered event sample scattered events
+        too thin per 15-min bucket, collapsing distinct-user counts below the surge threshold.
+        Pulls RECENT-ordered events over a NARROW default window (days=1 when the caller gives
+        no window) instead, and makes the surge/CU-spike thresholds tool-tunable (else env,
+        else the function defaults) so an empty result is always explainable via
+        patternsDiagnostics rather than silent.
+        """
         inp = _input or {}
+        source = "live" if _has_live_event_source(os.environ) else "mock"
         try:
             events, capacity_series, meta = _events_or_mock(
-                days=inp.get("days"), hours=inp.get("hours"),
-                start=inp.get("start"), end=inp.get("end"),
+                days=(inp.get("days") if inp.get("days") is not None else 1),
+                hours=inp.get("hours"), start=inp.get("start"), end=inp.get("end"),
+                order="recent",
             )
-            patterns = _capacity_patterns(events, capacity_series)
+            env = os.environ
+            surge_users_in = inp.get("surgeUsers")
+            if surge_users_in is None:
+                env_surge = env.get("FABRIC_PATTERNS_SURGE_USERS")
+                surge_users = int(env_surge) if env_surge is not None else _PATTERNS_SURGE_USERS_DEFAULT
+            else:
+                surge_users = surge_users_in
+
+            cu_spike_pct_in = inp.get("cuSpikePct")
+            if cu_spike_pct_in is None:
+                env_cu = env.get("FABRIC_PATTERNS_CU_SPIKE_PCT")
+                cu_spike_pct = float(env_cu) if env_cu is not None else _PATTERNS_CU_SPIKE_PCT_DEFAULT
+            else:
+                cu_spike_pct = cu_spike_pct_in
+
+            patterns, diagnostics = _capacity_patterns(
+                events, capacity_series,
+                surge_users=surge_users, cu_spike_pct=cu_spike_pct,
+                return_diagnostics=True,
+            )
             return {
                 "patterns": patterns,
-                "source": "live" if _has_live_event_source(os.environ) else "mock",
+                "patternsDiagnostics": {
+                    **diagnostics,
+                    "windowLabel": meta["windowLabel"],
+                    "seriesWindowLabel": meta["seriesWindowLabel"],
+                },
+                "source": source,
                 "windowLabel": meta["windowLabel"],
                 "seriesWindowLabel": meta["seriesWindowLabel"],
                 "queryKql": meta["eventKql"],
             }
         except ValueError as exc:
-            return {"error": str(exc), "source": "live" if _has_live_event_source(os.environ) else "mock"}
+            return {"error": str(exc), "source": source}
 
     # ------------------------------------------------------------------
     # Task 8: describe_source / sample_events (schema discovery + data sampling)
@@ -820,12 +859,29 @@ def create_tool_definitions(base_dir=None):
             "description": (
                 "Identify temporal patterns coupling activity surges with CU% spikes. "
                 "Returns one pattern per detected surge-spike pair with the driving item, user, "
-                "peak CU%, and a plain-English narrative. Read-only."
+                "peak CU%, and a plain-English narrative, plus patternsDiagnostics (bucketsScanned, "
+                "maxActiveUsers, maxCuPeakPct, thresholds) so an empty result is always explainable "
+                "rather than silent. Defaults to a narrow 1-day recent-ordered window (override with "
+                "'days'/'hours'/'start'+'end'). Read-only."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                    "days": {"type": "integer", "description": "Lookback window in days (default 1)."},
+                    "surgeUsers": {
+                        "type": "integer",
+                        "description": (
+                            "Minimum distinct active users in a bucket to qualify as a surge "
+                            "(default 4, or FABRIC_PATTERNS_SURGE_USERS env if set)."
+                        ),
+                    },
+                    "cuSpikePct": {
+                        "type": "number",
+                        "description": (
+                            "Minimum CU% in/near the bucket to qualify as a CU spike "
+                            "(default 70.0, or FABRIC_PATTERNS_CU_SPIKE_PCT env if set)."
+                        ),
+                    },
                     **_WINDOW_PROPS,
                 },
                 "required": [],

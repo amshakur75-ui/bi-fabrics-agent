@@ -1132,3 +1132,211 @@ def test_capacity_diagnostics_partial_config_returns_error_envelope_not_keyerror
     out = h()
     assert "error" in out
     assert out["source"] == "capacity"
+
+
+# ---------------------------------------------------------------------------
+# Task 10: capacity_patterns live-fix -- recent-ordered narrow window, tunable
+# thresholds (tool input > env > default), non-silent patternsDiagnostics.
+# ---------------------------------------------------------------------------
+
+def test_capacity_patterns_handler_passes_recent_order_and_default_days_1(monkeypatch):
+    """Root-cause fix: with no window given, the handler must pull events RECENT-ordered
+    (not cost-ordered) over a narrow days=1 default -- cost-ordered 30-day sampling was
+    scattering events too thin per bucket, collapsing distinct-user counts below threshold."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    h({})
+    assert "ago(1d)" in captured["kql"]
+    # order="recent" sorts by TimeGenerated, not the cost-order coalesce(...) expression.
+    assert "TimeGenerated" in captured["kql"]
+
+
+def test_capacity_patterns_handler_explicit_days_still_overrides_default(monkeypatch):
+    """An explicit days= input must still be honored (not clobbered by the days=1 default)."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    h({"days": 7})
+    assert "ago(7d)" in captured["kql"]
+
+
+def _sparse_live_rows():
+    """A sparse, live-shaped fixture: only 2 distinct users in the same 15-min bucket --
+    below the default surge_users=4 threshold, and a CU series peaking below cu_spike_pct=70.
+    Mirrors the actual live-bug shape (capacity_patterns silently returning [])."""
+    return [
+        {"TimeGenerated": "2026-07-06T09:00:00Z", "ExecutingUser": "a@co",
+         "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 20000},
+        {"TimeGenerated": "2026-07-06T09:02:00Z", "ExecutingUser": "b@co",
+         "ArtifactName": "Sales", "OperationName": "QueryEnd", "CpuTimeMs": 25000},
+    ]
+
+
+def _set_la_and_capacity_env(monkeypatch, ce_rows):
+    """LA events + a capacity Eventhouse series, both live-configured (injected fakes)."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        return lambda kql: ce_rows
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+
+def test_sparse_fixture_yields_empty_patterns_with_explanatory_diagnostics(monkeypatch):
+    """Live-bug regression: a sparse fixture that returns patterns == [] must now surface
+    patternsDiagnostics explaining the observed maxima -- never silent."""
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-06T09:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 1536000},   # 55% (< default 70 threshold)
+    ]
+    _set_la_and_capacity_env(monkeypatch, ce_rows)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(_sparse_live_rows()),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["patterns"] == []
+    assert "patternsDiagnostics" in out
+    diag = out["patternsDiagnostics"]
+    assert diag["maxActiveUsers"] == 2
+    assert diag["thresholds"]["surgeUsers"] == 4
+    assert diag["thresholds"]["cuSpikePct"] == 70.0
+    assert "windowLabel" in diag
+    assert "seriesWindowLabel" in diag
+
+
+def test_lowering_surge_users_via_tool_input_yields_nonempty_pattern(monkeypatch):
+    """Passing surgeUsers <= observed maxActiveUsers (2) via the TOOL INPUT (not env) must
+    flip the same sparse fixture from empty to a detected pattern -- also needs cuSpikePct
+    lowered to at/below the observed CU max since the mock capacity series is low too."""
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-06T09:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 1536000},   # 55%
+    ]
+    _set_la_and_capacity_env(monkeypatch, ce_rows)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(_sparse_live_rows()),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "surgeUsers": 2, "cuSpikePct": 0.0})
+    assert len(out["patterns"]) == 1
+    assert out["patterns"][0]["activeUsers"] == 2
+
+
+def test_surge_users_zero_is_honored_not_falsy_coerced(monkeypatch):
+    """surgeUsers=0 is a legitimate (if extreme) threshold -- must be honored via
+    'x if x is not None else default', NOT treated as falsy/omitted."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "surgeUsers": 0, "cuSpikePct": 0.0})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 0
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 0.0
+
+
+def test_cu_spike_pct_zero_is_honored_not_falsy_coerced(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "cuSpikePct": 0.0})
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 0.0
+
+
+def test_thresholds_read_from_env_when_no_tool_input(monkeypatch):
+    """FABRIC_PATTERNS_SURGE_USERS / _CU_SPIKE_PCT env vars apply when the tool input omits
+    surgeUsers/cuSpikePct."""
+    _no_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_PATTERNS_SURGE_USERS", "2")
+    monkeypatch.setenv("FABRIC_PATTERNS_CU_SPIKE_PCT", "10.0")
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 2
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 10.0
+
+
+def test_tool_input_threshold_takes_precedence_over_env(monkeypatch):
+    _no_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_PATTERNS_SURGE_USERS", "99")
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1, "surgeUsers": 3})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 3
+
+
+def test_default_thresholds_when_no_input_and_no_env(monkeypatch):
+    _no_live(monkeypatch)
+    monkeypatch.delenv("FABRIC_PATTERNS_SURGE_USERS", raising=False)
+    monkeypatch.delenv("FABRIC_PATTERNS_CU_SPIKE_PCT", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["patternsDiagnostics"]["thresholds"]["surgeUsers"] == 4
+    assert out["patternsDiagnostics"]["thresholds"]["cuSpikePct"] == 70.0
+
+
+def test_capacity_patterns_handler_preserves_preexisting_fields(monkeypatch):
+    """source/windowLabel/seriesWindowLabel/queryKql must still be present alongside the
+    new patternsDiagnostics -- Task 10 must not drop existing envelope fields."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"days": 1})
+    assert out["source"] == "mock"
+    assert "windowLabel" in out
+    assert "seriesWindowLabel" in out
+    assert "queryKql" in out
+    assert "patterns" in out
+    assert "patternsDiagnostics" in out
+    assert out["patternsDiagnostics"]["windowLabel"] == out["windowLabel"]
+    assert out["patternsDiagnostics"]["seriesWindowLabel"] == out["seriesWindowLabel"]
+
+
+def test_capacity_patterns_handler_malformed_window_returns_error_envelope(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "not-a-date", "end": "2026-07-05T13:00:00Z"})
+    assert "error" in out
+    assert "source" in out
+
+
+def test_capacity_patterns_input_schema_gains_surge_users_and_cu_spike_pct():
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    props = by_name["capacity_patterns"]["input_schema"]["properties"]
+    assert "surgeUsers" in props
+    assert "cuSpikePct" in props
+
+
+def test_make_with_args_forwards_surge_users_and_cu_spike_pct():
+    from fabric_audit_agent.mcp_server import _make_with_args
+    captured = {}
+
+    def handler(payload):
+        captured["payload"] = payload
+        return payload
+
+    tool = _make_with_args(handler)
+    tool(surgeUsers=2, cuSpikePct=55.0)
+    assert captured["payload"]["surgeUsers"] == 2
+    assert captured["payload"]["cuSpikePct"] == 55.0
+
+
+def test_make_with_args_surge_users_zero_forwarded_not_dropped():
+    from fabric_audit_agent.mcp_server import _make_with_args
+    captured = {}
+
+    def handler(payload):
+        captured["payload"] = payload
+        return payload
+
+    tool = _make_with_args(handler)
+    tool(surgeUsers=0, cuSpikePct=0.0)
+    assert captured["payload"]["surgeUsers"] == 0
+    assert captured["payload"]["cuSpikePct"] == 0.0

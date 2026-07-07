@@ -118,3 +118,29 @@ def test_item_is_forwarded_for_raw_events():
     tool2 = _make_with_args(handler2)
     tool2(user="alice@co")
     assert "item" not in captured2["payload"]
+
+
+def test_surge_users_and_cu_spike_pct_forwarded_for_capacity_patterns():
+    # Task 10: capacity_patterns gains tool-tunable surgeUsers/cuSpikePct -- must reach the
+    # handler like the other union params, and stay absent when omitted.
+    handler, captured = _capturing_handler()
+    tool = _make_with_args(handler)
+    tool(surgeUsers=2, cuSpikePct=55.0)
+    assert captured["payload"]["surgeUsers"] == 2
+    assert captured["payload"]["cuSpikePct"] == 55.0
+
+    handler2, captured2 = _capturing_handler()
+    tool2 = _make_with_args(handler2)
+    tool2(user="alice@co")
+    assert "surgeUsers" not in captured2["payload"]
+    assert "cuSpikePct" not in captured2["payload"]
+
+
+def test_surge_users_zero_forwarded_not_treated_as_unset():
+    # 0 is a meaningful threshold value, not "unset" -- must still be forwarded (nullish, not
+    # falsy semantics, matching the rest of this wrapper's contract).
+    handler, captured = _capturing_handler()
+    tool = _make_with_args(handler)
+    tool(surgeUsers=0, cuSpikePct=0.0)
+    assert captured["payload"]["surgeUsers"] == 0
+    assert captured["payload"]["cuSpikePct"] == 0.0
