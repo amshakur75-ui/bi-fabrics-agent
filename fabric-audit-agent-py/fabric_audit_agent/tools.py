@@ -6,6 +6,7 @@ mutating any estate. ``data_agent.build_data_agent_manifest`` strips the handler
 published manifest (keeps name/description/input_schema).
 """
 import json
+import math
 import os
 
 from .adapters import create_mock_collector, create_stub_reasoner
@@ -24,7 +25,7 @@ from .investigation.patterns import (
 )
 from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
 from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columnar as _to_columnar
-from .query.windows import resolve_window as _resolve_window
+from .query.windows import resolve_window as _resolve_window, _parse_iso_utc as _parse_iso_utc
 from .query.kql_guard import assert_kusto_host as _assert_kusto_host, escape_entity as _escape_entity
 from .query.deeplinks import kusto_deeplink as _kusto_deeplink
 
@@ -267,11 +268,26 @@ def create_tool_definitions(base_dir=None):
         {"name": "cuPct", "type": "real"},
     ]
 
-    def _series_window(days, hours):
-        """Bare KQL lookback string (e.g. "7d"/"6h") for the capacity-series collector, which
+    def _series_window(days, hours, start=None, end=None):
+        """Bare KQL lookback string (e.g. "7d"/"6h"/"15m") for the capacity-series collector, which
         interpolates it directly into ``ago(...)`` (unlike the event collector, it does not take
         a full WHERE clause / absolute between() window -- see collector_capacity_events._default_kql).
-        Mirrors resolve_window's own hours-over-days precedence, defaulting to "30d"."""
+
+        For an absolute ``start``+``end`` window the CU series can't express a between(), so derive a
+        PROPORTIONAL lookback from the window SPAN (``end - start``) -- computed purely from the two
+        timestamps (no now()) via the same Z-safe parser ``resolve_window`` uses. ``ago()`` still
+        anchors at server-now, so the series aligns with the events only when the window is recent
+        (an inherent limit of the bare-lookback collector); but this stops pulling a full 30 days of
+        CU% for, say, a 15-minute event window. Ceils to the enclosing unit so the lookback always
+        covers >= the span. Mirrors resolve_window's hours-over-days precedence otherwise; default 30d."""
+        if start is not None and end is not None:
+            span_seconds = max(1, math.ceil(
+                (_parse_iso_utc(end, "end") - _parse_iso_utc(start, "start")).total_seconds()))
+            if span_seconds < 3600:
+                return f"{math.ceil(span_seconds / 60)}m"
+            if span_seconds < 86400:
+                return f"{math.ceil(span_seconds / 3600)}h"
+            return f"{math.ceil(span_seconds / 86400)}d"
         if hours is not None:
             return f"{hours}h"
         if days is not None:
@@ -337,7 +353,7 @@ def create_tool_definitions(base_dir=None):
                 env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
                 _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
             )
-            series_window = _series_window(days, hours)
+            series_window = _series_window(days, hours, start, end)
             ce_cfg = {"window": series_window}
             if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
                 ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]

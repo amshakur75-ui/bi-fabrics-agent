@@ -431,6 +431,55 @@ def test_capacity_events_kql_override_is_passed_through(monkeypatch):
     assert captured["kql"] == override
 
 
+def test_absolute_window_derives_proportional_series_lookback_not_30d(monkeypatch):
+    """Follow-up M-1: with an absolute start+end window, the CU series (which can't take a
+    between() clause) must derive a lookback PROPORTIONAL to the window span (end-start),
+    not silently fall back to the 30d default. A 15-minute window -> ago(15m) / 'last 15m'."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured["kql"] = kql
+            return []
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z"})   # 15-min window
+
+    assert out["source"] == "live"
+    assert out["seriesWindowLabel"] == "last 15m"        # derived from span, NOT "last 30d"
+    assert out["seriesWindowLabel"] != "last 30d"
+    assert out["patternsDiagnostics"]["seriesWindowLabel"] == "last 15m"
+    assert "ago(15m)" in captured["kql"]                 # threaded into the capacity-series KQL
+
+
+def test_absolute_multi_hour_window_derives_hour_lookback(monkeypatch):
+    """A multi-hour absolute window ceils to the enclosing hour unit (2h15m -> 'last 3h')."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_kusto_query",
+        lambda *a, **k: (lambda kql: []),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"start": "2026-07-05T10:00:00Z", "end": "2026-07-05T12:15:00Z"})   # 2h15m span
+    assert out["seriesWindowLabel"] == "last 3h"         # ceil(2.25h) -> 3h, covers >= the span
+
+
 # ---------------------------------------------------------------------------
 # Task 4: result envelope (rowCount/queryKql) + char-budget cap_rows on list tools.
 # Small mock fixtures fit well under the 12000-char default budget, so truncated=False
