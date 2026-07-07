@@ -119,23 +119,34 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
 
     assert set(tools) == {"run_audit", "list_workspaces", "user_activity", "investigate_user",
                           "investigate_capacity_spike", "user_spike_history", "spike_events",
-                          "capacity_patterns"}
+                          "raw_events", "capacity_patterns", "describe_source", "sample_events",
+                          "capacity_diagnostics"}
 
-    # user_spike_history: user REQUIRED, days/item optional -- and no phantom topN/when
+    # user_spike_history: user REQUIRED; window props + item optional -- no phantom topN/when
     ush = tools["user_spike_history"]
-    assert set(ush["properties"]) == {"user", "days", "item"}
+    assert set(ush["properties"]) == {"user", "days", "hours", "start", "end", "item"}
     assert "user" in ush.get("required", [])
 
-    # capacity_patterns: days only -- no phantom user/when/topN
-    assert set(tools["capacity_patterns"]["properties"]) == {"days"}
+    # capacity_patterns: window props + threshold overrides -- no phantom user/when/topN
+    assert set(tools["capacity_patterns"]["properties"]) == {
+        "days", "hours", "start", "end", "surgeUsers", "cuSpikePct"}
 
-    # spike_events: days + topN + item, none required
+    # spike_events: window props + topN + item + format, none required
     se = tools["spike_events"]
-    assert set(se["properties"]) == {"days", "topN", "item"}
+    assert set(se["properties"]) == {"days", "hours", "start", "end", "topN", "item", "format"}
     assert "required" not in se or not se["required"]
+
+    # raw_events: the complete-stream tool -- full scope surface, none required
+    assert set(tools["raw_events"]["properties"]) == {
+        "user", "item", "days", "hours", "start", "end", "topN", "order", "format"}
 
     # investigate_capacity_spike: when + days
     assert set(tools["investigate_capacity_spike"]["properties"]) == {"when", "days"}
+
+    # grounding tools
+    assert set(tools["describe_source"]["properties"]) == {"source", "table"}
+    assert set(tools["sample_events"]["properties"]) == {"source", "table", "n"}
+    assert not tools["capacity_diagnostics"].get("properties")
 
     # no-arg tools advertise no properties
     assert not tools["run_audit"].get("properties")
