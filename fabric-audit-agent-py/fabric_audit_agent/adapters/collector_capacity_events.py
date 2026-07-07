@@ -19,6 +19,7 @@ Operational caveats baked in (from the docs):
 deploy (same Kusto/KQL API as Workspace Monitoring). The default KQL windows by ``ingestion_time()`` (a
 Kusto built-in, schema-independent); set ``FABRIC_CAPACITY_EVENTS_KQL`` if your landed column names differ.
 """
+from ..query.kql_guard import escape_entity, first_statement
 
 _WINDOW_SEC = 30
 
@@ -46,7 +47,7 @@ def _num(v):
 def _default_kql(table, window):
     # ingestion_time() is always available regardless of how the Eventstream mapped the JSON columns,
     # so the default query never errors on a schema mismatch. Dedupe + math happen in Python below.
-    return f"['{table}']\n| where ingestion_time() > ago({window})"
+    return f"{escape_entity(table)}\n| where ingestion_time() > ago({window})"
 
 
 def _windows(rows):
@@ -87,7 +88,12 @@ def create_capacity_events_collector(query, config=None):
     ``window`` (lookback, default "1d"), ``kql`` (override the whole query)."""
     cfg = config or {}
     table = cfg.get("table", "CapacityEvents")
-    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
+    # A cfg["kql"] override is trusted (e.g. FABRIC_CAPACITY_EVENTS_KQL, a multi-line/`let`
+    # flatten) and passed through UNMODIFIED -- first_statement() would wrongly truncate it.
+    # A BUILT query, however, is guarded: truncate at the first top-level `;` in case an
+    # unescaped/unquoted interpolation seam (e.g. `window`) lets one slip through.
+    built = _default_kql(table, cfg.get("window", "1d"))
+    kql = cfg.get("kql") or first_statement(built)
 
     def collect():
         windows = _windows(query(kql) or [])
@@ -117,7 +123,9 @@ def capacity_series(query, config=None):
     CU% math) with the peak collector; read-only."""
     cfg = config or {}
     table = cfg.get("table", "CapacityEvents")
-    kql = cfg.get("kql") or _default_kql(table, cfg.get("window", "1d"))
+    # Same override-trusted / built-guarded split as create_capacity_events_collector above.
+    built = _default_kql(table, cfg.get("window", "1d"))
+    kql = cfg.get("kql") or first_statement(built)
     windows = _windows(query(kql) or [])
     return sorted(
         [{"ts": w["ts"], "cuPct": round(w["pct"], 1)} for w in windows],
