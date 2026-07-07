@@ -21,12 +21,13 @@ def _make_with_args(handler):
     """Return a union-signature tool function wrapping *handler*.
 
     Covers the union of all arg-taking tool schemas:
-      user     (user_activity, investigate_user, user_spike_history)
-      days     (investigate_user, user_spike_history, spike_events, capacity_patterns)
+      user     (user_activity, investigate_user, user_spike_history, raw_events)
+      item     (raw_events)
+      days     (investigate_user, user_spike_history, spike_events, capacity_patterns, raw_events)
       when     (investigate_capacity_spike)
-      topN     (spike_events)
+      topN     (spike_events, raw_events)
       hours, start, end   (sub-day / absolute time windows -- user_spike_history, spike_events,
-                            capacity_patterns)
+                            capacity_patterns, raw_events)
       format, order, source, table, n   (additional per-tool options)
 
     ``days`` and ``topN`` default to None (NOT 30/5) so a handler can tell "omitted" from
@@ -37,12 +38,12 @@ def _make_with_args(handler):
     Only non-None values are forwarded (nullish, not falsy -- 0/""/False are meaningful and
     still forwarded) so handlers can apply their own defaults for anything omitted.
     """
-    def _tool(user: str = None, days: int = None, when: str = None, topN: int = None,
-              hours: float = None, start: str = None, end: str = None,
+    def _tool(user: str = None, item: str = None, days: int = None, when: str = None,
+              topN: int = None, hours: float = None, start: str = None, end: str = None,
               format: str = None, order: str = None, source: str = None,
               table: str = None, n: int = None):
         payload = {k: v for k, v in {
-            "user": user, "days": days, "when": when, "topN": topN,
+            "user": user, "item": item, "days": days, "when": when, "topN": topN,
             "hours": hours, "start": start, "end": end,
             "format": format, "order": order, "source": source,
             "table": table, "n": n,
@@ -59,11 +60,11 @@ def manifest(base_dir=None):
 def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
     (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
-    ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``,
+    ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``, ``raw_events``,
     ``capacity_patterns``). No-arg tools are registered without parameters; arg-taking
-    tools expose the union of ``user``, ``days``, ``when``, ``topN``, ``hours``, ``start``,
-    ``end``, ``format``, ``order``, ``source``, ``table``, and ``n`` as optional FastMCP params
-    (only non-None values reach the handler; see ``_make_with_args``).
+    tools expose the union of ``user``, ``item``, ``days``, ``when``, ``topN``, ``hours``,
+    ``start``, ``end``, ``format``, ``order``, ``source``, ``table``, and ``n`` as optional
+    FastMCP params (only non-None values reach the handler; see ``_make_with_args``).
     Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 

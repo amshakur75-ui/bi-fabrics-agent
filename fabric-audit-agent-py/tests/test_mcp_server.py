@@ -104,3 +104,17 @@ def test_when_still_forwarded_for_investigate_capacity_spike():
     tool = _make_with_args(handler)
     tool(when="yesterday 12:45pm")
     assert captured["payload"]["when"] == "yesterday 12:45pm"
+
+
+def test_item_is_forwarded_for_raw_events():
+    # raw_events (Task 7) is the first tool with an 'item' scoping param -- must reach the
+    # handler like the other union params, and stay absent when omitted.
+    handler, captured = _capturing_handler()
+    tool = _make_with_args(handler)
+    tool(item="Sales")
+    assert captured["payload"]["item"] == "Sales"
+
+    handler2, captured2 = _capturing_handler()
+    tool2 = _make_with_args(handler2)
+    tool2(user="alice@co")
+    assert "item" not in captured2["payload"]

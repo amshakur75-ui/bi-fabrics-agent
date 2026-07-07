@@ -643,3 +643,168 @@ def test_fabric_event_operations_env_absent_means_no_filter(monkeypatch):
     h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
     h({"days": 7})
     assert "OperationName in (" not in captured["kql"]
+
+
+# ---------------------------------------------------------------------------
+# Task 7: raw_events — bounded, NOT spike-filtered, all-instances event stream.
+# ---------------------------------------------------------------------------
+
+def test_raw_events_is_defined_with_correct_schema():
+    """raw_events must be registered with the documented input_schema."""
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "raw_events" in by_name
+    re_def = by_name["raw_events"]
+    props = re_def["input_schema"]["properties"]
+    assert props["user"]["type"] == "string"
+    assert props["item"]["type"] == "string"
+    assert props["days"]["type"] == "integer"
+    assert props["topN"]["type"] == "integer"
+    assert props["order"]["enum"] == ["recent", "cost"]
+    assert props["format"]["enum"] == ["records", "columnar"]
+    assert "hours" in props and "start" in props and "end" in props
+    assert re_def["input_schema"]["required"] == []
+    # Description must point callers to spike_events for above-baseline-only, and warn
+    # that results are untrusted telemetry (query text is data, not instructions).
+    desc = re_def["description"]
+    assert "spike_events" in desc
+    assert "COMPLETE" in desc or "complete" in desc
+    assert "untrusted" in desc.lower() or "not instructions" in desc.lower()
+
+
+def test_raw_events_handler_offline_shape(monkeypatch):
+    """Offline: raw_events returns the full (not spike-filtered) mock event list, labeled mock."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30})
+    assert out["source"] == "mock"
+    assert "events" in out
+    assert isinstance(out["events"], list)
+    assert out["rowCount"] == len(out["events"])
+    assert "windowLabel" in out
+    for ev in out["events"]:
+        assert "user" in ev and "item" in ev and "ts" in ev and "cuSeconds" in ev
+
+
+def test_raw_events_not_spike_filtered_returns_all_mock_events(monkeypatch):
+    """raw_events must NOT apply is_spike/compute_baseline -- it returns the complete mock
+    event stream (6 events), unlike spike_events which only returns above-baseline events."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30, "topN": 1000})
+    assert out["rowCount"] == 6
+
+
+def test_raw_events_default_topN_is_100(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30})
+    assert len(out["events"]) <= 100
+
+
+def test_raw_events_topN_5000_clamps_to_1000(monkeypatch):
+    """topN above the hard cap of 1000 must clamp to 1000 and mark truncated=True."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30, "topN": 5000})
+    assert out["truncated"] is True
+
+
+def test_raw_events_topN_within_cap_not_marked_truncated_by_clamp(monkeypatch):
+    """A topN within the hard cap, with a small mock result well under the char budget, must
+    not be marked truncated (the clamp itself did not trim anything)."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 30, "topN": 5})
+    assert out["truncated"] is False
+
+
+def test_raw_events_format_columnar_returns_columnar_dict(monkeypatch):
+    """format:'columnar' returns events as to_columnar(events); rowCount stays the true count."""
+    _no_live(monkeypatch)
+    from fabric_audit_agent.query.envelope import to_columnar
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out_records = h({"days": 30})
+    out_columnar = h({"days": 30, "format": "columnar"})
+    assert "columns" in out_columnar["events"]
+    assert out_columnar["events"] == to_columnar(out_records["events"])
+    assert out_columnar["rowCount"] == len(out_records["events"])
+    assert out_columnar["rowCount"] == out_records["rowCount"]
+
+
+def test_raw_events_malformed_start_returns_error_envelope(monkeypatch):
+    """A malformed window must never propagate a raw exception out of the handler."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"start": "not-a-date", "end": "2026-07-05T13:00:00Z"})
+    assert "error" in out
+    assert "source" in out
+
+
+def test_raw_events_order_and_cap_reach_collector_kql(monkeypatch):
+    """order + the clamped topN must reach the live collector config -- visible in the built
+    KQL as 'top <cap> by TimeGenerated desc' for order='recent' (the raw_events default)."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    h({"days": 7, "topN": 50, "order": "recent"})
+    assert "top 50 by TimeGenerated desc" in captured["kql"]
+
+
+def test_raw_events_order_cost_reaches_collector_kql(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    h({"days": 7, "topN": 50, "order": "cost"})
+    assert "top 50 by coalesce(CpuTimeMs, DurationMs) desc" in captured["kql"]
+
+
+def test_raw_events_topN_clamp_reaches_collector_cap(monkeypatch):
+    """The CLAMPED (not raw) topN must reach the collector's KQL top-N, so the server-side
+    bound actually protects the live query -- not just the post-hoc Python slice."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    h({"days": 7, "topN": 5000})
+    assert "top 1000 by" in captured["kql"]
+
+
+def test_raw_events_source_live_when_la_configured(monkeypatch):
+    _set_la_env(monkeypatch)
+    la_rows = [
+        {"TimeGenerated": "2026-07-01T09:00:00Z", "ExecutingUser": "zeynep@co",
+         "ArtifactName": "Live Item", "OperationName": "QueryEnd", "CpuTimeMs": 1000},
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(la_rows),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "raw_events")["handler"]
+    out = h({"days": 7})
+    assert out["source"] == "live"
+    assert out["rowCount"] == 1
+
+
+def test_raw_events_existing_events_or_mock_callers_still_work_without_cap_order(monkeypatch):
+    """Extending _events_or_mock with optional cap/order kwargs must not break existing
+    callers (spike_events, user_spike_history, capacity_patterns) that omit them."""
+    _no_live(monkeypatch)
+    for name in ("spike_events", "user_spike_history", "capacity_patterns"):
+        h = next(d for d in create_tool_definitions() if d["name"] == name)["handler"]
+        inp = {"days": 30}
+        if name == "user_spike_history":
+            inp["user"] = "alice@co"
+        out = h(inp)
+        assert "error" not in out
