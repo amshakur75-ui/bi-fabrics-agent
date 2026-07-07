@@ -86,11 +86,11 @@ def test_built_kql_with_injected_semicolon_is_truncated_to_first_statement():
     def capture(kql):
         seen["kql"] = kql
         return []
-    # `window` is interpolated unescaped/unquoted into `ago(...)`, so a top-level `;` injected
-    # there is a realistic defense-in-depth case for first_statement() to catch on a BUILT query
-    # (escape_string already prevents breakout via the quoted user/item literals -- this covers
-    # the unquoted seam). The BUILT query must be truncated before the injected `; second`.
-    create_event_collector(capture, {"window": "1d; second"})["collect"]()
+    # `window` is spliced in verbatim as its own line, so a top-level `;` injected into it is a
+    # realistic defense-in-depth case for first_statement() to catch on a BUILT query (escape_string
+    # already prevents breakout via the quoted user/item literals -- this covers the window seam).
+    # The BUILT query must be truncated before the injected `; second`.
+    create_event_collector(capture, {"window": "| where TimeGenerated > ago(1d); second"})["collect"]()
     assert "second" not in seen["kql"]
     assert seen["kql"] == seen["kql"].rstrip()
 
@@ -106,22 +106,34 @@ def test_kql_override_with_let_and_semicolon_passes_through_untouched():
     assert seen["kql"] == override
 
 
+_CLAUSE_1D = "| where TimeGenerated > ago(1d)"
+_CLAUSE_7D = "| where TimeGenerated > ago(7d)"
+
+
 def test_window_default_and_override():
-    default_kql = _kql("1d", None, None, 5000)
+    default_kql = _kql(_CLAUSE_1D, None, None, 5000)
     assert "ago(1d)" in default_kql
-    custom_kql = _kql("7d", None, None, 5000)
+    custom_kql = _kql(_CLAUSE_7D, None, None, 5000)
     assert "ago(7d)" in custom_kql
 
 
+def test_window_clause_is_spliced_in_verbatim():
+    # _kql accepts a FULL WHERE-clause string (as built by query.windows.resolve_window),
+    # not a bare lookback -- e.g. an absolute between() clause must pass through untouched.
+    clause = "| where TimeGenerated between (datetime(2026-07-05T12:45:00Z) .. datetime(2026-07-05T13:00:00Z))"
+    kql = _kql(clause, None, None, 5000)
+    assert clause in kql
+
+
 def test_order_recent_sorts_by_time_not_cost():
-    kql = _kql("1d", None, None, 5000, order="recent")
+    kql = _kql(_CLAUSE_1D, None, None, 5000, order="recent")
     assert "top 5000 by TimeGenerated desc" in kql
     assert "coalesce(CpuTimeMs, DurationMs)" not in kql
 
 
 def test_operations_allowlist_filters_when_given_but_not_by_default():
     # Default: no OperationName filter (so a differently-named tenant never returns empty).
-    assert "OperationName in (" not in _kql("1d", None, None, 5000)
+    assert "OperationName in (" not in _kql(_CLAUSE_1D, None, None, 5000)
     # When set: restrict to the allowlist (drops VertiPaq SE sub-query events).
-    kql = _kql("1d", None, None, 5000, operations=("QueryEnd", "CommandEnd", "ProgressReportEnd"))
+    kql = _kql(_CLAUSE_1D, None, None, 5000, operations=("QueryEnd", "CommandEnd", "ProgressReportEnd"))
     assert 'OperationName in ("QueryEnd", "CommandEnd", "ProgressReportEnd")' in kql

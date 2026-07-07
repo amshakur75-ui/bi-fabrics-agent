@@ -20,6 +20,7 @@ from .investigation.spike_history import user_spike_history as _user_spike_histo
 from .investigation.patterns import capacity_patterns as _capacity_patterns
 from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
 from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columnar as _to_columnar
+from .query.windows import resolve_window as _resolve_window
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -215,32 +216,59 @@ def create_tool_definitions(base_dir=None):
         {"ts": "2026-06-30T09:15:00Z", "cuPct": 72.0},
     ]
 
-    def _events_or_mock(*, days=None, user=None, item=None):
-        """Yield ``(events, capacity_series)``. Live LA event collector + capacity CU% series when
-        ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small offline
-        mock. Live requests are bounded (window from ``days``, capped row count) and scoped to
-        ``user``/``item`` when given -- never an unbounded whole-estate pull from a live request;
-        that mining belongs in the scheduled Job."""
+    def _series_window(days, hours):
+        """Bare KQL lookback string (e.g. "7d"/"6h") for the capacity-series collector, which
+        interpolates it directly into ``ago(...)`` (unlike the event collector, it does not take
+        a full WHERE clause / absolute between() window -- see collector_capacity_events._default_kql).
+        Mirrors resolve_window's own hours-over-days precedence, defaulting to "30d"."""
+        if hours is not None:
+            return f"{hours}h"
+        if days is not None:
+            return f"{days}d"
+        return "30d"
+
+    def _events_or_mock(*, days=None, hours=None, start=None, end=None, user=None, item=None):
+        """Yield ``(events, capacity_series, meta)``. Live LA event collector + capacity CU% series
+        when ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small
+        offline mock. Live requests are bounded (window from ``days``/``hours``/``start``+``end``,
+        capped row count) and scoped to ``user``/``item`` when given -- never an unbounded
+        whole-estate pull from a live request; that mining belongs in the scheduled Job.
+
+        ``meta`` = ``{"eventKql": <built event kql, live only>, "windowLabel": <resolve_window
+        label>, "seriesWindowLabel": <capacity-series window label>}``. On the mock path
+        ``eventKql`` is None but ``windowLabel`` still reflects what was actually asked, so a
+        caller can see the requested window even when it fell back to the fixture.
+
+        Raises ``ValueError`` on a malformed ``start``/``end`` (propagated from resolve_window);
+        callers wrap this in a try/except to return an error envelope instead of crashing.
+        """
+        window = _resolve_window(days=days, hours=hours, start=start, end=end)
         env = os.environ
         if not _has_live_event_source(env):
-            return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES
+            meta = {"eventKql": None, "windowLabel": window["label"], "seriesWindowLabel": window["label"]}
+            return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES, meta
 
         from .job import _require
         from .adapters.clients import build_log_analytics_query
         from .adapters.collector_events_la import create_event_collector
 
-        window = f"{int(days)}d" if days else "30d"
         la_query = build_log_analytics_query(
             env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
             env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
         )
-        event_cfg = {"window": window, "cap": 5000}
+        event_cfg = {"window": window["clause"], "cap": 5000}
         if user:
             event_cfg["user"] = user
         if item:
             event_cfg["item"] = item
-        events = create_event_collector(la_query, event_cfg)["collect"]()
+        if env.get("FABRIC_EVENT_OPERATIONS"):
+            event_cfg["operations"] = [
+                op.strip() for op in env["FABRIC_EVENT_OPERATIONS"].split(",") if op.strip()
+            ]
+        collector = create_event_collector(la_query, event_cfg)
+        events = collector["collect"]()
 
+        series_window_label = window["label"]
         series = []
         if env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB"):
             from .adapters.clients import build_kusto_query
@@ -248,7 +276,8 @@ def create_tool_definitions(base_dir=None):
                 env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
                 _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
             )
-            ce_cfg = {"window": window}
+            series_window = _series_window(days, hours)
+            ce_cfg = {"window": series_window}
             if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
                 ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
             # Honor the same KQL override job.py passes -- the deployed MCP app uses it to flatten
@@ -256,19 +285,33 @@ def create_tool_definitions(base_dir=None):
             if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
                 ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
             series = _capacity_cu_series(ce_query, ce_cfg)
+            series_window_label = f"last {series_window}"
 
-        return events, series
+        meta = {
+            "eventKql": collector["kql"],
+            "windowLabel": window["label"],
+            "seriesWindowLabel": series_window_label,
+        }
+        return events, series, meta
 
     def user_spike_history_handler(_input=None):
         """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
         inp = _input or {}
-        user = inp.get("user") or ""
-        events, _ = _events_or_mock(days=inp.get("days"), user=user.lower() or None)
-        result = _user_spike_history(events, user.lower())
-        result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
-        capped_spikes, cap_meta = _cap_rows(result["spikes"])
-        result["spikes"] = capped_spikes
-        return _finish(result, rows_key="spikes", extra=cap_meta)
+        try:
+            user = inp.get("user") or ""
+            events, _series, meta = _events_or_mock(
+                days=inp.get("days"), hours=inp.get("hours"),
+                start=inp.get("start"), end=inp.get("end"),
+                user=user.lower() or None,
+            )
+            result = _user_spike_history(events, user.lower())
+            result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
+            capped_spikes, cap_meta = _cap_rows(result["spikes"])
+            result["spikes"] = capped_spikes
+            cap_meta["windowLabel"] = meta["windowLabel"]
+            return _finish(result, rows_key="spikes", kql=meta["eventKql"], extra=cap_meta)
+        except ValueError as exc:
+            return {"error": str(exc), "source": "live" if _has_live_event_source(os.environ) else "mock"}
 
     def spike_events_handler(_input=None):
         """Ranked spike events across the estate: top-N by cuSeconds, each with
@@ -277,35 +320,76 @@ def create_tool_definitions(base_dir=None):
         compute_baseline p95 (not a hand-rolled percentile index).  ``format`` selects
         "records" (default, list[dict]) or "columnar" (token-cheaper column-major shape)."""
         inp = _input or {}
-        top_n = inp.get("topN") if inp.get("topN") is not None else 5
-        events, _ = _events_or_mock(days=inp.get("days"))
-        baseline = _compute_baseline(events)
-        p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
-        spike_list = [
-            e for e in events
-            if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
-        ]
-        capped_spike_list, cap_meta = _cap_rows(spike_list)
-        result_events = _top_expensive(capped_spike_list, n=top_n)
-        out = _finish({
-            "events": result_events,
-            "source": "live" if _has_live_event_source(os.environ) else "mock",
-        }, rows_key="events", extra=cap_meta)
-        if inp.get("format") == "columnar":
-            # rowCount must stay the TRUE row count (finish already computed it above from the
-            # records list) -- only the events value itself becomes column-major.
-            out["events"] = _to_columnar(result_events)
-        return out
+        try:
+            top_n = inp.get("topN") if inp.get("topN") is not None else 5
+            events, _series, meta = _events_or_mock(
+                days=inp.get("days"), hours=inp.get("hours"),
+                start=inp.get("start"), end=inp.get("end"),
+            )
+            baseline = _compute_baseline(events)
+            p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
+            spike_list = [
+                e for e in events
+                if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
+            ]
+            capped_spike_list, cap_meta = _cap_rows(spike_list)
+            result_events = _top_expensive(capped_spike_list, n=top_n)
+            cap_meta["windowLabel"] = meta["windowLabel"]
+            out = _finish({
+                "events": result_events,
+                "source": "live" if _has_live_event_source(os.environ) else "mock",
+            }, rows_key="events", kql=meta["eventKql"], extra=cap_meta)
+            if inp.get("format") == "columnar":
+                # rowCount must stay the TRUE row count (finish already computed it above from the
+                # records list) -- only the events value itself becomes column-major.
+                out["events"] = _to_columnar(result_events)
+            return out
+        except ValueError as exc:
+            return {"error": str(exc), "source": "live" if _has_live_event_source(os.environ) else "mock"}
 
     def capacity_patterns_handler(_input=None):
         """Temporal activity-surge ↔ CU-spike patterns across the estate."""
         inp = _input or {}
-        events, capacity_series = _events_or_mock(days=inp.get("days"))
-        patterns = _capacity_patterns(events, capacity_series)
-        return {
-            "patterns": patterns,
-            "source": "live" if _has_live_event_source(os.environ) else "mock",
-        }
+        try:
+            events, capacity_series, meta = _events_or_mock(
+                days=inp.get("days"), hours=inp.get("hours"),
+                start=inp.get("start"), end=inp.get("end"),
+            )
+            patterns = _capacity_patterns(events, capacity_series)
+            return {
+                "patterns": patterns,
+                "source": "live" if _has_live_event_source(os.environ) else "mock",
+                "windowLabel": meta["windowLabel"],
+                "seriesWindowLabel": meta["seriesWindowLabel"],
+                "queryKql": meta["eventKql"],
+            }
+        except ValueError as exc:
+            return {"error": str(exc), "source": "live" if _has_live_event_source(os.environ) else "mock"}
+
+    # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
+    # spike_events, capacity_patterns) -- merged into each tool's "days"-carrying input_schema so
+    # a caller can ask for "last 6 hours" or an absolute "12:45pm-1pm yesterday" window, not just
+    # a whole-days lookback. Precedence (see query.windows.resolve_window): start+end > hours > days.
+    _WINDOW_PROPS = {
+        "hours": {
+            "type": "number",
+            "description": (
+                "Lookback window in hours, overrides 'days' when given. Fractional values are "
+                "supported (e.g. 0.25 = last 15 minutes, for a 'right now' query)."
+            ),
+        },
+        "start": {
+            "type": "string",
+            "description": (
+                "Absolute window start, ISO-8601 (e.g. '2026-07-05T12:45:00Z'). Requires 'end'; "
+                "when both are given they override 'hours'/'days'."
+            ),
+        },
+        "end": {
+            "type": "string",
+            "description": "Absolute window end, ISO-8601. Requires 'start'.",
+        },
+    }
 
     return [
         {
@@ -394,6 +478,7 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "user": {"type": "string", "description": "User UPN/email to look up (required)."},
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                    **_WINDOW_PROPS,
                 },
                 "required": ["user"],
             },
@@ -419,6 +504,7 @@ def create_tool_definitions(base_dir=None):
                             "'columnar' (token-cheaper column-major {columns: {name: [values...]}})."
                         ),
                     },
+                    **_WINDOW_PROPS,
                 },
                 "required": [],
             },
@@ -435,6 +521,7 @@ def create_tool_definitions(base_dir=None):
                 "type": "object",
                 "properties": {
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                    **_WINDOW_PROPS,
                 },
                 "required": [],
             },

@@ -492,3 +492,154 @@ def test_list_workspaces_no_source_still_has_no_envelope_pollution():
     out = h()
     assert out["source"] == "none"
     assert out["workspaces"] == []
+
+
+# ---------------------------------------------------------------------------
+# Task 6: real sub-day / absolute time windows; collector kql/window meta;
+# _events_or_mock returns a 3-tuple (events, series, meta).
+# ---------------------------------------------------------------------------
+
+def test_phase3_tool_schemas_gain_hours_start_end(monkeypatch):
+    """user_spike_history, spike_events, capacity_patterns all gain hours/start/end inputs."""
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    for name in ("user_spike_history", "spike_events", "capacity_patterns"):
+        props = by_name[name]["input_schema"]["properties"]
+        assert "hours" in props
+        assert "start" in props
+        assert "end" in props
+
+
+def test_user_spike_history_handler_echoes_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "hours": 6})
+    assert out["windowLabel"] == "last 6h"
+
+
+def test_spike_events_handler_echoes_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 7})
+    assert out["windowLabel"] == "last 7d"
+
+
+def test_spike_events_handler_default_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({})
+    assert out["windowLabel"] == "last 30d"
+
+
+def test_capacity_patterns_handler_echoes_window_label_offline(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
+    out = h({"hours": 0.25})
+    assert "windowLabel" in out
+    assert out["windowLabel"] != ""
+
+
+def test_handler_malformed_start_returns_error_envelope_not_crash(monkeypatch):
+    """A malformed window must never propagate a raw exception out of the handler."""
+    _no_live(monkeypatch)
+    for name in ("user_spike_history", "spike_events", "capacity_patterns"):
+        h = next(d for d in create_tool_definitions() if d["name"] == name)["handler"]
+        inp = {"start": "not-a-date", "end": "2026-07-05T13:00:00Z"}
+        if name == "user_spike_history":
+            inp["user"] = "alice@co"
+        out = h(inp)
+        assert "error" in out, f"{name} did not return an error envelope: {out}"
+        assert "source" in out
+
+
+def test_spike_events_hours_reaches_live_kql_as_ago_clause(monkeypatch):
+    """hours must thread into the live LA query as an ago(<hours>h) clause, not be ignored."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"hours": 6})
+    assert "ago(6h)" in captured["kql"]
+
+
+def test_spike_events_hours_fractional_reaches_live_kql(monkeypatch):
+    """hours=0.25 ('right now' / last 15 min) must reach the live query unrounded."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"hours": 0.25})
+    assert "ago(0.25h)" in captured["kql"]
+
+
+def test_spike_events_start_end_reaches_live_kql_as_between_clause(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z"})
+    assert (
+        "between (datetime(2026-07-05T12:45:00Z) .. datetime(2026-07-05T13:00:00Z))"
+        in captured["kql"]
+    )
+
+
+def test_spike_events_handler_populates_query_kql_when_live(monkeypatch):
+    """The live event kql built for the request must surface as queryKql on the envelope
+    (threaded via _events_or_mock's meta -> finish), not stay None once live."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 7})
+    assert out["queryKql"] is not None
+    assert "ago(7d)" in out["queryKql"]
+
+
+def test_user_spike_history_handler_populates_query_kql_when_live(monkeypatch):
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
+    out = h({"user": "alice@co", "days": 7})
+    assert out["queryKql"] is not None
+
+
+def test_fabric_event_operations_env_threads_into_allowlist(monkeypatch):
+    """FABRIC_EVENT_OPERATIONS (comma-separated) must restrict the live event query's
+    OperationName allowlist, exposing the sub-op filter to deploy via env."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_EVENT_OPERATIONS", "QueryEnd, CommandEnd")
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    assert 'OperationName in ("QueryEnd", "CommandEnd")' in captured["kql"]
+
+
+def test_fabric_event_operations_env_absent_means_no_filter(monkeypatch):
+    _set_la_env(monkeypatch)
+    monkeypatch.delenv("FABRIC_EVENT_OPERATIONS", raising=False)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    assert "OperationName in (" not in captured["kql"]

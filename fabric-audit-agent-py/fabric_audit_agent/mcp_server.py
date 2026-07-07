@@ -21,16 +21,32 @@ def _make_with_args(handler):
     """Return a union-signature tool function wrapping *handler*.
 
     Covers the union of all arg-taking tool schemas:
-      user  (user_activity, investigate_user, user_spike_history)
-      days  (investigate_user, user_spike_history, spike_events, capacity_patterns)
-      when  (investigate_capacity_spike)
-      topN  (spike_events)
-    Only non-None values are forwarded so handlers can apply their own defaults.
+      user     (user_activity, investigate_user, user_spike_history)
+      days     (investigate_user, user_spike_history, spike_events, capacity_patterns)
+      when     (investigate_capacity_spike)
+      topN     (spike_events)
+      hours, start, end   (sub-day / absolute time windows -- user_spike_history, spike_events,
+                            capacity_patterns)
+      format, order, source, table, n   (additional per-tool options)
+
+    ``days`` and ``topN`` default to None (NOT 30/5) so a handler can tell "omitted" from
+    "explicitly requested" and apply its OWN real default -- forcing 30/5 here meant a handler's
+    own default (e.g. spike_events' topN=100 raw-event path, capacity_patterns' days=1
+    special-casing) could never trigger, since this wrapper always sent a non-None value.
+
+    Only non-None values are forwarded (nullish, not falsy -- 0/""/False are meaningful and
+    still forwarded) so handlers can apply their own defaults for anything omitted.
     """
-    def _tool(user: str = None, days: int = 30, when: str = None, topN: int = 5):
-        payload = {k: v for k, v in
-                   {"user": user, "days": days, "when": when, "topN": topN}.items()
-                   if v is not None}
+    def _tool(user: str = None, days: int = None, when: str = None, topN: int = None,
+              hours: float = None, start: str = None, end: str = None,
+              format: str = None, order: str = None, source: str = None,
+              table: str = None, n: int = None):
+        payload = {k: v for k, v in {
+            "user": user, "days": days, "when": when, "topN": topN,
+            "hours": hours, "start": start, "end": end,
+            "format": format, "order": order, "source": source,
+            "table": table, "n": n,
+        }.items() if v is not None}
         return handler(payload)
     return _tool
 
@@ -45,7 +61,9 @@ def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
     ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``,
     ``capacity_patterns``). No-arg tools are registered without parameters; arg-taking
-    tools expose ``user``, ``days``, ``when``, and ``topN`` as optional FastMCP params.
+    tools expose the union of ``user``, ``days``, ``when``, ``topN``, ``hours``, ``start``,
+    ``end``, ``format``, ``order``, ``source``, ``table``, and ``n`` as optional FastMCP params
+    (only non-None values reach the handler; see ``_make_with_args``).
     Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
