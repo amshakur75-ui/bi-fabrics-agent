@@ -11,6 +11,25 @@ Mosaic AI   ── your Databricks Claude + the MCP tool → chat "audit it"    
 The MCP tool runs the **real** audit when `FABRIC_CSV_PATHS` / live env is set (else an offline mock,
 so it always responds). Read-only throughout.
 
+## Tools
+
+The MCP server exposes **12 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`),
+not just `run_audit`:
+
+| Purpose | Tools |
+|---|---|
+| Audit / verdict | `run_audit`, `list_workspaces` |
+| User attribution | `user_activity`, `investigate_user`, `investigate_capacity_spike`, `user_spike_history` |
+| Event depth + time windows | `spike_events`, `raw_events`, `capacity_patterns` |
+| Grounding (schema/sample before querying) | `describe_source`, `sample_events` |
+| Capacity diagnostics | `capacity_diagnostics` |
+
+`user_spike_history`/`spike_events`/`capacity_patterns`/`raw_events` accept `hours` (e.g. "last 6
+hours") or `start`+`end` (absolute ISO-8601 window) in addition to `days`. `spike_events`/`raw_events`
+support `format:"columnar"` for token-cheaper large pulls. Every result envelope may carry
+`queryKql`/`queryStats`/`verifyUrl(s)` so an answer can quote the exact query run, its cost, and a
+click-to-rerun deeplink (Kusto-backed results only).
+
 ## 1. Host the MCP server as a Databricks App
 The server is the console entry **`fabric-audit-mcp`** (`mcp_server:main`), served over HTTP at
 **`/mcp`** on **port 8000** when `MCP_TRANSPORT=streamable-http`. The repo root has the App config:

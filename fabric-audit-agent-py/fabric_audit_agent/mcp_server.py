@@ -62,11 +62,11 @@ def build_mcp_server(base_dir=None, host="0.0.0.0", port=8000):
     """Build a FastMCP server registering EVERY tool from ``create_tool_definitions``
     (``run_audit``, ``list_workspaces``, ``user_activity``, ``investigate_user``,
     ``investigate_capacity_spike``, ``user_spike_history``, ``spike_events``, ``raw_events``,
-    ``capacity_patterns``). No-arg tools are registered without parameters; arg-taking
-    tools expose the union of ``user``, ``item``, ``days``, ``when``, ``topN``, ``hours``,
-    ``start``, ``end``, ``format``, ``order``, ``source``, ``table``, ``n``, ``surgeUsers``,
-    and ``cuSpikePct`` as optional FastMCP params (only non-None values reach the handler;
-    see ``_make_with_args``).
+    ``capacity_patterns``, ``describe_source``, ``sample_events``, ``capacity_diagnostics``).
+    No-arg tools are registered without parameters; arg-taking tools expose the union of
+    ``user``, ``item``, ``days``, ``when``, ``topN``, ``hours``, ``start``, ``end``, ``format``,
+    ``order``, ``source``, ``table``, ``n``, ``surgeUsers``, and ``cuSpikePct`` as optional
+    FastMCP params (only non-None values reach the handler; see ``_make_with_args``).
     Requires the optional ``mcp`` dep."""
     from mcp.server.fastmcp import FastMCP  # lazy: optional `mcp` extra
 
