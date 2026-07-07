@@ -26,9 +26,10 @@ not just `run_audit`:
 
 `user_spike_history`/`spike_events`/`capacity_patterns`/`raw_events` accept `hours` (e.g. "last 6
 hours") or `start`+`end` (absolute ISO-8601 window) in addition to `days`. `spike_events`/`raw_events`
-support `format:"columnar"` for token-cheaper large pulls. Every result envelope may carry
-`queryKql`/`queryStats`/`verifyUrl(s)` so an answer can quote the exact query run, its cost, and a
-click-to-rerun deeplink (Kusto-backed results only).
+support `format:"columnar"` for token-cheaper large pulls. A result envelope carries `queryKql`
+(the exact query run) so an answer can quote it rather than paraphrase, and Kusto-backed results
+(`describe_source`/`sample_events`/`capacity_diagnostics`) also carry `verifyUrl(s)` — a
+click-to-rerun-in-Fabric deeplink.
 
 ## 1. Host the MCP server as a Databricks App
 The server is the console entry **`fabric-audit-mcp`** (`mcp_server:main`), served over HTTP at
