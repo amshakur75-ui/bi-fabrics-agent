@@ -33,16 +33,19 @@ class EntraHttp:
         self._session = session
         self._timeout = timeout
 
-    def _headers(self):
-        return {"Authorization": f"Bearer {self._token()}", "Accept": "application/json"}
+    def _headers(self, extra=None):
+        headers = {"Authorization": f"Bearer {self._token()}", "Accept": "application/json"}
+        if extra:
+            headers.update(extra)
+        return headers
 
     def get_json(self, url):
         r = self._session.get(url, headers=self._headers(), timeout=self._timeout)
         r.raise_for_status()
         return r.json()
 
-    def post_json(self, url, body):
-        r = self._session.post(url, json=body, headers=self._headers(), timeout=self._timeout)
+    def post_json(self, url, body, headers=None):
+        r = self._session.post(url, json=body, headers=self._headers(headers), timeout=self._timeout)
         r.raise_for_status()
         # Teams incoming webhooks reply with a bare "1", not JSON — tolerate that.
         try:
@@ -147,19 +150,53 @@ def build_anthropic_client(api_key=None, base_url=None):
     return anthropic.Anthropic(**kwargs)
 
 
-def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret):
+def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret,
+                       *, timeout_seconds=240, action="query", client=None):
     """Return a ``query(kql) -> list[dict]`` callable against a Fabric Eventhouse / Kusto cluster
     (Workspace Monitoring). Lazy-imports ``azure-kusto-data``; service-principal app-key auth.
-    Inject a fake ``query`` in tests — this builder is only used at deploy."""
-    from azure.kusto.data import KustoClient, KustoConnectionStringBuilder  # lazy
+    Inject a fake ``client`` in tests — this builder is only used at deploy.
 
-    kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
-        cluster_uri, client_id, client_secret, tenant_id
-    )
-    client = KustoClient(kcsb)
+    Every ``execute`` carries read-only-hardline request properties (belt-and-suspenders on top
+    of the RBAC Viewer role), a bounded server timeout, and a traceable ``FAA.<action>:<uuid>``
+    client request id — the exact shape audited from microsoft/fabric-rti-mcp (MIT). This client
+    is always read-only, so there is no destructive-classification path to gate.
+
+    When ``client`` is injected (tests), the real SDK is never imported: a plain dict shaped like
+    ``ClientRequestProperties`` (``{"Options": {...}, "ClientRequestId": ...}``) is passed instead
+    — fakes only need to inspect the shape.
+    """
+    real = client is None
+    if real:
+        from azure.kusto.data import KustoClient, KustoConnectionStringBuilder  # lazy
+
+        kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
+            cluster_uri, client_id, client_secret, tenant_id
+        )
+        client = KustoClient(kcsb)
 
     def query(kql):
-        resp = client.execute(database, kql)
+        from uuid import uuid4
+
+        request_id = f"FAA.{action}:{uuid4()}"
+        if real:
+            from azure.kusto.data import ClientRequestProperties  # lazy
+            from datetime import timedelta  # lazy
+
+            crp = ClientRequestProperties()
+            crp.set_option("request_readonly", True)
+            crp.set_option("request_readonly_hardline", True)
+            crp.set_option(ClientRequestProperties.request_timeout_option_name, timedelta(seconds=timeout_seconds))
+            crp.client_request_id = request_id
+        else:
+            crp = {
+                "Options": {
+                    "request_readonly": True,
+                    "request_readonly_hardline": True,
+                    "servertimeout": f"{timeout_seconds}s",
+                },
+                "ClientRequestId": request_id,
+            }
+        resp = client.execute(database, kql, crp)
         table = resp.primary_results[0]
         cols = [c.column_name for c in table.columns]
         return [dict(zip(cols, row)) for row in table.rows]
@@ -170,12 +207,16 @@ def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret
 LOGANALYTICS_SCOPE = "https://api.loganalytics.io/.default"   # Logs query API — NOT the ARM scope
 
 
-def build_log_analytics_query(workspace_id, tenant_id, client_id, client_secret, session=None):
+def build_log_analytics_query(workspace_id, tenant_id, client_id, client_secret, session=None,
+                               *, timeout_seconds=240):
     """Return a ``query(kql) -> list[dict]`` callable against the Azure Monitor Logs query API
     (``api.loganalytics.io``), for the Log Analytics attribution collector. Service-principal
     client-credentials with the ``LOGANALYTICS_SCOPE`` audience (the SP needs the Azure RBAC
     ``Log Analytics Reader`` role on the workspace). Mirrors ``build_kusto_query``; inject a fake
-    ``query`` in tests — this builder is only used at deploy."""
+    ``query`` in tests — this builder is only used at deploy.
+
+    Sends ``Prefer: wait=<timeout_seconds>`` (LA server-side wait cap) on every request. The Logs
+    query API is read-only by design, so there's no CRP-equivalent to set here."""
     token = build_entra_token_provider(tenant_id, client_id, client_secret, scope=LOGANALYTICS_SCOPE)
     http = EntraHttp(token, session=session)
     url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
@@ -184,7 +225,7 @@ def build_log_analytics_query(workspace_id, tenant_id, client_id, client_secret,
         body = {"query": kql}
         if timespan:
             body["timespan"] = timespan
-        resp = http.post_json(url, body)
+        resp = http.post_json(url, body, headers={"Prefer": f"wait={timeout_seconds}"})
         tables = (resp or {}).get("tables") or []
         if not tables:
             return []
