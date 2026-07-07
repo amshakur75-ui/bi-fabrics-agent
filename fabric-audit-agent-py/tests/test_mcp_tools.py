@@ -84,6 +84,7 @@ def test_phase3_tools_are_defined():
     se = by_name["spike_events"]
     assert se["input_schema"]["properties"]["days"]["type"] == "integer"
     assert se["input_schema"]["properties"]["topN"]["type"] == "integer"
+    assert se["input_schema"]["properties"]["format"]["enum"] == ["records", "columnar"]
 
     cp = by_name["capacity_patterns"]
     assert cp["input_schema"]["properties"]["days"]["type"] == "integer"
@@ -407,6 +408,37 @@ def test_spike_events_original_row_count_reflects_full_spike_list_not_topn_slice
     out_large = h({"days": 30, "topN": 10})
     assert out_small["originalRowCount"] == out_large["originalRowCount"]
     assert len(out_small["events"]) <= 1
+
+
+def test_spike_events_default_format_is_records(monkeypatch):
+    """With no 'format' input (or format='records'), events stays a list[dict] as before."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out = h({"days": 30, "topN": 3})
+    assert isinstance(out["events"], list)
+    if out["events"]:
+        assert isinstance(out["events"][0], dict)
+
+    out_explicit = h({"days": 30, "topN": 3, "format": "records"})
+    assert isinstance(out_explicit["events"], list)
+    if out_explicit["events"]:
+        assert isinstance(out_explicit["events"][0], dict)
+
+
+def test_spike_events_format_columnar_returns_columnar_dict_with_correct_row_count(monkeypatch):
+    """format:'columnar' returns the events list as to_columnar(events) under the same key,
+    and rowCount must still reflect the true row count (not e.g. the column count)."""
+    _no_live(monkeypatch)
+    from fabric_audit_agent.query.envelope import to_columnar
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    out_records = h({"days": 30, "topN": 5})
+    out_columnar = h({"days": 30, "topN": 5, "format": "columnar"})
+
+    assert "columns" in out_columnar["events"]
+    assert out_columnar["events"] == to_columnar(out_records["events"])
+    assert out_columnar["rowCount"] == len(out_records["events"])
+    assert out_columnar["rowCount"] == out_records["rowCount"]
 
 
 def test_user_spike_history_handler_has_envelope_fields(monkeypatch):

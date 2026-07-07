@@ -2,7 +2,7 @@
 Pure stdlib, deterministic (no clock)."""
 import json
 
-from fabric_audit_agent.query.envelope import cap_rows, finish
+from fabric_audit_agent.query.envelope import cap_rows, finish, to_columnar, from_columnar
 
 
 # ---------------------------------------------------------------------------
@@ -129,3 +129,64 @@ def test_finish_extra_can_override_only_via_explicit_keys_not_rows_key():
     out = finish(payload, rows_key="events", extra={"note": "ok"})
     assert out["events"] == [1, 2, 3]
     assert out["note"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# to_columnar / from_columnar
+# ---------------------------------------------------------------------------
+
+def test_to_columnar_basic_shape():
+    records = [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
+    out = to_columnar(records)
+    assert out == {"columns": {"a": [1, 3], "b": [2, 4]}}
+
+
+def test_to_columnar_missing_key_becomes_none_in_that_slot():
+    records = [{"a": 1, "b": 2}, {"a": 3}, {"a": 5, "b": 6, "c": 7}]
+    out = to_columnar(records)
+    # union of keys, first-seen order: a, b, c
+    assert list(out["columns"].keys()) == ["a", "b", "c"]
+    assert out["columns"]["a"] == [1, 3, 5]
+    assert out["columns"]["b"] == [2, None, 6]
+    assert out["columns"]["c"] == [None, None, 7]
+
+
+def test_to_columnar_empty_list():
+    out = to_columnar([])
+    assert out == {"columns": {}}
+
+
+def test_to_columnar_each_column_name_appears_once():
+    records = [{"a": 1}, {"a": 2}, {"a": 3}]
+    out = to_columnar(records)
+    assert list(out["columns"].keys()) == ["a"]
+    assert out["columns"]["a"] == [1, 2, 3]
+
+
+def test_from_columnar_inverse_of_to_columnar():
+    columnar = {"columns": {"a": [1, 3], "b": [2, 4]}}
+    out = from_columnar(columnar)
+    assert out == [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
+
+
+def test_from_columnar_empty():
+    assert from_columnar({"columns": {}}) == []
+
+
+def test_columnar_round_trip_three_row_heterogeneous_with_missing_key():
+    records = [
+        {"user": "alice", "cuSeconds": 10, "item": "Report A"},
+        {"user": "bob", "cuSeconds": 20},  # missing "item"
+        {"user": "carol", "cuSeconds": 5, "item": "Report C", "queryText": "EVALUATE X"},
+    ]
+    columnar = to_columnar(records)
+    assert columnar["columns"]["item"] == ["Report A", None, "Report C"]
+    assert columnar["columns"]["queryText"] == [None, None, "EVALUATE X"]
+
+    round_tripped = from_columnar(columnar)
+    # Round trip: same 3 dicts, but bob's row now explicitly carries item=None (from_columnar
+    # can't distinguish "missing" from "explicitly None" -- that's inherent to columnar shape).
+    assert len(round_tripped) == 3
+    assert round_tripped[0] == {"user": "alice", "cuSeconds": 10, "item": "Report A", "queryText": None}
+    assert round_tripped[1] == {"user": "bob", "cuSeconds": 20, "item": None, "queryText": None}
+    assert round_tripped[2] == {"user": "carol", "cuSeconds": 5, "item": "Report C", "queryText": "EVALUATE X"}

@@ -19,7 +19,7 @@ from .investigation.expensive import top_expensive as _top_expensive
 from .investigation.spike_history import user_spike_history as _user_spike_history
 from .investigation.patterns import capacity_patterns as _capacity_patterns
 from .adapters.collector_capacity_events import capacity_series as _capacity_cu_series
-from .query.envelope import cap_rows as _cap_rows, finish as _finish
+from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columnar as _to_columnar
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -274,7 +274,8 @@ def create_tool_definitions(base_dir=None):
         """Ranked spike events across the estate: top-N by cuSeconds, each with
         {user, item, ts, cuSeconds, queryText}.  queryText carries the truncated
         DAX/query text from the raw event (None when absent).  Uses the canonical
-        compute_baseline p95 (not a hand-rolled percentile index)."""
+        compute_baseline p95 (not a hand-rolled percentile index).  ``format`` selects
+        "records" (default, list[dict]) or "columnar" (token-cheaper column-major shape)."""
         inp = _input or {}
         top_n = inp.get("topN") if inp.get("topN") is not None else 5
         events, _ = _events_or_mock(days=inp.get("days"))
@@ -286,10 +287,15 @@ def create_tool_definitions(base_dir=None):
         ]
         capped_spike_list, cap_meta = _cap_rows(spike_list)
         result_events = _top_expensive(capped_spike_list, n=top_n)
-        return _finish({
+        out = _finish({
             "events": result_events,
             "source": "live" if _has_live_event_source(os.environ) else "mock",
         }, rows_key="events", extra=cap_meta)
+        if inp.get("format") == "columnar":
+            # rowCount must stay the TRUE row count (finish already computed it above from the
+            # records list) -- only the events value itself becomes column-major.
+            out["events"] = _to_columnar(result_events)
+        return out
 
     def capacity_patterns_handler(_input=None):
         """Temporal activity-surge ↔ CU-spike patterns across the estate."""
@@ -405,6 +411,14 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
                     "topN": {"type": "integer", "description": "Maximum events to return (default 5)."},
+                    "format": {
+                        "type": "string",
+                        "enum": ["records", "columnar"],
+                        "description": (
+                            "Output shape for 'events': 'records' (default, list of row dicts) or "
+                            "'columnar' (token-cheaper column-major {columns: {name: [values...]}})."
+                        ),
+                    },
                 },
                 "required": [],
             },
