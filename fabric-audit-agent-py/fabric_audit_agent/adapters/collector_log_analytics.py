@@ -58,10 +58,15 @@ def create_log_analytics_collector(query, config=None):
     ws_filter = cfg.get("workspaceFilter")
     if isinstance(ws_filter, str):
         ws_filter = [w.strip() for w in ws_filter.split(",") if w.strip()]
-    built = _build_default_kql(cfg.get("window", "1d"), ws_filter)
-    # Trusted cfg["kql"] override passes through unmodified; a BUILT query is guarded with
-    # first_statement() as defense-in-depth against an unescaped seam (e.g. `window`).
-    kql = cfg.get("kql") or first_statement(built)
+    window = cfg.get("window", "1d")
+    # A trusted cfg["kql"] override passes through with only {window} substituted (a threaded
+    # lookback isn't silently defeated by a hardcoded ago(...); overrides without the placeholder
+    # are unchanged) -- first_statement() would wrongly truncate a multi-line/`let` override. A
+    # BUILT query is guarded with first_statement() as defense-in-depth against an unescaped seam.
+    if cfg.get("kql"):
+        kql = cfg["kql"].replace("{window}", window)
+    else:
+        kql = first_statement(_build_default_kql(window, ws_filter))
     top_n = cfg.get("topUsers", 3)
     ws_label = cfg.get("workspace") or ""
 

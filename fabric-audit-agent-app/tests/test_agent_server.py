@@ -186,10 +186,18 @@ class TestB1AltAdapter(unittest.TestCase):
 # MCP tool sourcing — via databricks_mcp.DatabricksMCPClient (app-to-app OAuth)
 # ---------------------------------------------------------------------------
 
+def _reset_state():
+    """Clear the module TTL cache so each test's mocks are actually exercised."""
+    _agent._STATE.update({"ws": None, "tools": None, "dispatch": None, "tools_at": 0.0})
+
+
 class TestMcpToolsAndDispatch(unittest.IsolatedAsyncioTestCase):
     """_mcp_tools_and_dispatch uses the async alist_tools/acall_tool variants —
     the sync ones call asyncio.run() internally, which breaks inside the
     already-running event loop our async handlers run under."""
+
+    def setUp(self):
+        _reset_state()
 
     def _make_tool(self, name, description="", input_schema=None):
         t = MagicMock()
@@ -391,6 +399,104 @@ class TestMessagesFromRequest(unittest.TestCase):
         request = types.SimpleNamespace(input=[item])
         msgs = _agent._messages_from_request(request)
         self.assertEqual(msgs, [{"role": "user", "content": "part one part two"}])
+
+
+# ---------------------------------------------------------------------------
+# Hardening batch: endpoint timeout/retry, TTL caches, streaming progress
+# ---------------------------------------------------------------------------
+
+class TestClaudePostHardening(unittest.TestCase):
+    def setUp(self):
+        _reset_state()
+
+    def _ok_resp(self, text="ok"):
+        r = MagicMock()
+        r.status_code = 200
+        r.json.return_value = {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_post_includes_timeout(self):
+        """A hung serving-endpoint call must not outlive the request -- timeout is mandatory."""
+        captured = {}
+
+        def fake_post(url, json=None, headers=None, **kw):
+            captured.update(kw)
+            return self._ok_resp()
+
+        client = _agent._build_claude_client(_FakeWs())
+        with patch("requests.post", side_effect=fake_post):
+            client.messages.create(messages=[{"role": "user", "content": "hi"}], tools=[])
+        assert captured.get("timeout") is not None
+
+    def test_post_retries_once_on_transient_5xx(self):
+        bad = MagicMock()
+        bad.status_code = 503
+        calls = {"n": 0}
+
+        def fake_post(url, json=None, headers=None, **kw):
+            calls["n"] += 1
+            return bad if calls["n"] == 1 else self._ok_resp("recovered")
+
+        client = _agent._build_claude_client(_FakeWs())
+        with patch("requests.post", side_effect=fake_post), patch("time.sleep"):
+            resp = client.messages.create(messages=[{"role": "user", "content": "hi"}], tools=[])
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(resp.content[0].text, "recovered")
+
+
+class TestToolsCache(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _reset_state()
+
+    async def test_tools_list_cached_within_ttl(self):
+        """The MCP client build + tools/list round-trip must happen once per TTL, not per message."""
+        ws = _FakeWs()
+        t = MagicMock(); t.name = "run_audit"; t.description = ""; t.inputSchema = {}
+        mock_client = MagicMock()
+        mock_client.alist_tools = AsyncMock(return_value=[t])
+        with patch("databricks_mcp.DatabricksMCPClient", return_value=mock_client) as mock_cls:
+            tools1, _ = await _agent._mcp_tools_and_dispatch(ws)
+            tools2, _ = await _agent._mcp_tools_and_dispatch(ws)
+        self.assertEqual(mock_cls.call_count, 1)      # second call served from cache
+        self.assertEqual(tools1, tools2)
+
+
+class TestStreamingProgress(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _reset_state()
+
+    async def test_stream_yields_progress_then_final(self):
+        """One progress event per tool call, then the final answer -- not silence-then-answer."""
+        blocks_tool = [types.SimpleNamespace(type="tool_use", id="t1", name="run_audit", input={})]
+        blocks_text = [types.SimpleNamespace(type="text", text="Audit done.")]
+        responses = [types.SimpleNamespace(content=blocks_tool, stop_reason="tool_use"),
+                     types.SimpleNamespace(content=blocks_text, stop_reason="end_turn")]
+        idx = {"i": 0}
+
+        class _Messages:
+            def create(self_inner, **kw):
+                r = responses[idx["i"]]; idx["i"] += 1
+                return r
+
+        fake_client = types.SimpleNamespace(messages=_Messages())
+
+        async def fake_tools(ws):
+            async def handler(inp):
+                return {"verdict": "ok"}
+            return ([{"name": "run_audit", "description": "", "input_schema": {}}],
+                    {"run_audit": handler})
+
+        _agent.create_text_output_item.reset_mock()
+        request = types.SimpleNamespace(input=[{"role": "user", "content": "audit"}])
+        with patch.object(_agent, "_mcp_tools_and_dispatch", new=fake_tools), \
+             patch.object(_agent, "_build_claude_client", return_value=fake_client):
+            events = [e async for e in _agent.stream_handler(request)]
+
+        self.assertEqual(len(events), 2)   # 1 progress + 1 final
+        texts = [c.kwargs.get("text", "") for c in _agent.create_text_output_item.call_args_list]
+        self.assertTrue(any("run_audit" in t for t in texts[:-1]))   # progress names the tool
+        self.assertEqual(texts[-1], "Audit done.")                   # final answer last
 
 
 if __name__ == "__main__":

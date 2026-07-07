@@ -104,6 +104,16 @@ def test_workspace_monitoring_ranks_users_per_item():
     assert sales["attributionMode"] == "cost"
 
 
+def test_workspace_monitoring_kql_override_window_placeholder_substituted():
+    seen = {}
+    def query(kql):
+        seen["kql"] = kql
+        return []
+    create_workspace_monitoring_collector(query, {"kql": "S | where Timestamp > ago({window})",
+                                                  "window": "5d"})["collect"]()
+    assert "ago(5d)" in seen["kql"] and "{window}" not in seen["kql"]
+
+
 # ---------- merge ----------
 def _csv_facts():
     return {"capacity": {"capacityId": "PROD", "peakCuPct": 80, "sku": ""},
@@ -161,6 +171,31 @@ def test_merge_surfaces_failed_sources():
     merged = create_merged_collector([good, {"collect": boom}])["collect"]()
     assert merged["items"][0]["name"] == "I"                         # the healthy source still lands
     assert any("LA unreachable" in s for s in merged.get("sourcesFailed", []))   # the gap is surfaced
+
+
+def test_merge_collects_concurrently_preserving_precedence_order():
+    """Sources run concurrently (run_audit's collectors are network-bound and serial collection
+    pushes toward the Apps 120s ceiling) -- but first-non-empty-wins precedence must be preserved
+    even when a LATER source finishes FIRST."""
+    import time
+
+    def slow_authoritative():
+        time.sleep(0.15)
+        return {"capacity": {"peakCuPct": 80}}   # first in list -> must win despite finishing last
+
+    def fast_proxy():
+        return {"capacity": {"peakCuPct": 999}}
+
+    start = time.monotonic()
+    merged = create_merged_collector([
+        {"collect": slow_authoritative},
+        {"collect": lambda: (time.sleep(0.15) or {"items": [{"workspace": "W", "name": "A", "sharePct": 1, "cuSeconds": 1}]})},
+        {"collect": fast_proxy},
+    ])["collect"]()
+    elapsed = time.monotonic() - start
+
+    assert merged["capacity"]["peakCuPct"] == 80        # precedence by list order, not finish order
+    assert elapsed < 0.29                                # two 0.15s sources overlapped (serial would be >= 0.30)
 
 
 def test_concentration_label_proxy_vs_authoritative():

@@ -50,6 +50,20 @@ def _default_kql(table, window):
     return f"{escape_entity(table)}\n| where ingestion_time() > ago({window})"
 
 
+def _resolve_kql(cfg):
+    """Resolve the query: a trusted ``kql`` override when present (with ``{window}`` substituted
+    from the config window so a threaded lookback isn't silently defeated by a hardcoded
+    ``ago(...)``; overrides without the placeholder behave exactly as before) is passed through
+    UNMODIFIED otherwise -- first_statement() would wrongly truncate a multi-line/`let` flatten. The
+    schema-independent BUILT default is guarded with first_statement() as defense-in-depth against
+    an unescaped/unquoted interpolation seam (e.g. ``window``)."""
+    window = cfg.get("window", "1d")
+    override = cfg.get("kql")
+    if override:
+        return override.replace("{window}", window)
+    return first_statement(_default_kql(cfg.get("table", "CapacityEvents"), window))
+
+
 def _windows(rows):
     """Dedupe Capacity Overview Events to one row per (capacityId, window) and compute CU% per
     window. Returns ``[{"cap", "ts", "pct"}]`` for every window with a positive budget; P-SKU
@@ -85,15 +99,10 @@ def _windows(rows):
 
 def create_capacity_events_collector(query, config=None):
     """``config`` keys: ``table`` (Eventhouse table the eventstream writes to, default "CapacityEvents"),
-    ``window`` (lookback, default "1d"), ``kql`` (override the whole query)."""
+    ``window`` (lookback, default "1d"), ``kql`` (override the whole query; a ``{window}``
+    placeholder in it is substituted with the config window)."""
     cfg = config or {}
-    table = cfg.get("table", "CapacityEvents")
-    # A cfg["kql"] override is trusted (e.g. FABRIC_CAPACITY_EVENTS_KQL, a multi-line/`let`
-    # flatten) and passed through UNMODIFIED -- first_statement() would wrongly truncate it.
-    # A BUILT query, however, is guarded: truncate at the first top-level `;` in case an
-    # unescaped/unquoted interpolation seam (e.g. `window`) lets one slip through.
-    built = _default_kql(table, cfg.get("window", "1d"))
-    kql = cfg.get("kql") or first_statement(built)
+    kql = _resolve_kql(cfg)
 
     def collect():
         windows = _windows(query(kql) or [])
@@ -120,13 +129,9 @@ def capacity_series(query, config=None):
     """Return per-window ``[{ts, cuPct}]`` sorted by ``ts`` — the full series, NOT reduced to the
     peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``
     needs the series to correlate CU% against event-activity buckets). Shares ``_windows`` (dedupe +
-    CU% math) with the peak collector; read-only."""
+    CU% math) and ``_resolve_kql`` ({window} substitution) with the peak collector; read-only."""
     cfg = config or {}
-    table = cfg.get("table", "CapacityEvents")
-    # Same override-trusted / built-guarded split as create_capacity_events_collector above.
-    built = _default_kql(table, cfg.get("window", "1d"))
-    kql = cfg.get("kql") or first_statement(built)
-    windows = _windows(query(kql) or [])
+    windows = _windows(query(_resolve_kql(cfg)) or [])
     return sorted(
         [{"ts": w["ts"], "cuPct": round(w["pct"], 1)} for w in windows],
         key=lambda p: p["ts"],

@@ -34,7 +34,11 @@ _DEFAULT_KQL = (
 
 def create_workspace_monitoring_collector(query, config=None):
     cfg = config or {}
-    kql = cfg.get("kql") or _DEFAULT_KQL.format(window=cfg.get("window", "1d"))
+    window = cfg.get("window", "1d")
+    # A {window} placeholder in the override is substituted with the config window so a threaded
+    # lookback isn't silently defeated by a hardcoded ago(...); overrides without it are unchanged.
+    kql = (cfg["kql"].replace("{window}", window) if cfg.get("kql")
+           else _DEFAULT_KQL.format(window=window))
     top_n = cfg.get("topUsers", 3)
 
     def collect():

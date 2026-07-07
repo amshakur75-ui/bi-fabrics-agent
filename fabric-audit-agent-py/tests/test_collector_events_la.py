@@ -72,6 +72,38 @@ def test_kql_escapes_quotes_from_user_and_item_preserving_content_no_breakout():
     assert 'ArtifactName =~ "b\\"c"' in seen["kql"]
 
 
+def test_kql_escapes_backslashes_too():
+    """A trailing backslash would escape the closing quote and break the query string. The unified
+    design uses kql_guard.escape_string (stricter than the dropped _quote strip): it ESCAPES the
+    backslash (\\ -> \\\\) so the literal content is preserved AND the closing quote can't be
+    escaped away -- no breakout."""
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_event_collector(capture, {"user": "trailing\\", "item": "mid\\dle"})["collect"]()
+    # escape_string doubles each backslash; the closing quote stays intact (no breakout).
+    assert 'ExecutingUser =~ "trailing\\\\"' in seen["kql"]
+    assert 'ArtifactName =~ "mid\\\\dle"' in seen["kql"]
+
+
+def test_absolute_window_replaces_relative_lookback():
+    """An absolute window bounds the query in KQL itself -- the row cap can never truncate away
+    the exact window a spike investigation asks about. Under the unified design the absolute
+    between() clause is produced by query.windows.resolve_window(start=, end=) and passed in AS
+    the ``window`` config (verbatim), NOT via start/end keys on the collector."""
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    between_clause = ("| where TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
+                      "datetime(2026-07-06T16:18:00Z))")
+    create_event_collector(capture, {"window": between_clause})["collect"]()
+    assert ("TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
+            "datetime(2026-07-06T16:18:00Z))") in seen["kql"]
+    assert "ago(" not in seen["kql"]
+
+
 def test_kql_override_bypasses_builder():
     seen = {}
     def capture(kql):

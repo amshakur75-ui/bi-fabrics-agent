@@ -32,7 +32,10 @@ _RECOMMENDED_TOP_LEVEL_OPS = ("QueryEnd", "CommandEnd", "ProgressReportEnd")
 def _kql(window, user, item, cap, operations=None, order="cost"):
     """``window`` is a full KQL WHERE-clause string (e.g. ``"| where TimeGenerated > ago(1d)"``
     or a ``between (...)`` clause), as built by ``query.windows.resolve_window`` -- NOT a bare
-    lookback like ``"1d"``. Spliced in verbatim as its own line."""
+    lookback like ``"1d"``. Spliced in verbatim as its own line. Absolute windows (spike
+    investigation around a named moment, where a relative ago() lookback + row cap could truncate
+    the very slice asked about) are produced by ``resolve_window(start=, end=)`` as a
+    ``between (...)`` clause and passed in AS ``window`` -- so this needs no start/end params."""
     lines = ["PowerBIDatasetsWorkspace",
              window,
              "| where isnotempty(ExecutingUser)"]
@@ -47,7 +50,8 @@ def _kql(window, user, item, cap, operations=None, order="cost"):
                  "OperationName, CpuTimeMs, DurationMs, EventText")
     # Deterministic + complete-for-cost: a bare ``take`` returns an ARBITRARY, non-repeatable subset
     # (results shift between calls and the true peak can be missed entirely). ``top ... by cost``
-    # keeps the most expensive events under the cap. ``order="recent"`` keeps newest-first instead.
+    # keeps the most expensive events under the cap. ``order="recent"`` keeps newest-first instead
+    # (use for time-bucketed analysis that needs contiguous coverage, e.g. capacity_patterns).
     sort_key = "TimeGenerated" if order == "recent" else "coalesce(CpuTimeMs, DurationMs)"
     lines.append(f"| top {int(cap)} by {sort_key} desc")
     return "\n".join(lines)
@@ -60,12 +64,13 @@ def create_event_collector(query, config=None):
     without re-deriving it.
 
     ``config`` keys: ``window`` (a full KQL WHERE-clause string, e.g. the ``clause`` from
-    ``query.windows.resolve_window`` -- default ``"| where TimeGenerated > ago(1d)"``), ``user``
-    (scope to one ExecutingUser), ``item`` (scope to one ArtifactName), ``cap`` (row cap, default
-    5000), ``operations`` (optional OperationName allowlist — recommend
-    ``_RECOMMENDED_TOP_LEVEL_OPS`` after verifying live op names, to drop VertiPaq SE sub-query
-    events that double-count), ``order`` ("cost" [default] keeps the most expensive events under
-    the cap; "recent" keeps the newest), ``kql`` (override the whole query).
+    ``query.windows.resolve_window`` -- default ``"| where TimeGenerated > ago(1d)"``; an absolute
+    window is produced by ``resolve_window(start=, end=)`` as a ``between (...)`` clause and passed
+    in here AS ``window``), ``user`` (scope to one ExecutingUser), ``item`` (scope to one
+    ArtifactName), ``cap`` (row cap, default 5000), ``operations`` (optional OperationName allowlist
+    — recommend ``_RECOMMENDED_TOP_LEVEL_OPS`` after verifying live op names, to drop VertiPaq SE
+    sub-query events that double-count), ``order`` ("cost" [default] keeps the most expensive events
+    under the cap; "recent" keeps the newest), ``kql`` (override the whole query).
     """
     cfg = config or {}
     built = _kql(

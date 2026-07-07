@@ -1,12 +1,12 @@
 [project]
 name = "fabric-audit-agent"
-version = "1.1.0"
+version = "1.4.2"
 description = "Read-only Microsoft Fabric / Power BI capacity & performance audit agent (Python, Databricks-ready)."
 requires-python = ">=3.10"
 dependencies = []   # anthropic / msal / databricks-sdk added as their adapters are ported
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "tzdata>=2024.1"]   # tzdata: zoneinfo database for timefmt tests on Windows
 prod = ["requests>=2", "msal>=1.24", "anthropic>=0.39"]   # collector_rest / clients / reasoner_claude
 mcp = ["mcp>=1.2"]                                          # mcp_server (pull surface)
 agent = [                                                   # Phase 2: agent app on Databricks Apps

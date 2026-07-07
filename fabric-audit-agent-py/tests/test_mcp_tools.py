@@ -288,6 +288,10 @@ def _set_la_env(monkeypatch):
     monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
     monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
     monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    # The query-callable memo is keyed on these (identical) values -- clear it so each test's
+    # monkeypatched fake builder is actually used instead of a previous test's cached fake.
+    import fabric_audit_agent.tools as tools_mod
+    tools_mod._CLIENT_CACHE.clear()
 
 
 def _fake_la_query_builder(rows, captured=None):
@@ -362,6 +366,245 @@ def test_user_scope_threads_into_la_filter(monkeypatch):
     h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
     h({"user": "Alice@Co", "days": 30})
     assert 'ExecutingUser =~ "alice@co"' in captured["kql"]
+
+
+def test_event_tools_return_error_payload_when_la_fails(monkeypatch):
+    """A live LA failure (401 mid-rotation, timeout) must yield an honest error payload --
+    not a crashed tool call, and not zeros dressed up as data."""
+    _set_la_env(monkeypatch)
+
+    def broken_builder(*a, **kw):
+        def query(kql, timespan=None):
+            raise RuntimeError("401 Unauthorized")
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", broken_builder)
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+
+    ush = by_name["user_spike_history"]["handler"]({"user": "a@co", "days": 7})
+    assert "401" in ush["error"] and ush["source"] == "live" and "spikeCount" not in ush
+
+    se = by_name["spike_events"]["handler"]({"days": 7})
+    assert "401" in se["error"] and se["events"] == []
+
+    cp = by_name["capacity_patterns"]["handler"]({"days": 7})
+    assert "401" in cp["error"] and cp["patterns"] == []
+
+
+def test_spike_events_truncated_flag_when_cap_hit(monkeypatch):
+    """Hitting the row cap must be disclosed -- the ranking covers only the newest slice."""
+    import fabric_audit_agent.tools as tools_mod
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(tools_mod, "_EVENT_CAP", 2)
+    rows = [
+        {"TimeGenerated": f"2026-07-01T10:0{i}:00Z", "ExecutingUser": f"u{i}@co",
+         "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 1000 * (i + 1)}
+        for i in range(2)   # exactly the (patched) cap
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    out = next(d for d in create_tool_definitions()
+               if d["name"] == "spike_events")["handler"]({"days": 1, "topN": 5})
+    assert out["truncated"] is True
+
+    # Under the cap -> truncated is False. (The unified query.envelope.finish contract ALWAYS
+    # reports truncated explicitly as a bool, rather than omitting the key -- an event-cap hit
+    # sets it True; full coverage is an explicit False, not an absent key.)
+    tools_mod._CLIENT_CACHE.clear()
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows[:1]),
+    )
+    out2 = next(d for d in create_tool_definitions()
+                if d["name"] == "spike_events")["handler"]({"days": 1, "topN": 5})
+    assert out2["truncated"] is False
+
+
+def test_capacity_patterns_degrades_honestly_when_series_fails(monkeypatch):
+    """A CU%-series failure must not kill the tool -- events are still good; the tool returns
+    empty patterns plus a seriesError note so the agent can explain the gap."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    rows = [{"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co",
+             "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 5000}]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+
+    def broken_kusto_builder(*a, **kw):
+        def query(kql):
+            raise RuntimeError("Kusto unreachable")
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", broken_kusto_builder)
+    out = next(d for d in create_tool_definitions()
+               if d["name"] == "capacity_patterns")["handler"]({"days": 1})
+    assert out["patterns"] == []
+    assert "Kusto unreachable" in out["seriesError"]
+    assert "error" not in out   # the events side succeeded
+
+
+def test_query_client_is_memoized_across_calls(monkeypatch):
+    """The LA query callable must be built once and reused -- a fresh MSAL app per call means
+    an AAD token round-trip per tool call and throttling exposure."""
+    _set_la_env(monkeypatch)
+    builds = {"n": 0}
+
+    def counting_builder(*a, **kw):
+        builds["n"] += 1
+        return lambda kql, timespan=None: []
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", counting_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    h({"days": 7})
+    h({"days": 30})
+    assert builds["n"] == 1
+
+
+def test_capacity_events_kql_override_respects_days(monkeypatch):
+    """Regression: the deployed FABRIC_CAPACITY_EVENTS_KQL override used to hardcode ago(1d),
+    silently defeating the days arg for the CU% series. With the {window} placeholder the
+    threaded lookback must reach the Kusto query."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_KQL",
+                       "CapacityEvents | where ingestion_time() > ago({window}) | project x")
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([]),
+    )
+    captured = {}
+
+    def fake_kusto_builder(*a, **kw):
+        def query(kql):
+            captured["kql"] = kql
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    next(d for d in create_tool_definitions()
+         if d["name"] == "capacity_patterns")["handler"]({"days": 7})
+    assert "ago(7d)" in captured["kql"] and "{window}" not in captured["kql"]
+
+
+def test_investigate_user_days_threads_into_collector_window(monkeypatch):
+    """investigate_user's days arg must reach the live collector's lookback, not just the
+    baseline math -- previously the collector window was pinned to FABRIC_LA_WINDOW/1d."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "investigate_user")["handler"]
+    h({"user": "a@co", "days": 7})
+    assert "ago(7d)" in captured["kql"]
+
+
+def test_item_scope_threads_into_la_filter(monkeypatch):
+    """spike_events/user_spike_history `item` must scope the live query to one artifact."""
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7, "item": "Ent-Reporting-Sales"})
+    assert 'ArtifactName =~ "Ent-Reporting-Sales"' in captured["kql"]
+
+
+def test_operations_env_threads_into_la_filter(monkeypatch):
+    """FABRIC_EVENT_OPERATIONS restricts to top-level ops (drops VertiPaq SE sub-events)."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_EVENT_OPERATIONS", "QueryEnd, CommandEnd,ProgressReportEnd")
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder([], captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "spike_events")["handler"]
+    h({"days": 7})
+    assert 'OperationName in ("QueryEnd", "CommandEnd", "ProgressReportEnd")' in captured["kql"]
+
+
+def test_investigate_spike_with_when_returns_window_evidence(monkeypatch):
+    """End-to-end (mock path): `when` produces the ±30m window evidence with display twins."""
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    # Mock estate has capacity signal; mock events cluster at 2026-06-30T09:00-09:15Z.
+    out = h({"when": "2026-06-30T09:10:00Z", "days": 7})
+    window = next(e for e in out["evidence"] if e["kind"] == "window")
+    assert window["data"]["eventCount"] > 0
+    assert window["data"]["driver"] in ("interactive-driven", "refresh-driven", "mixed")
+    assert " UTC (" in window["data"]["whenDisplay"]          # canonical display twin
+    for te in window["data"]["topEvents"]:
+        assert " UTC (" in te["tsDisplay"]
+
+
+def test_investigate_spike_when_bounds_the_live_query_absolutely(monkeypatch):
+    """Live path: `when` must reach the KQL as an absolute between(...) window, so the row cap
+    can never truncate away the slice being investigated on a busy estate."""
+    _set_la_env(monkeypatch)
+    kqls = []   # the handler runs TWO LA queries (events + attribution rollup) — capture all
+
+    def builder(*a, **kw):
+        def query(kql, timespan=None):
+            kqls.append(kql)
+            return []
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", builder)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    h({"when": "2026-07-06T15:48:00Z", "days": 2})
+    assert any(("TimeGenerated between (datetime(2026-07-06T15:18:00Z) .. "
+                "datetime(2026-07-06T16:18:00Z))") in k for k in kqls)
+
+
+def test_investigate_spike_window_truncation_threads_from_fetch_meta(monkeypatch):
+    """When the ±30m fetch hits the row cap, the window evidence must disclose it."""
+    import fabric_audit_agent.tools as tools_mod
+    _set_la_env(monkeypatch)
+    monkeypatch.setattr(tools_mod, "_EVENT_CAP", 2)
+    rows = [
+        {"TimeGenerated": "2026-07-06T15:40:00Z", "ExecutingUser": "a@co",
+         "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 1000},
+        {"TimeGenerated": "2026-07-06T15:50:00Z", "ExecutingUser": "b@co",
+         "ArtifactName": "I", "OperationName": "QueryEnd", "CpuTimeMs": 2000},
+    ]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows),
+    )
+    # The playbook abstains without a capacity signal — fake the capacity-events source too.
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    ce_rows = [{"capacityId": "c", "windowStartTime": "2026-07-06T15:48:00Z",
+                "baseCapacityUnits": 64, "capacityUnitMs": 1920000}]   # 100%
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **kw: (lambda kql: ce_rows))
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    out = h({"when": "2026-07-06T15:48:00Z", "days": 2})
+    window = next(e for e in out["evidence"] if e["kind"] == "window")
+    assert window["data"]["eventsTruncated"] is True
+    assert "cap hit" in window["summary"]
+
+
+def test_investigate_spike_without_when_has_no_window_evidence(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions()
+             if d["name"] == "investigate_capacity_spike")["handler"]
+    out = h({})
+    assert not [e for e in out["evidence"] if e["kind"] == "window"]
 
 
 def test_capacity_series_included_when_capacity_events_also_configured(monkeypatch):
@@ -567,7 +810,7 @@ def test_list_workspaces_handler_has_envelope_fields(monkeypatch):
     monkeypatch.setenv("FABRIC_KUSTO_DB", "db")
     monkeypatch.setattr(
         "fabric_audit_agent.job.build_collector_from_env",
-        lambda env: {"collect": lambda: {
+        lambda env, window=None: {"collect": lambda: {
             "items": [
                 {"name": "Report A", "workspace": "WS1", "cuSeconds": 10, "sharePct": 50.0,
                  "topUsers": ["a@co"], "userCount": 1},
@@ -1419,29 +1662,38 @@ def test_capacity_patterns_input_schema_gains_surge_users_and_cu_spike_pct():
     assert "cuSpikePct" in props
 
 
-def test_make_with_args_forwards_surge_users_and_cu_spike_pct():
-    from fabric_audit_agent.mcp_server import _make_with_args
+_PATTERNS_SCHEMA = {"type": "object", "properties": {
+    "days": {"type": "integer"},
+    "surgeUsers": {"type": "integer"}, "cuSpikePct": {"type": "number"},
+}, "required": []}
+
+
+def test_make_tool_fn_forwards_surge_users_and_cu_spike_pct():
+    # _make_tool_fn derives the per-tool signature from input_schema; surgeUsers/cuSpikePct reach
+    # the handler as the capacity_patterns schema advertises them.
+    from fabric_audit_agent.mcp_server import _make_tool_fn
     captured = {}
 
     def handler(payload):
         captured["payload"] = payload
         return payload
 
-    tool = _make_with_args(handler)
+    tool = _make_tool_fn(handler, _PATTERNS_SCHEMA)
     tool(surgeUsers=2, cuSpikePct=55.0)
     assert captured["payload"]["surgeUsers"] == 2
     assert captured["payload"]["cuSpikePct"] == 55.0
 
 
-def test_make_with_args_surge_users_zero_forwarded_not_dropped():
-    from fabric_audit_agent.mcp_server import _make_with_args
+def test_make_tool_fn_surge_users_zero_forwarded_not_dropped():
+    # 0 is a meaningful threshold value (nullish, not falsy) -- must still be forwarded.
+    from fabric_audit_agent.mcp_server import _make_tool_fn
     captured = {}
 
     def handler(payload):
         captured["payload"] = payload
         return payload
 
-    tool = _make_with_args(handler)
+    tool = _make_tool_fn(handler, _PATTERNS_SCHEMA)
     tool(surgeUsers=0, cuSpikePct=0.0)
     assert captured["payload"]["surgeUsers"] == 0
     assert captured["payload"]["cuSpikePct"] == 0.0

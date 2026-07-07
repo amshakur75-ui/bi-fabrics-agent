@@ -71,6 +71,18 @@ def test_kql_override_with_let_and_semicolon_passes_through_untouched():
     assert seen["kql"] == override
 
 
+def test_kql_override_window_placeholder_substituted():
+    seen = {}
+    def cap(kql):
+        seen["kql"] = kql
+        return []
+    # A {window} placeholder in a trusted override is substituted (NOT first_statement'd, so the
+    # `let`/`;` survives), so a threaded lookback isn't defeated by a hardcoded ago(...).
+    create_log_analytics_collector(cap, {"kql": "T | where TimeGenerated > ago({window})",
+                                         "window": "14d"})["collect"]()
+    assert "ago(14d)" in seen["kql"] and "{window}" not in seen["kql"]
+
+
 def test_built_kql_with_injected_semicolon_is_truncated_to_first_statement():
     seen = {}
     def cap(kql):

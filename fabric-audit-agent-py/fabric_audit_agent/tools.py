@@ -28,6 +28,7 @@ from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columna
 from .query.windows import resolve_window as _resolve_window, _parse_iso_utc as _parse_iso_utc
 from .query.kql_guard import assert_kusto_host as _assert_kusto_host, escape_entity as _escape_entity
 from .query.deeplinks import kusto_deeplink as _kusto_deeplink
+from .timefmt import add_display_time
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -72,6 +73,23 @@ def _has_live_event_source(env):
     return bool(env.get("FABRIC_LA_WORKSPACE_ID") and env.get("FABRIC_CLIENT_ID"))
 
 
+# Max raw events per live query. The KQL is deterministic ``top`` (by cost by default, by
+# recency for time-bucketed analysis); handlers surface ``truncated: true`` when the cap is
+# hit so callers know the window was not fully covered.
+_EVENT_CAP = 5000
+
+# query-callable memo — building a client per call creates a fresh MSAL ConfidentialClientApplication
+# each time, so its internal token cache never helps (an AAD round-trip per tool call, plus
+# throttling exposure). Keyed on the full credential tuple so a rotated secret naturally misses.
+_CLIENT_CACHE = {}
+
+
+def _memo_client(key, builder):
+    if key not in _CLIENT_CACHE:
+        _CLIENT_CACHE[key] = builder()
+    return _CLIENT_CACHE[key]
+
+
 def _run_real_or_mock(base, env):
     """Run the audit and RETURN the envelope — read-only and **write-free**. A Databricks App
     container can't write to /Volumes, and the interactive tool doesn't need to persist: history
@@ -94,20 +112,23 @@ def _run_real_or_mock(base, env):
                      config=config, agent_id="fabric-audit-agent")
 
 
-def _build_collector(env):
-    """Return a live collector if any source is configured, else None."""
+def _build_collector(env, window=None):
+    """Return a live collector if any source is configured, else None. ``window`` (e.g. "7d")
+    overrides every source's lookback -- used by tools that thread a ``days`` argument."""
     if not _has_live_source(env):
         return None
     from .job import build_collector_from_env
-    return build_collector_from_env(env)
+    return build_collector_from_env(env, window=window)
 
 
 def create_tool_definitions(base_dir=None):
     base = base_dir if base_dir is not None else _BASE
 
-    def _collector_or_mock():
-        """Return a live collector if any source is configured, else the offline mock estate."""
-        col = _build_collector(os.environ)
+    def _collector_or_mock(days=None):
+        """Return a live collector if any source is configured, else the offline mock estate.
+        ``days`` threads into every live source's lookback window (ignored on the mock path)."""
+        window = f"{int(days)}d" if days else None
+        col = _build_collector(os.environ, window=window)
         if col is None:
             col = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
         return col
@@ -123,6 +144,11 @@ def create_tool_definitions(base_dir=None):
         for key in ("digest", "narrative", "roadmap", "healthScore", "staggerPlan", "correlations", "forecast"):
             if d.get(key):
                 result[key] = d[key]
+        # Raw `when` stays UTC ISO for machine use; whenDisplay is the canonical display twin
+        # ("<UTC> (<Eastern>)") so the agent quotes one consistent format and never does its
+        # own timezone math.
+        for f in result["findings"]:
+            add_display_time(f, "when", "whenDisplay")
         return result
 
     def list_workspaces_handler(_input=None):
@@ -193,17 +219,49 @@ def create_tool_definitions(base_dir=None):
         """Investigate a specific user's contribution to capacity: assembles evidence, baselines,
         and returns a grounded explanation. Abstains when the user is not in the collected data."""
         inp = _input or {}
-        result = _iu(_collector_or_mock(), create_investigation_reasoner(),
+        result = _iu(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
                      inp.get("user"), days=inp.get("days", 30))
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
         return result
 
     def investigate_spike_handler(_input=None):
         """Investigate a capacity spike: identifies top-consuming items/users and explains
-        the spike with evidence. Abstains when no capacity signal is available."""
+        the spike with evidence. With `when`, additionally scopes per-event telemetry to the
+        ±30-minute window around that moment (refresh-vs-interactive attribution of THE peak).
+        Abstains when no capacity signal is available."""
         inp = _input or {}
-        result = _ics(_collector_or_mock(), create_investigation_reasoner(), inp.get("when"))
+        when = inp.get("when")
+        events = series = None
+        events_truncated = False
+        if when:
+            from .timefmt import parse_iso_utc as _parse
+            from datetime import timedelta as _td, timezone as _tz
+            center = _parse(when)
+            # Bound the event query to the ±30m window in KQL when `when` parses — a relative
+            # lookback + row cap could truncate away the exact slice on a busy estate. The window
+            # is built by resolve_window(start=, end=) as an absolute between() clause (feat's
+            # mechanism); ±30m matches the playbook's window_minutes=30 Python filter. An
+            # unparseable `when` falls back to the relative lookback (the playbook reports the
+            # parse failure honestly).
+            spike_kwargs = {"days": inp.get("days", 7), "order": "recent"}
+            if center is not None:
+                c = center.astimezone(_tz.utc)
+                spike_kwargs["start"] = (c - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                spike_kwargs["end"] = (c + _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            ev_events, ev_series, ev_meta = _events_or_mock(**spike_kwargs)
+            if not ev_meta["error"]:
+                events, series = ev_events, ev_series
+                events_truncated = ev_meta["truncated"]
+        result = _ics(_collector_or_mock(days=inp.get("days")), create_investigation_reasoner(),
+                      when, events=events, capacity_series=series,
+                      events_truncated=events_truncated)
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        # Decorate the window evidence's top events with the canonical display twin.
+        for e_item in result.get("evidence") or []:
+            if e_item.get("kind") == "window":
+                add_display_time(e_item.get("data") or {}, "when", "whenDisplay")
+                for te in (e_item.get("data") or {}).get("topEvents") or []:
+                    add_display_time(te, "ts", "tsDisplay")
         return result
 
     # ------------------------------------------------------------------
@@ -302,6 +360,10 @@ def create_tool_definitions(base_dir=None):
         capped row count) and scoped to ``user``/``item`` when given -- never an unbounded
         whole-estate pull from a live request; that mining belongs in the scheduled Job.
 
+        An absolute ``start``+``end`` window flows through ``resolve_window`` as a ``between (...)``
+        clause and is bounded in the KQL itself, so the row cap can never truncate away the exact
+        slice being asked about (spike investigation around a named moment).
+
         ``cap``/``order`` are forwarded verbatim into the event-collector ``config`` (its own
         ``cap``/``order`` keys -- see ``collector_events_la.create_event_collector``) so a caller
         (``raw_events``) can push its effective topN server-side into the KQL ``top N`` clause.
@@ -310,66 +372,91 @@ def create_tool_definitions(base_dir=None):
         these are unaffected.
 
         ``meta`` = ``{"eventKql": <built event kql, live only>, "windowLabel": <resolve_window
-        label>, "seriesWindowLabel": <capacity-series window label>}``. On the mock path
-        ``eventKql`` is None but ``windowLabel`` still reflects what was actually asked, so a
-        caller can see the requested window even when it fell back to the fixture.
+        label>, "seriesWindowLabel": <capacity-series window label>, "error": <str|None -- the LA
+        event query failed; events/series are empty and handlers must return an honest error
+        payload, not zeros dressed as data>, "seriesError": <str|None -- the CU% series query
+        failed; events are still good, patterns degrade>, "truncated": <bool -- the event cap was
+        hit, so the window is only partially covered>}``. On the mock path ``eventKql`` is None but
+        ``windowLabel`` still reflects what was actually asked, so a caller can see the requested
+        window even when it fell back to the fixture.
 
         Raises ``ValueError`` on a malformed ``start``/``end`` (propagated from resolve_window);
         callers wrap this in a try/except to return an error envelope instead of crashing.
         """
         window = _resolve_window(days=days, hours=hours, start=start, end=end)
         env = os.environ
+        meta = {"eventKql": None, "windowLabel": window["label"],
+                "seriesWindowLabel": window["label"],
+                "truncated": False, "error": None, "seriesError": None}
         if not _has_live_event_source(env):
-            meta = {"eventKql": None, "windowLabel": window["label"], "seriesWindowLabel": window["label"]}
             return _MOCK_EVENTS, _MOCK_CAPACITY_SERIES, meta
 
         from .job import _require
         from .adapters.clients import build_log_analytics_query
         from .adapters.collector_events_la import create_event_collector
 
-        la_query = build_log_analytics_query(
-            env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
-            env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+        tenant = _require(env, "FABRIC_TENANT_ID")
+        secret = _require(env, "FABRIC_CLIENT_SECRET")
+        la_query = _memo_client(
+            ("la", env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
+            lambda: build_log_analytics_query(
+                env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
         )
-        event_cfg = {"window": window["clause"], "cap": cap if cap is not None else 5000}
+        event_cfg = {"window": window["clause"], "cap": cap if cap is not None else _EVENT_CAP}
         if order is not None:
             event_cfg["order"] = order
         if user:
             event_cfg["user"] = user
         if item:
             event_cfg["item"] = item
-        if env.get("FABRIC_EVENT_OPERATIONS"):
-            event_cfg["operations"] = [
-                op.strip() for op in env["FABRIC_EVENT_OPERATIONS"].split(",") if op.strip()
-            ]
+        # Optional OperationName allowlist (comma-separated env) — restrict to top-level ops
+        # (QueryEnd/CommandEnd/ProgressReportEnd) AFTER verifying live op names, to drop VertiPaq
+        # SE sub-query children that double-count cost. Off by default: an unverified allowlist
+        # on a tenant with different op names would silently return nothing.
+        ops = env.get("FABRIC_EVENT_OPERATIONS")
+        if ops:
+            event_cfg["operations"] = [o.strip() for o in ops.split(",") if o.strip()]
         collector = create_event_collector(la_query, event_cfg)
-        events = collector["collect"]()
+        try:
+            events = collector["collect"]()
+        except Exception as exc:   # auth/timeout/transient -- surface honestly, don't crash the tool
+            meta["error"] = f"Log Analytics event query failed: {exc}"
+            return [], [], meta
+        meta["eventKql"] = collector["kql"]
+        # cap of 0 disables truncation reporting (an intentional "no rows" request); otherwise the
+        # cap being hit means the window is only partially covered by the costliest/newest events.
+        effective_cap = cap if cap is not None else _EVENT_CAP
+        meta["truncated"] = bool(effective_cap) and len(events) >= effective_cap
 
-        series_window_label = window["label"]
         series = []
         if env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB"):
             from .adapters.clients import build_kusto_query
-            ce_query = build_kusto_query(
-                env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
-                _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
+            ce_query = _memo_client(
+                ("kusto", env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+                 tenant, env["FABRIC_CLIENT_ID"], secret),
+                lambda: build_kusto_query(
+                    env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+                    tenant, env["FABRIC_CLIENT_ID"], secret),
             )
             series_window = _series_window(days, hours, start, end)
             ce_cfg = {"window": series_window}
             if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
                 ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
             # Honor the same KQL override job.py passes -- the deployed MCP app uses it to flatten
-            # the nested ``data`` envelope; skipping it here would diverge from the known-good path.
+            # the nested ``data`` envelope. The collector substitutes {window} in the override, so
+            # the threaded lookback is respected (a hardcoded ago(...) used to defeat ``days``).
             if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
                 ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
-            series = _capacity_cu_series(ce_query, ce_cfg)
-            series_window_label = f"last {series_window}"
+            try:
+                series = _capacity_cu_series(ce_query, ce_cfg)
+                meta["seriesWindowLabel"] = f"last {series_window}"
+            except Exception as exc:   # events are still good; only patterns degrade
+                meta["seriesError"] = f"capacity CU% series query failed: {exc}"
 
-        meta = {
-            "eventKql": collector["kql"],
-            "windowLabel": window["label"],
-            "seriesWindowLabel": series_window_label,
-        }
         return events, series, meta
+
+    def _event_source_label():
+        return "live" if _has_live_event_source(os.environ) else "mock"
 
     def user_spike_history_handler(_input=None):
         """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
@@ -379,11 +466,19 @@ def create_tool_definitions(base_dir=None):
             events, _series, meta = _events_or_mock(
                 days=inp.get("days"), hours=inp.get("hours"),
                 start=inp.get("start"), end=inp.get("end"),
-                user=user.lower() or None,
+                user=user.lower() or None, item=inp.get("item"),
             )
+            if meta["error"]:
+                # Live event query failed: return an honest error payload, not zeros dressed as data.
+                return {"user": user, "error": meta["error"],
+                        "source": "live" if _has_live_event_source(os.environ) else "mock"}
             result = _user_spike_history(events, user.lower())
             result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
             result["cuUnit"] = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
+            if meta["truncated"]:
+                result["truncated"] = True   # cap hit: costliest events only, counts are a floor
+            for s in result.get("spikes") or []:
+                add_display_time(s, "ts", "tsDisplay")
             capped_spikes, cap_meta = _cap_rows(result["spikes"])
             result["spikes"] = capped_spikes
             cap_meta["windowLabel"] = meta["windowLabel"]
@@ -403,7 +498,12 @@ def create_tool_definitions(base_dir=None):
             events, _series, meta = _events_or_mock(
                 days=inp.get("days"), hours=inp.get("hours"),
                 start=inp.get("start"), end=inp.get("end"),
+                item=inp.get("item"),
             )
+            if meta["error"]:
+                # Live event query failed: return an honest error payload, not zeros dressed as data.
+                return {"events": [], "error": meta["error"],
+                        "source": "live" if _has_live_event_source(os.environ) else "mock"}
             baseline = _compute_baseline(events)
             p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
             spike_list = [
@@ -412,7 +512,11 @@ def create_tool_definitions(base_dir=None):
             ]
             capped_spike_list, cap_meta = _cap_rows(spike_list)
             result_events = _top_expensive(capped_spike_list, n=top_n)
+            for e in result_events:
+                add_display_time(e, "ts", "tsDisplay")
             cap_meta["windowLabel"] = meta["windowLabel"]
+            if meta["truncated"]:
+                cap_meta["truncated"] = True   # ranking covers the costliest _EVENT_CAP events only
             out = _finish({
                 "events": result_events,
                 "source": "live" if _has_live_event_source(os.environ) else "mock",
@@ -448,7 +552,12 @@ def create_tool_definitions(base_dir=None):
                 user=(inp.get("user") or None), item=(inp.get("item") or None),
                 cap=effective_top_n, order=order,
             )
+            if meta["error"]:
+                # Live event query failed: return an honest error payload, not zeros dressed as data.
+                return {"events": [], "error": meta["error"], "source": source}
             result_events = events[:effective_top_n]
+            for e in result_events:
+                add_display_time(e, "ts", "tsDisplay")
             capped_events, cap_meta = _cap_rows(result_events)
             if clamped:
                 cap_meta["truncated"] = True
@@ -483,11 +592,16 @@ def create_tool_definitions(base_dir=None):
         inp = _input or {}
         source = "live" if _has_live_event_source(os.environ) else "mock"
         try:
+            # order="recent": bucketed surge detection needs CONTIGUOUS time coverage under the cap;
+            # the default cost-order would leave time gaps and fabricate/miss surges when truncated.
             events, capacity_series, meta = _events_or_mock(
                 days=(inp.get("days") if inp.get("days") is not None else 1),
                 hours=inp.get("hours"), start=inp.get("start"), end=inp.get("end"),
                 order="recent",
             )
+            if meta["error"]:
+                # Live event query failed: honest error payload, not zeros dressed as data.
+                return {"patterns": [], "error": meta["error"], "source": source}
             env = os.environ
             surge_users_in = inp.get("surgeUsers")
             if surge_users_in is None:
@@ -508,7 +622,11 @@ def create_tool_definitions(base_dir=None):
                 surge_users=surge_users, cu_spike_pct=cu_spike_pct,
                 return_diagnostics=True,
             )
-            return {
+            # Eastern-time display twin on each surfaced pattern window (the agent quotes one
+            # consistent format and never does its own timezone math).
+            for p in patterns:
+                add_display_time(p, "windowStart", "windowStartDisplay")
+            result = {
                 "patterns": patterns,
                 "patternsDiagnostics": {
                     **diagnostics,
@@ -520,6 +638,11 @@ def create_tool_definitions(base_dir=None):
                 "seriesWindowLabel": meta["seriesWindowLabel"],
                 "queryKql": meta["eventKql"],
             }
+            if meta["seriesError"]:
+                result["seriesError"] = meta["seriesError"]   # events fine; CU% coupling unavailable
+            if meta["truncated"]:
+                result["truncated"] = True
+            return result
         except ValueError as exc:
             return {"error": str(exc), "source": source}
 
@@ -792,12 +915,19 @@ def create_tool_definitions(base_dir=None):
             "description": (
                 "Investigate a capacity spike: identifies the top-consuming items and users, "
                 "assembles capacity evidence, and returns a grounded explanation with confidence "
-                "rating. Abstains when no capacity signal (peakCuPct) is available. Read-only."
+                "rating. Pass `when` (the spike's timestamp) to additionally analyze the ±30-minute "
+                "window around that exact moment from per-event telemetry: interactive-vs-refresh CU "
+                "split, distinct users, and the top driving events — answers whether THAT peak was a "
+                "refresh or interactive load. Abstains when no capacity signal is available. Read-only."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "when": {"type": "string", "description": "Optional ISO timestamp or label for the spike window."},
+                    "when": {"type": "string",
+                             "description": ("Spike timestamp — ISO UTC (2026-07-06T15:48:00Z) or "
+                                             "'YYYY-MM-DD HH:MM UTC'. Scopes event analysis to ±30 min.")},
+                    "days": {"type": "integer",
+                             "description": "Event lookback in days used to find the window (default 7)."},
                 },
                 "required": [],
             },
@@ -815,6 +945,8 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "user": {"type": "string", "description": "User UPN/email to look up (required)."},
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
+                    "item": {"type": "string",
+                             "description": "Optional item/artifact name to scope to (e.g. one semantic model)."},
                     **_WINDOW_PROPS,
                 },
                 "required": ["user"],
@@ -835,6 +967,8 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "days": {"type": "integer", "description": "Lookback window in days (default 30)."},
                     "topN": {"type": "integer", "description": "Maximum events to return (default 5)."},
+                    "item": {"type": "string",
+                             "description": "Optional item/artifact name to scope to (e.g. one semantic model)."},
                     "format": {
                         "type": "string",
                         "enum": ["records", "columnar"],

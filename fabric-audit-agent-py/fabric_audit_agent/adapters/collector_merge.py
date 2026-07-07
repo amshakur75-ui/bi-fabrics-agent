@@ -49,13 +49,28 @@ def create_merged_collector(collectors):
 
     def collect():
         import logging
-        results, failed = [], []
-        for c in cols:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(c):
             try:
-                results.append(c["collect"]())
+                return ("ok", c["collect"]())
             except Exception as exc:
-                failed.append(str(exc))
                 logging.getLogger(__name__).warning("collector skipped due to error: %s", exc)
+                return ("failed", str(exc))
+
+        # Collect sources CONCURRENTLY: each live source is network-bound (its own token
+        # acquisition + query), and serial collection is what pushes run_audit toward the
+        # Databricks Apps 120s request ceiling as sources/windows grow. ``executor.map``
+        # preserves input order, so first-non-empty-wins precedence is unchanged; per-source
+        # fault tolerance is unchanged (a failing source is skipped and surfaced, not fatal).
+        if len(cols) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(cols), 8)) as pool:
+                outcomes = list(pool.map(_one, cols))
+        else:
+            outcomes = [_one(c) for c in cols]
+
+        results = [payload for status, payload in outcomes if status == "ok"]
+        failed = [payload for status, payload in outcomes if status == "failed"]
         if not results:
             raise RuntimeError("All collectors failed — no data to audit.")
         merged = merge_facts_list(results)

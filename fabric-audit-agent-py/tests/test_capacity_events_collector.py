@@ -80,6 +80,40 @@ def test_series_empty():
 
 
 # ---------------------------------------------------------------------------
+# {window} substitution in the kql override — a hardcoded ago(...) used to
+# silently defeat the threaded lookback (capacity_patterns days=7 got 1d of series).
+# ---------------------------------------------------------------------------
+
+def test_kql_override_window_placeholder_substituted_in_series():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    capacity_series(capture, {"kql": "T | where ingestion_time() > ago({window})", "window": "7d"})
+    assert "ago(7d)" in seen["kql"]
+    assert "{window}" not in seen["kql"]
+
+
+def test_kql_override_window_placeholder_substituted_in_peak_collector():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    create_capacity_events_collector(capture, {"kql": "T | where ingestion_time() > ago({window})",
+                                               "window": "3d"})["collect"]()
+    assert "ago(3d)" in seen["kql"]
+
+
+def test_kql_override_without_placeholder_unchanged():
+    seen = {}
+    def capture(kql):
+        seen["kql"] = kql
+        return []
+    capacity_series(capture, {"kql": "T | where ingestion_time() > ago(1d)", "window": "7d"})
+    assert seen["kql"] == "T | where ingestion_time() > ago(1d)"   # backward compatible
+
+
+# ---------------------------------------------------------------------------
 # Regression: peakAt must resolve the SAME window-timestamp field list as the
 # dedupe key. A row keyed only on ``windowStart`` (not ``windowStartTime``) used
 # to dedupe correctly but produce an empty peakAt, because the peak path resolved
