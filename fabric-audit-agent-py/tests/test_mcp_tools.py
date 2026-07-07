@@ -808,3 +808,241 @@ def test_raw_events_existing_events_or_mock_callers_still_work_without_cap_order
             inp["user"] = "alice@co"
         out = h(inp)
         assert "error" not in out
+
+
+# ---------------------------------------------------------------------------
+# Task 8: describe_source, sample_events, dry_run (schema discovery + sampling)
+# ---------------------------------------------------------------------------
+
+_KUSTO_URI = "https://mycluster.kusto.windows.net"
+
+
+def _set_capacity_kusto_env(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+
+
+def test_describe_source_and_sample_events_are_defined():
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "describe_source" in by_name
+    assert "sample_events" in by_name
+
+    ds = by_name["describe_source"]
+    assert ds["input_schema"]["properties"]["source"]["enum"] == ["events", "capacity"]
+    assert callable(ds["handler"])
+
+    se = by_name["sample_events"]
+    assert se["input_schema"]["properties"]["source"]["enum"] == ["events", "capacity"]
+    assert "n" in se["input_schema"]["properties"]
+    assert callable(se["handler"])
+
+
+def test_describe_source_events_mock_returns_fixture_columns(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "events"})
+    assert out["source"] == "events"
+    assert out["sourceLabel"] == "mock"
+    names = {c["name"] for c in out["columns"]}
+    assert "TimeGenerated" in names and "ExecutingUser" in names
+
+
+def test_describe_source_capacity_mock_returns_fixture_columns(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["source"] == "capacity"
+    assert out["sourceLabel"] == "mock"
+    names = {c["name"] for c in out["columns"]}
+    assert "capacityId" in names or "cuPct" in names or "ts" in names
+
+
+def test_describe_source_events_live_emits_getschema(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(
+            [{"ColumnName": "TimeGenerated", "ColumnType": "datetime"}], captured=captured
+        ),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "events"})
+    assert out["sourceLabel"] == "live"
+    assert "getschema" in captured["kql"]
+    assert "['" in captured["kql"]   # bracket-escaped table name
+    assert out["columns"] == [{"name": "TimeGenerated", "type": "datetime"}]
+
+
+def test_describe_source_capacity_live_emits_cslschema(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    captured = {}
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        captured["cluster_uri"] = cluster_uri
+
+        def query(kql):
+            captured["kql"] = kql
+            return [{"Schema": "ts:datetime, cuPct:real"}]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "live"
+    assert "cslschema" in captured["kql"]
+    assert "['" in captured["kql"]
+    assert captured["cluster_uri"] == _KUSTO_URI
+
+
+def test_describe_source_capacity_rejects_non_allowlisted_cluster(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://evil.example.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.setenv("FABRIC_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("FABRIC_CLIENT_SECRET", "secret-123")
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_describe_source_capacity_no_config_falls_back_to_mock(monkeypatch):
+    """No capacity env at all -> the mock path, same as every other tool (not an error)."""
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+
+
+def test_describe_source_capacity_partial_config_returns_error_envelope_not_keyerror(monkeypatch):
+    """Cluster+client_id set (so the live gate fires) but FABRIC_TENANT_ID missing -> must
+    surface an error envelope, never raise/KeyError."""
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.delenv("FABRIC_TENANT_ID", raising=False)
+    monkeypatch.delenv("FABRIC_CLIENT_SECRET", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "describe_source")["handler"]
+    out = h({"source": "capacity"})
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_sample_events_mock_returns_raw_rows(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 3})
+    assert out["source"] == "events"
+    assert out["sourceLabel"] == "mock"
+    assert isinstance(out["rows"], list)
+    assert len(out["rows"]) <= 3
+
+
+def test_sample_events_n_clamps_to_20(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 99})
+    assert out["n"] == 20
+
+
+def test_sample_events_n_clamps_to_1_minimum(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 0})
+    assert out["n"] == 1
+
+
+def test_sample_events_n_default_is_5(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events"})
+    assert out["n"] == 5
+
+
+def test_sample_events_n_is_cast_from_string(monkeypatch):
+    _no_live(monkeypatch)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": "7"})
+    assert out["n"] == 7
+
+
+def test_sample_events_events_live_emits_take_query(monkeypatch):
+    _set_la_env(monkeypatch)
+    captured = {}
+    rows = [{"TimeGenerated": "2026-07-01T10:00:00Z", "ExecutingUser": "a@co"}]
+    monkeypatch.setattr(
+        "fabric_audit_agent.adapters.clients.build_log_analytics_query",
+        _fake_la_query_builder(rows, captured=captured),
+    )
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "events", "n": 4})
+    assert out["sourceLabel"] == "live"
+    assert "take 4" in captured["kql"]
+    assert out["rows"] == rows
+
+
+def test_sample_events_capacity_live_emits_take_query(monkeypatch):
+    _set_capacity_kusto_env(monkeypatch)
+    captured = {}
+    rows = [{"capacityId": "cap1", "cuPct": 80.0}]
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            captured["kql"] = kql
+            return rows
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity", "n": 2})
+    assert out["sourceLabel"] == "live"
+    assert "take 2" in captured["kql"]
+    assert "['" in captured["kql"]
+    assert out["rows"] == rows
+
+
+def test_sample_events_capacity_no_config_falls_back_to_mock(monkeypatch):
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity"})
+    assert out["sourceLabel"] == "mock"
+
+
+def test_sample_events_capacity_partial_config_returns_error_envelope_not_keyerror(monkeypatch):
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", _KUSTO_URI)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    monkeypatch.setenv("FABRIC_CLIENT_ID", "client-123")
+    monkeypatch.delenv("FABRIC_TENANT_ID", raising=False)
+    monkeypatch.delenv("FABRIC_CLIENT_SECRET", raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "sample_events")["handler"]
+    out = h({"source": "capacity"})
+    assert "error" in out
+    assert out["source"] == "capacity"
+
+
+def test_dry_run_valid_on_empty_success():
+    from fabric_audit_agent.tools import dry_run
+
+    def fake_query(kql):
+        assert kql.endswith("\n| take 0")
+        return []
+
+    out = dry_run(fake_query, "SomeTable | take 5")
+    assert out == {"valid": True, "error": None}
+
+
+def test_dry_run_invalid_on_exception():
+    from fabric_audit_agent.tools import dry_run
+
+    def fake_query(kql):
+        raise RuntimeError("bad column 'Foo'")
+
+    out = dry_run(fake_query, "SomeTable | where Foo == 1")
+    assert out["valid"] is False
+    assert "bad column" in out["error"]

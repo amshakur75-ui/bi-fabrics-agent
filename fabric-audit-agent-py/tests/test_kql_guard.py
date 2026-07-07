@@ -1,6 +1,7 @@
 import pytest
 
 from fabric_audit_agent.query.kql_guard import (
+    assert_kusto_host,
     assert_read_only_kql,
     escape_entity,
     escape_string,
@@ -62,3 +63,42 @@ def test_assert_read_only_kql_rejects_oversized_query():
 def test_assert_read_only_kql_allows_control_keyword_inside_string_literal():
     kql = 'T | where Message == ".drop table X" | take 5'
     assert assert_read_only_kql(kql) == kql
+
+
+# ---------------------------------------------------------------------------
+# assert_kusto_host -- anti-SSRF cluster-URI allowlist (Azure-MCP ValidateAndNormalizeClusterUri)
+# ---------------------------------------------------------------------------
+
+def test_assert_kusto_host_accepts_allowlisted_https_host():
+    assert assert_kusto_host("https://mycluster.kusto.windows.net") == "https://mycluster.kusto.windows.net"
+
+
+def test_assert_kusto_host_strips_trailing_slash():
+    assert assert_kusto_host("https://mycluster.kusto.windows.net/") == "https://mycluster.kusto.windows.net"
+
+
+def test_assert_kusto_host_accepts_all_allowlisted_suffixes():
+    for uri in (
+        "https://c.kusto.windows.net",
+        "https://c.kusto.fabric.microsoft.com",
+        "https://c.adx.monitor.azure.com",
+        "https://c.kusto.usgovcloudapi.net",
+        "https://c.kusto.chinacloudapi.cn",
+    ):
+        assert assert_kusto_host(uri) == uri
+
+
+def test_assert_kusto_host_rejects_non_https_scheme():
+    with pytest.raises(ValueError):
+        assert_kusto_host("http://mycluster.kusto.windows.net")
+
+
+def test_assert_kusto_host_rejects_non_allowlisted_host():
+    with pytest.raises(ValueError):
+        assert_kusto_host("https://evil.example.com")
+
+
+def test_assert_kusto_host_rejects_lookalike_host_not_true_suffix():
+    # "kusto.windows.net.evil.com" contains the allowlisted string but does NOT end with it.
+    with pytest.raises(ValueError):
+        assert_kusto_host("https://mycluster.kusto.windows.net.evil.com")

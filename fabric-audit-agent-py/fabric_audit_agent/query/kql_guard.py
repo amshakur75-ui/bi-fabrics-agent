@@ -4,8 +4,20 @@ KQL @"verbatim" strings ("" doubling) are NOT modeled — acceptable because we 
 KQL we build ourselves, never arbitrary agent-authored KQL (that is the P4 firewall)."""
 
 import re
+from urllib.parse import urlparse
 
 _MAX_KQL_LENGTH = 10_000
+
+# Anti-SSRF cluster-URI allowlist (adapted from Azure-MCP ValidateAndNormalizeClusterUri, MIT).
+# STRING suffix match (not regex) -- ReDoS-safe, and immune to lookalike hosts that merely
+# CONTAIN one of these strings without truly ending in it (e.g. "kusto.windows.net.evil.com").
+_KUSTO_HOST_SUFFIXES = (
+    ".kusto.windows.net",
+    ".kusto.fabric.microsoft.com",
+    ".adx.monitor.azure.com",
+    ".kusto.usgovcloudapi.net",
+    ".kusto.chinacloudapi.cn",
+)
 
 _CONTROL_COMMANDS = (
     ".drop",
@@ -107,3 +119,25 @@ def assert_read_only_kql(kql):
         raise ValueError("boolean tautology not allowed in read-only KQL")
 
     return kql
+
+
+def assert_kusto_host(cluster_uri):
+    """Adapted from Azure-MCP ``ValidateAndNormalizeClusterUri`` (MIT). Anti-SSRF gate for a
+    Kusto/Eventhouse cluster URI before any live call: the scheme must be ``https`` and the
+    host must END WITH one of ``_KUSTO_HOST_SUFFIXES`` (plain string suffix match, never regex,
+    so this can't be abused for ReDoS and can't be fooled by a lookalike host that merely
+    contains an allowlisted string without truly ending in it).
+
+    Returns the normalized uri (trailing slash stripped) if it passes; raises ``ValueError``
+    otherwise.
+    """
+    s = str(cluster_uri)
+    parsed = urlparse(s)
+    if parsed.scheme != "https":
+        raise ValueError(f"cluster uri must use https: {s!r}")
+
+    host = (parsed.hostname or "").lower()
+    if not any(host.endswith(suffix) for suffix in _KUSTO_HOST_SUFFIXES):
+        raise ValueError(f"cluster uri host not in the Kusto/Fabric/ADX allowlist: {s!r}")
+
+    return s[:-1] if s.endswith("/") else s
