@@ -1692,6 +1692,56 @@ def test_capacity_diagnostics_throttle_decomposition_failure_surfaces_in_errors(
     assert "cluster" in out["sections"]
 
 
+def test_capacity_diagnostics_no_config_has_no_time_to_throttle(monkeypatch):
+    """Task 6 wiring, unconfigured path: timeToThrottle key must be entirely absent, matching
+    throttleDecomposition's absent-not-null contract -- the live branch was never reached."""
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert "timeToThrottle" not in out
+
+
+def test_capacity_diagnostics_live_attaches_time_to_throttle(monkeypatch):
+    """Task 6 wiring, live path: an injected rising CU% series must land a numeric
+    timeToThrottle.minutesToThreshold, alongside throttleDecomposition and the .show sections."""
+    _set_capacity_kusto_env(monkeypatch)
+
+    base_cu = 10
+    rising_rows = [
+        {"capacityId": "cap1", "windowStart": f"2026-07-07T09:0{i}:00Z",
+         "baseCapacityUnits": base_cu, "capacityUnitMs": (50 + 2 * i) * base_cu * 300}
+        for i in range(8)
+    ]
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                return [{"ok": True}]
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            # capacity CU% series query (not a .show control command): 8 rising points.
+            return rising_rows
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    monkeypatch.setattr("fabric_audit_agent.tools._create_activity_event_collector",
+                         lambda http, config: {"collect": lambda: []})
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    assert "timeToThrottle" in out
+    ttt = out["timeToThrottle"]
+    assert ttt["method"] == "robust-trend"
+    assert isinstance(ttt["minutesToThreshold"], float)
+
+
 # ---------------------------------------------------------------------------
 # Task 10: capacity_patterns live-fix -- recent-ordered narrow window, tunable
 # thresholds (tool input > env > default), non-silent patternsDiagnostics.

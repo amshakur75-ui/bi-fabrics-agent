@@ -21,6 +21,7 @@ from .investigation import events as _events_mod
 from .investigation.baseline import compute_baseline as _compute_baseline
 from .investigation.expensive import top_expensive as _top_expensive, _QUERY_TEXT_MAX_CHARS
 from .investigation.throttle import decompose_throttle as _decompose_throttle
+from .investigation.forecast_throttle import forecast_time_to_threshold as _forecast_time_to_threshold
 from .investigation.spike_history import user_spike_history as _user_spike_history, _parse_hour
 from .investigation.patterns import (
     capacity_patterns as _capacity_patterns,
@@ -1098,6 +1099,14 @@ def create_tool_definitions(base_dir=None):
                 series, events, has_real_cost=(meta["tier"] != "operationLevel"))
         except Exception as exc:
             errors["throttleDecomposition"] = str(exc)
+        # Task 6: time-to-throttle forecast -- reuses the same live series as the decomposition
+        # above and the same error-isolation mechanism: a failure here never kills the already-
+        # collected .show sections or the throttle decomposition.
+        try:
+            events, series, meta = _resolve_event_sources(days=1, order="recent")
+            result["timeToThrottle"] = _forecast_time_to_threshold(series)
+        except Exception as exc:
+            errors["timeToThrottle"] = str(exc)
         return result
 
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
