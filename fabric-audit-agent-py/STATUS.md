@@ -13,8 +13,9 @@ reads + advises + notifies; it never edits/refreshes/scales/deletes.
 
 ## Current state
 - **Build: complete & verified.** All-Python port of the Node reference (`../fabric-audit-agent/`).
-  `python -m pytest -q` → **802 passed, 3 skipped** (skips = optional `mcp` SDK not installed). Audit/eval output is
-  byte-identical to Node; zero Node in the runtime path.
+  `python -m pytest -q` → **841 passed, 3 skipped** (skips = optional `mcp` SDK not installed). Audit/eval output is
+  byte-identical to Node; zero Node in the runtime path. Exposes **18 read-only tools** (added the
+  `run_kql`/`query_library` ad-hoc-KQL query firewall on `feat/query-firewall`, 2026-07-08).
 - **Rollout: Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** — the read-only
   agent App + MCP app are **deployed and verified end-to-end** on Databricks (see [`docs/DEPLOY-STATUS.md`](docs/DEPLOY-STATUS.md));
   the scheduled Job / Teams surface is still pending.

@@ -2536,3 +2536,100 @@ def test_user_timeline_tier2_activity_stream_failure_is_resilient(monkeypatch):
     assert any(e["source"] == "engine" for e in out["timeline"])
     assert out["streamNotes"]
     assert "activity" in out["streamNotes"][0]
+
+
+# --- Task 2 (firewall): run_kql -----------------------------------------------------------
+def _cap_env(monkeypatch):
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://x.kusto.fabric.microsoft.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+
+def test_run_kql_mock_path_honest_no_engine(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("run_kql")({"kql": "CapacityEvents | take 1", "engine": "capacity"})
+    assert out["source"] in ("mock", "none")
+    assert "no live query engine" in out["note"].lower()
+
+def test_run_kql_rejects_denied_operator_before_touching_engine(monkeypatch):
+    _cap_env(monkeypatch)
+    import fabric_audit_agent.tools as t
+    called = {"n": 0}
+    monkeypatch.setattr(t, "_capacity_kusto_query", lambda env: (lambda kql: called.__setitem__("n", called["n"] + 1) or []))
+    # regular (non-verbatim) string literal with no '//' substring, so this exercises the
+    # denied-operator stage, not the earlier verbatim-string or comment stages (see
+    # test_firewall.py for those cases; a URL containing '//' now trips "comment" first, by
+    # design -- the '//' raw-text scan is fail-closed and doesn't distinguish real comments from
+    # '//' inside a string, same as the verbatim/backtick raw-text scans).
+    out = _handler("run_kql")({"kql": "externaldata(x:string)['https:evil.example/x']", "engine": "capacity"})
+    assert out["error"] and out["rejectionStage"] == "denied-operator"
+    assert called["n"] == 0                       # firewall ran BEFORE any engine call
+
+def test_run_kql_rehearsal_failure_surfaces_engine_message(monkeypatch):
+    _cap_env(monkeypatch)
+    import fabric_audit_agent.tools as t
+    def fake_q(kql):
+        if kql.rstrip().endswith("| take 0"):
+            raise RuntimeError("'NoSuchTable' could not be resolved")
+        return []
+    monkeypatch.setattr(t, "_capacity_kusto_query", lambda env: fake_q)
+    out = _handler("run_kql")({"kql": "NoSuchTable | take 1", "engine": "capacity"})
+    assert out["rejectionStage"] == "rehearsal"
+    assert "NoSuchTable" in out["error"]
+
+def test_run_kql_allowed_query_returns_rows_and_bounded_kql(monkeypatch):
+    _cap_env(monkeypatch)
+    import fabric_audit_agent.tools as t
+    rows = [{"cap": "c1", "pct": 88.0}, {"cap": "c2", "pct": 51.0}]
+    def fake_q(kql):
+        return [] if kql.rstrip().endswith("| take 0") else rows
+    monkeypatch.setattr(t, "_capacity_kusto_query", lambda env: fake_q)
+    monkeypatch.setattr(t, "_queryplan_estimate", lambda kql, **k: {"available": False, "plan": None, "error": None})
+    out = _handler("run_kql")({"kql": "CapacityEvents | project cap, pct", "engine": "capacity", "maxRows": 5})
+    assert out["rows"] == rows and out["rowCount"] == 2 and out["engine"] == "capacity"
+    assert out["queryKql"].endswith("| take 5")   # server-side bound appended AFTER validation
+
+def test_run_kql_unconfigured_engine_names_configured(monkeypatch):
+    # capacity configured, la not -> asking la names capacity as available.
+    _cap_env(monkeypatch)
+    out = _handler("run_kql")({"kql": "PowerBIDatasetsWorkspace | take 1", "engine": "la"})
+    assert out["error"] and "capacity" in out["configuredEngines"]
+
+def test_run_kql_maxrows_clamped_to_hard_cap(monkeypatch):
+    _cap_env(monkeypatch)
+    import fabric_audit_agent.tools as t
+    seen = {}
+    def fake_q(kql):
+        seen["kql"] = kql
+        return [] if kql.rstrip().endswith("| take 0") else []
+    monkeypatch.setattr(t, "_capacity_kusto_query", lambda env: fake_q)
+    monkeypatch.setattr(t, "_queryplan_estimate", lambda kql, **k: {"available": False, "plan": None, "error": None})
+    _handler("run_kql")({"kql": "CapacityEvents", "engine": "capacity", "maxRows": 99999})
+    assert seen["kql"].endswith("| take 1000")    # hard cap
+
+def test_run_kql_emits_audit_line(monkeypatch, capsys):
+    _cap_env(monkeypatch)
+    import fabric_audit_agent.tools as t
+    monkeypatch.setattr(t, "_capacity_kusto_query", lambda env: (lambda kql: []))
+    monkeypatch.setattr(t, "_queryplan_estimate", lambda kql, **k: {"available": False, "plan": None, "error": None})
+    _handler("run_kql")({"kql": "CapacityEvents | take 1", "engine": "capacity"})
+    line = capsys.readouterr().out
+    assert "[adhoc-kql]" in line and '"verdict"' in line and '"engine": "capacity"' in line
+
+
+# --- Task 3 (firewall): query_library --------------------------------------------------
+def test_query_library_catalog_lists_names_without_kql():
+    out = _handler("query_library")({})
+    assert isinstance(out["templates"], list) and out["templates"]
+    first = out["templates"][0]
+    assert set(first) == {"name", "category", "engine", "description"}   # NO kql in the catalog
+
+def test_query_library_get_by_name_returns_full_entry():
+    name = _handler("query_library")({})["templates"][0]["name"]
+    out = _handler("query_library")({"name": name})
+    assert out["template"]["name"] == name and out["template"]["kql"]
+
+def test_query_library_unknown_name_lists_available():
+    out = _handler("query_library")({"name": "no-such-template"})
+    assert out["error"] and isinstance(out["available"], list) and out["available"]
