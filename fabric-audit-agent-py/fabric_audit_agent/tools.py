@@ -23,6 +23,7 @@ from .investigation.baseline import compute_baseline as _compute_baseline
 from .investigation.expensive import top_expensive as _top_expensive, _QUERY_TEXT_MAX_CHARS
 from .investigation.throttle import decompose_throttle as _decompose_throttle
 from .investigation.forecast_throttle import forecast_time_to_threshold as _forecast_time_to_threshold
+from .investigation.diagnose import run_diagnosis as _run_diagnosis
 from .investigation.spike_history import user_spike_history as _user_spike_history, _parse_hour
 from .investigation.patterns import (
     capacity_patterns as _capacity_patterns,
@@ -1128,6 +1129,37 @@ def create_tool_definitions(base_dir=None):
             "note": "heuristic hints, not verdicts",
         }
 
+    def diagnose_handler(_input=None):
+        """Run the full executable diagnostic decision tree (Task 10's pure engine) for a
+        symptom, wired to live/mock event + capacity sources exactly like capacity_patterns
+        (order="recent", days=1 default). ``refreshes`` are only collected when symptom=="refresh"
+        (the other symptoms never touch the refresh-history collector). has_real_cost follows the
+        established Task-3/Task-4 convention: True unless the event tier is Tier-1
+        (operationLevel, cost-blind activity-only data)."""
+        inp = _input or {}
+        source = "live" if _has_live_event_source(os.environ) else "mock"
+        try:
+            symptom = inp.get("symptom")
+            events, series, meta = _resolve_event_sources(
+                days=(inp.get("days") if inp.get("days") is not None else 1),
+                hours=inp.get("hours"), start=inp.get("start"), end=inp.get("end"),
+                order="recent",
+            )
+            if meta["error"]:
+                # Live event query failed: return an honest error payload, not zeros dressed as data.
+                return {"error": meta["error"], "source": source}
+            refreshes = None
+            if symptom == "refresh":
+                refreshes = _collector_or_mock()["collect"]().get("refreshes")
+            chain = _run_diagnosis(symptom, series=series, events=events, refreshes=refreshes,
+                                    has_real_cost=(meta["tier"] != "operationLevel"))
+            out = {**chain, "tier": meta["tier"], "source": source, "windowLabel": meta["windowLabel"]}
+            if meta.get("coverageNote") is not None:
+                out["coverageNote"] = meta["coverageNote"]
+            return out
+        except ValueError as exc:
+            return {"error": str(exc), "source": source}
+
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
     # spike_events, capacity_patterns) -- merged into each tool's "days"-carrying input_schema so
     # a caller can ask for "last 6 hours" or an absolute "12:45pm-1pm yesterday" window, not just
@@ -1482,5 +1514,28 @@ def create_tool_definitions(base_dir=None):
                 "required": ["expression"],
             },
             "handler": analyze_dax_handler,
+        },
+        {
+            "name": "diagnose",
+            "description": (
+                "Runs the full diagnostic decision tree itself — confirms AND eliminates causes, "
+                "returns the causal chain with evidence per hop. Prefer this over manually chaining "
+                "spike_events/capacity_patterns for 'why is X slow/throttled/failing' questions. "
+                "Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "symptom": {
+                        "type": "string",
+                        "enum": ["throttle", "refresh", "slowness"],
+                        "description": "Which symptom to diagnose.",
+                    },
+                    "days": {"type": "integer", "description": "Lookback window in days (default 1)."},
+                    **_WINDOW_PROPS,
+                },
+                "required": ["symptom"],
+            },
+            "handler": diagnose_handler,
         },
     ]

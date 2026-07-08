@@ -2226,3 +2226,56 @@ def test_analyze_dax_tool_threads_duration_stats():
 def test_analyze_dax_tool_missing_expression_error_envelope():
     out = _handler("analyze_dax")({})
     assert "error" in out
+
+
+# --- Task 11 (Phase 4): diagnose tool -- executed causal chains (14th tool) --------------
+
+def test_diagnose_mock_path_throttle_chain_shape(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("diagnose")({"symptom": "throttle"})
+    assert out["symptom"] == "throttle"
+    assert out["tier"] == "mock"
+    assert out["chain"]
+    for step in out["chain"]:
+        assert set(["step", "hypothesis", "verdict", "evidence"]) <= set(step.keys())
+
+
+def test_diagnose_invalid_symptom_returns_error_envelope_never_raises(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("diagnose")({"symptom": "bogus"})
+    assert "error" in out
+
+
+def test_diagnose_tier1_env_has_coverage_note_and_unconfirmed_driver(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    # Also configure the capacity-events cluster so the series is real (>100% CU%) --
+    # otherwise _capacity_series_only returns [] and stage1 eliminates before reaching the
+    # "who drove" step at all. Events stay Tier-1 (operationLevel) since eventDepth/
+    # userAttribution capability config is unrelated to the capacity-cluster env vars.
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    fake_events = [{"ts": "2026-07-07T09:00:00Z", "user": "john@co", "item": "Sales",
+                    "workspace": "Fin", "kind": "interactive", "cuSeconds": None,
+                    "queryText": None, "operation": "ViewReport"}]
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-07T09:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 2000000},   # ~104%
+    ]
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake_events})
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **kw: (lambda kql: ce_rows))
+    out = _handler("diagnose")({"symptom": "throttle", "days": 1})
+    assert out.get("coverageNote")
+    driver_step = next(s for s in out["chain"] if s["step"] == "who drove the over-window?")
+    assert driver_step["verdict"] == "unconfirmed"
+
+
+def test_diagnose_refresh_symptom_on_mock_runs_and_eliminates(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("diagnose")({"symptom": "refresh"})
+    assert out["symptom"] == "refresh"
+    assert out["eliminated"] == ["refresh failure"]
