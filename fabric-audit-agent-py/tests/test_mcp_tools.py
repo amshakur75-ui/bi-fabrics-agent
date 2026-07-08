@@ -2208,3 +2208,21 @@ def test_describe_source_estimate_kql_attaches_plan(monkeypatch):
                         lambda kql, **kw: {"available": True, "plan": [{"PlanSize": 1}], "error": None})
     out = _handler("describe_source")({"source": "capacity", "estimateKql": "CapacityEvents | take 5"})
     assert out["planEstimate"]["available"] is True
+
+
+# --- Task 9 (Phase 4): analyze_dax exposed as a tool -------------------------------------
+
+def test_analyze_dax_tool_flags_filter_whole_table():
+    out = _handler("analyze_dax")({"expression": "CALCULATE(SUM(S[x]), FILTER(Sales, Sales[y]>0))"})
+    assert any(s["pattern"] == "filter-whole-table" for s in out["suggestions"])
+    assert out["patternCount"] >= 1 and out["source"] == "static-rules"
+
+
+def test_analyze_dax_tool_threads_duration_stats():
+    out = _handler("analyze_dax")({"expression": "1+1", "durationMs": 9000})
+    assert any(s["pattern"] == "slow-no-obvious-cause" for s in out["suggestions"])
+
+
+def test_analyze_dax_tool_missing_expression_error_envelope():
+    out = _handler("analyze_dax")({})
+    assert "error" in out

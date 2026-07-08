@@ -11,6 +11,7 @@ import os
 from datetime import datetime, timezone
 
 from .adapters import create_mock_collector, create_stub_reasoner
+from .dax import analyze_dax as _analyze_dax
 from .adapters.collector_activity_events import create_activity_event_collector as _create_activity_event_collector
 from .pipeline import run_audit
 from .sources import resolve_sources as _resolve_sources_registry
@@ -1109,6 +1110,24 @@ def create_tool_definitions(base_dir=None):
             errors["timeToThrottle"] = str(exc)
         return result
 
+    def analyze_dax_handler(_input=None):
+        """Static DAX anti-pattern analysis (rule-based hints, not verdicts). Validates
+        `expression` (required) and threads optional `durationMs` into the rule engine's
+        stats so the slow-no-obvious-cause rule can fire."""
+        inp = _input or {}
+        expression = inp.get("expression")
+        if not expression:
+            return {"error": "expression is required"}
+        duration_ms = inp.get("durationMs")
+        stats = {"durationMs": duration_ms} if duration_ms is not None else None
+        suggestions = _analyze_dax(expression, stats=stats)
+        return {
+            "suggestions": suggestions,
+            "patternCount": len(suggestions),
+            "source": "static-rules",
+            "note": "heuristic hints, not verdicts",
+        }
+
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
     # spike_events, capacity_patterns) -- merged into each tool's "days"-carrying input_schema so
     # a caller can ask for "last 6 hours" or an absolute "12:45pm-1pm yesterday" window, not just
@@ -1438,5 +1457,30 @@ def create_tool_definitions(base_dir=None):
             ),
             "input_schema": {"type": "object", "properties": {}, "required": []},
             "handler": capacity_diagnostics_handler,
+        },
+        {
+            "name": "analyze_dax",
+            "description": (
+                "Static DAX anti-pattern analysis (rule-based hints, not verdicts). Feed it the "
+                "queryText from spike_events/raw_events offenders. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "The DAX measure/query text to analyze for anti-patterns.",
+                    },
+                    "durationMs": {
+                        "type": "integer",
+                        "description": (
+                            "Observed execution duration in milliseconds, if known. When >= 5000ms "
+                            "and no other anti-pattern is detected, flags 'slow-no-obvious-cause'."
+                        ),
+                    },
+                },
+                "required": ["expression"],
+            },
+            "handler": analyze_dax_handler,
         },
     ]
