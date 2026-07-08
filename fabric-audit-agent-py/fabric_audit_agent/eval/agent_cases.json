@@ -168,5 +168,15 @@
     ],
     "expectTool": "user_timeline",
     "expectAbstain": false
+  },
+  {
+    "name": "run-kql-adhoc-no-live-engine",
+    "messages": [{"role": "user", "content": "Run this ad-hoc KQL against the capacity engine: CapacityEvents | take 1"}],
+    "script": [
+      {"type": "tool_use", "name": "run_kql", "input": {"kql": "CapacityEvents | take 1", "engine": "capacity"}},
+      {"type": "text", "text": "I can't run that — no live query engine is configured yet; enable monitoring to run ad-hoc KQL."}
+    ],
+    "expectTool": "run_kql",
+    "expectAbstain": true
   }
 ]
