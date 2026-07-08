@@ -83,8 +83,9 @@ def resolve_sources(env):
     depth = by_capability["eventDepth"]
     if depth is None or depth["authority"] == "proxy":
         degraded.append(_DEGRADED_NOTES["eventDepth"])
-    # 2. perItemCU served by csv (offline export) or missing while other sources exist → estimate.
+    # 2. perItemCU served by csv (offline export) OR by a proxy-authority source (events_la /
+    #    workspace_monitoring) → estimate, not an authoritative per-item CU figure.
     per_item = by_capability["perItemCU"]
-    if per_item is not None and per_item["source"] == "csv":
+    if per_item is not None and (per_item["source"] == "csv" or per_item["authority"] == "proxy"):
         degraded.append(_DEGRADED_NOTES["perItemCU"])
     return {"coverage": {"byCapability": by_capability, "blind": blind, "degraded": degraded}}

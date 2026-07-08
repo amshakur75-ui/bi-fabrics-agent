@@ -1933,3 +1933,81 @@ def test_capacity_diagnostics_no_config_has_no_verify_urls(monkeypatch):
     out = h()
     assert out["source"] == "none"
     assert "verifyUrls" not in out
+
+
+# --- Task 3 (Phase 4): tiered event resolution -------------------------------------------
+# NOTE: test_mcp_tools.py has NO handler-fetch helper today (every existing test inlines
+# `next(d for d in create_tool_definitions() if d["name"] == X)["handler"]`). ADD this helper
+# here once; Tasks 5/9/11/12/13/14's new tests reuse it (existing tests stay untouched):
+def _handler(name):
+    from fabric_audit_agent.tools import create_tool_definitions
+    return next(d for d in create_tool_definitions() if d["name"] == name)["handler"]
+
+_T1_ENV = {"FABRIC_CLIENT_ID": "cid", "FABRIC_TENANT_ID": "t", "FABRIC_CLIENT_SECRET": "s"}
+
+def _clear_live(monkeypatch):
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID",
+              "FABRIC_TENANT_ID", "FABRIC_CLIENT_SECRET"):
+        monkeypatch.delenv(v, raising=False)
+
+def test_spike_events_mock_path_labeled_mock_tier(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("spike_events")({})
+    assert out["tier"] == "mock"
+    assert "coverageNote" not in out          # None → key omitted (no noise on healthy paths)
+
+def test_spike_events_tier1_uses_activity_events_and_labels(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake_events = [{"ts": "2026-07-07T09:00:00Z", "user": "john@co", "item": "Sales",
+                    "workspace": "Fin", "kind": "interactive", "cuSeconds": None,
+                    "queryText": None, "operation": "ViewReport"}]
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake_events})
+    out = _handler("spike_events")({"days": 1})
+    assert out["tier"] == "operationLevel"
+    assert "per-query cost unavailable" in out["coverageNote"]
+
+def test_tier2_env_stays_per_query(monkeypatch):
+    # LA configured → Tier-2 path untouched; pin only the new labels. Stub the LA client the
+    # way the EXISTING live tests in this file do (e.g. around lines 381/461/564):
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query",
+                        lambda *a, **kw: (lambda kql: []))
+    out = _handler("spike_events")({})
+    assert out["tier"] == "perQuery" and out.get("coverageNote") is None
+
+def test_tier1_series_is_real_or_empty_never_mock(monkeypatch):
+    # THE honesty regression guard for the extracted _capacity_series_only helper: with Tier-1
+    # env + NO capacity cluster, the series must be [] — never _MOCK_CAPACITY_SERIES values.
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: []})
+    out = _handler("capacity_patterns")({"days": 1})
+    diag = out["patternsDiagnostics"]
+    assert diag["maxCuPeakPct"] in (None, 0, 0.0)   # no fabricated 85.0 from the mock series
+
+def test_tier1_spike_events_ranked_by_operation_frequency(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake = [{"ts": f"2026-07-07T09:0{i}:00Z", "user": "john@co", "item": "Sales",
+             "workspace": "F", "kind": "interactive", "cuSeconds": None,
+             "queryText": None, "operation": "ViewReport"} for i in range(3)]
+    fake.append({"ts": "2026-07-07T09:05:00Z", "user": "amy@co", "item": "HR", "workspace": "P",
+                 "kind": "interactive", "cuSeconds": None, "queryText": None, "operation": "ViewReport"})
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake})
+    out = _handler("spike_events")({"days": 1})
+    assert out["rankedBy"] == "operationFrequency"
+    assert out["events"][0]["item"] == "Sales"      # 3 ops beats 1 op — frequency, not None-cost

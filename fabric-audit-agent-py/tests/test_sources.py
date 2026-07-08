@@ -19,6 +19,17 @@ def test_full_tier2_env_gives_eventdepth_from_la():
     assert cov["byCapability"]["eventDepth"]["source"] == "events_la"
     assert cov["byCapability"]["capacityCU"]["source"] == "capacity_events"
     assert cov["blind"] == []
+    # perItemCU here is served by events_la, a PROXY-authority source (no FUAM configured) --
+    # degraded now flags this consciously (Task-1 follow-up: proxy-perItemCU is noted, not just csv).
+    assert any("per-item CU is a proxy or estimate" in n for n in cov["degraded"])
+
+def test_workspace_monitoring_only_env_covers_per_item_cu_as_proxy():
+    env = {"FABRIC_KUSTO_CLUSTER": "c", "FABRIC_KUSTO_DB": "db", "FABRIC_CLIENT_ID": "cid"}
+    cov = resolve_sources(env)["coverage"]
+    assert cov["byCapability"]["perItemCU"] == {
+        "source": "workspace_monitoring", "liveness": "live", "authority": "proxy",
+    }
+    assert any("per-item CU is a proxy or estimate" in n for n in cov["degraded"])
 
 def test_tier1_only_env_degrades_eventdepth_not_blind_on_attribution():
     env = {"FABRIC_CLIENT_ID": "cid", "FABRIC_TENANT_ID": "t", "FABRIC_CLIENT_SECRET": "s"}

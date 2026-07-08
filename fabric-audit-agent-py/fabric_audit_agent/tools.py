@@ -11,14 +11,16 @@ import os
 from datetime import datetime, timezone
 
 from .adapters import create_mock_collector, create_stub_reasoner
+from .adapters.collector_activity_events import create_activity_event_collector as _create_activity_event_collector
 from .pipeline import run_audit
+from .sources import resolve_sources as _resolve_sources_registry
 from .investigation.evidence import build_coverage
 from .investigation.playbooks import investigate_user as _iu, investigate_capacity_spike as _ics
 from .adapters.reasoner_investigation import create_investigation_reasoner
 from .investigation import events as _events_mod
 from .investigation.baseline import compute_baseline as _compute_baseline
 from .investigation.expensive import top_expensive as _top_expensive, _QUERY_TEXT_MAX_CHARS
-from .investigation.spike_history import user_spike_history as _user_spike_history
+from .investigation.spike_history import user_spike_history as _user_spike_history, _parse_hour
 from .investigation.patterns import (
     capacity_patterns as _capacity_patterns,
     SURGE_USER_THRESHOLD as _PATTERNS_SURGE_USERS_DEFAULT,
@@ -82,6 +84,34 @@ _EVENT_CAP = 5000
 def _utcnow():
     """Injectable clock seam (monkeypatched in tests for deterministic window math)."""
     return datetime.now(timezone.utc)
+
+
+class _LazyEntraHttp:
+    """Defers building the real ``EntraHttp`` (and importing ``msal``, an optional 'prod'
+    dependency) until the FIRST actual HTTP call. The Tier-1 activity-events seam always
+    constructs an http client to hand to the collector, but a caller that injects its own
+    collector (e.g. tests monkeypatching ``_create_activity_event_collector``) never touches
+    it -- this lets that path work without msal installed, while production still gets a real
+    token round-trip on first use."""
+
+    def __init__(self, tenant_id, client_id, client_secret,
+                 scope="https://analysis.windows.net/powerbi/api/.default"):
+        self._args = (tenant_id, client_id, client_secret, scope)
+        self._real = None
+
+    def _client(self):
+        if self._real is None:
+            from .adapters.clients import EntraHttp, build_entra_token_provider
+            tenant_id, client_id, client_secret, scope = self._args
+            self._real = EntraHttp(build_entra_token_provider(
+                tenant_id, client_id, client_secret, scope=scope))
+        return self._real
+
+    def get_json(self, url):
+        return self._client().get_json(url)
+
+    def post_json(self, url, body, headers=None):
+        return self._client().post_json(url, body, headers)
 
 
 # query-callable memo — building a client per call creates a fresh MSAL ConfidentialClientApplication
@@ -239,6 +269,7 @@ def create_tool_definitions(base_dir=None):
         when = inp.get("when")
         events = series = None
         events_truncated = False
+        ev_meta = None
         # ±window half-width around `when` -- clamped to [5, 240] minutes so an oversized ask
         # can't become a huge absolute pull and a degenerate one can't return an empty sliver.
         try:
@@ -261,7 +292,7 @@ def create_tool_definitions(base_dir=None):
                 c = center.astimezone(timezone.utc)
                 spike_kwargs["start"] = (c - _td(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 spike_kwargs["end"] = (c + _td(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            ev_events, ev_series, ev_meta = _events_or_mock(**spike_kwargs)
+            ev_events, ev_series, ev_meta = _resolve_event_sources(**spike_kwargs)
             if not ev_meta["error"]:
                 events, series = ev_events, ev_series
                 events_truncated = ev_meta["truncated"]
@@ -269,6 +300,10 @@ def create_tool_definitions(base_dir=None):
                       when, events=events, capacity_series=series,
                       window_minutes=window_minutes, events_truncated=events_truncated)
         result["source"] = "live" if _has_live_source(os.environ) else "mock"
+        if ev_meta is not None:
+            result["tier"] = ev_meta["tier"]
+            if ev_meta.get("coverageNote") is not None:
+                result["coverageNote"] = ev_meta["coverageNote"]
         # Decorate the window evidence's top events with the canonical display twin.
         for e_item in result.get("evidence") or []:
             if e_item.get("kind") == "window":
@@ -445,9 +480,31 @@ def create_tool_definitions(base_dir=None):
         effective_cap = cap if cap is not None else _EVENT_CAP
         meta["truncated"] = bool(effective_cap) and len(events) >= effective_cap
 
-        series = []
-        if env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB"):
-            from .adapters.clients import build_kusto_query
+        series, series_meta = _capacity_series_only(days, hours, start, end)
+        meta["seriesWindowLabel"] = series_meta["seriesWindowLabel"]
+        meta["seriesError"] = series_meta["seriesError"]
+
+        return events, series, meta
+
+    def _capacity_series_only(days, hours, start=None, end=None):
+        """Return ``(series, {"seriesWindowLabel", "seriesError"})`` for the capacity CU% series
+        ONLY -- extracted from ``_events_or_mock``'s capacity-events block (one implementation,
+        two callers: ``_events_or_mock``'s live branch, and the Tier-1 branch of
+        ``_resolve_event_sources`` directly). Real series when
+        ``FABRIC_CAPACITY_EVENTS_CLUSTER``/``_DB`` are configured; ``[]`` (NEVER the mock series)
+        when they are not -- the honesty guard: a Tier-1 (activity-only) caller has no live event
+        source, so ``_events_or_mock`` would otherwise early-return ``_MOCK_CAPACITY_SERIES``,
+        putting fabricated CU% numbers inside a live-labeled response."""
+        env = os.environ
+        window = _resolve_window(days=days, hours=hours, start=start, end=end)
+        result_meta = {"seriesWindowLabel": window["label"], "seriesError": None}
+        if not (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")):
+            return [], result_meta
+        from .job import _require
+        from .adapters.clients import build_kusto_query
+        try:
+            tenant = _require(env, "FABRIC_TENANT_ID")
+            secret = _require(env, "FABRIC_CLIENT_SECRET")
             ce_query = _memo_client(
                 ("kusto", env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
                  tenant, env["FABRIC_CLIENT_ID"], secret),
@@ -464,23 +521,76 @@ def create_tool_definitions(base_dir=None):
             # the threaded lookback is respected (a hardcoded ago(...) used to defeat ``days``).
             if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
                 ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
-            try:
-                series = _capacity_cu_series(ce_query, ce_cfg)
-                meta["seriesWindowLabel"] = f"last {series_window}"
-            except Exception as exc:   # events are still good; only patterns degrade
-                meta["seriesError"] = f"capacity CU% series query failed: {exc}"
-
-        return events, series, meta
+            series = _capacity_cu_series(ce_query, ce_cfg)
+            result_meta["seriesWindowLabel"] = f"last {series_window}"
+            return series, result_meta
+        except Exception as exc:   # events are still good (Tier-2 caller); only patterns degrade
+            result_meta["seriesError"] = f"capacity CU% series query failed: {exc}"
+            return [], result_meta
 
     def _event_source_label():
         return "live" if _has_live_event_source(os.environ) else "mock"
 
+    def _activity_window_iso(days, hours, start, end, now=None):
+        """Derive [start,end) ISO bounds for the Activity Events API from the tool's window args.
+        Absolute start/end pass through; relative days/hours anchor on now (UTC). now is
+        injectable for tests; the ONLY place wall-clock enters (pure modules stay pure)."""
+        from datetime import timedelta
+        if start is not None and end is not None:
+            return str(start), str(end)
+        anchor = now if now is not None else _utcnow()
+        span = timedelta(hours=hours) if hours is not None else timedelta(days=days if days is not None else 1)
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        return (anchor - span).strftime(fmt), anchor.strftime(fmt)
+
+    def _resolve_event_sources(*, days=None, hours=None, start=None, end=None,
+                                user=None, item=None, cap=None, order=None, now=None):
+        """Tiered event acquisition (spec: graceful degradation). Returns (events, series, meta)
+        with meta extended by tier + coverageNote + hasRealCost. Tier-2 (per-query) when
+        eventDepth is configured; Tier-1 (operation-level, cuSeconds=None) from Activity Events
+        when only attribution is configured; else the offline mock."""
+        cov = _resolve_sources_registry(os.environ)["coverage"]
+        if cov["byCapability"]["eventDepth"] is not None:
+            events, series, meta = _events_or_mock(days=days, hours=hours, start=start, end=end,
+                                                    user=user, item=item, cap=cap, order=order)
+            return events, series, {**meta, "tier": "perQuery", "coverageNote": None,
+                                     "hasRealCost": True}
+        if cov["byCapability"]["userAttribution"] is not None:
+            a_start, a_end = _activity_window_iso(days, hours, start, end, now=now)
+            env = os.environ
+            # Deferred: msal (imported inside build_entra_token_provider) is an optional 'prod'
+            # dependency, and a real token round-trip is only needed if the collector actually
+            # calls http.get_json -- e.g. never, when a caller injects its own collector (tests).
+            http = _LazyEntraHttp(env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"],
+                                   env["FABRIC_CLIENT_SECRET"])
+            collector = _create_activity_event_collector(http, {"start": a_start, "end": a_end,
+                                                                  "user": user, "item": item})
+            events = collector["collect"]()
+            # Series via the EXTRACTED helper — NEVER _events_or_mock here (it would early-return
+            # the MOCK series since no live EVENT source exists on this branch; see contract §2).
+            series, series_meta = _capacity_series_only(days, hours, start, end)
+            window = _resolve_window(days=days, hours=hours, start=start, end=end)
+            note = ("operation-level activity; per-query cost unavailable — enable Log Analytics "
+                    "or Workspace Monitoring")
+            return events, series, {"eventKql": None, "windowLabel": window["label"],
+                                     "seriesWindowLabel": series_meta["seriesWindowLabel"],
+                                     "truncated": False, "error": None,
+                                     "seriesError": series_meta.get("seriesError"),
+                                     "tier": "operationLevel", "coverageNote": note,
+                                     "hasRealCost": False}
+        events, series, meta = _events_or_mock(days=days, hours=hours, start=start, end=end,
+                                                user=user, item=item, cap=cap, order=order)
+        return events, series, {**meta, "tier": "mock", "coverageNote": None, "hasRealCost": False}
+
     def user_spike_history_handler(_input=None):
-        """Per-user spike history: every high-cost event, counts, time-of-day, workload split."""
+        """Per-user spike history: every high-cost event, counts, time-of-day, workload split.
+        On Tier-1 (activity-only, cuSeconds=None) the p95 cost-spike filter is meaningless, so
+        this returns the user's operation timeline + counts + interactive/refresh split instead
+        (rankedBy: "operationFrequency" vs "cuSeconds")."""
         inp = _input or {}
         try:
             user = inp.get("user") or ""
-            events, _series, meta = _events_or_mock(
+            events, _series, meta = _resolve_event_sources(
                 days=inp.get("days"), hours=inp.get("hours"),
                 start=inp.get("start"), end=inp.get("end"),
                 user=user.lower() or None, item=inp.get("item"),
@@ -489,9 +599,52 @@ def create_tool_definitions(base_dir=None):
                 # Live event query failed: return an honest error payload, not zeros dressed as data.
                 return {"user": user, "error": meta["error"],
                         "source": "live" if _has_live_event_source(os.environ) else "mock"}
-            result = _user_spike_history(events, user.lower())
+            if meta["tier"] != "operationLevel":
+                # perQuery (Tier-2) and mock both carry real per-event cuSeconds numbers (mock
+                # fixture costs are fixture data, not authoritative -- hence hasRealCost=False --
+                # but they are still concrete numbers usable for p95 ranking, unlike Tier-1's
+                # uniformly-None costs). Only Tier-1 needs the cost-blind adaptation below.
+                result = _user_spike_history(events, user.lower())
+                result["rankedBy"] = "cuSeconds"
+            else:
+                # Cost-blind (Tier-1): events are already user-scoped by the collector config;
+                # skip the p95 spike filter (meaningless on all-None costs) and surface the
+                # operation timeline + counts + interactive/refresh split instead.
+                op_counts = {}
+                by_hour = {}
+                item_counts = {}
+                interactive_n = refresh_n = 0
+                for e in events:
+                    op = e.get("operation") or ""
+                    op_counts[op] = op_counts.get(op, 0) + 1
+                    hour = _parse_hour(e.get("ts") or "")
+                    if hour is not None:
+                        by_hour[hour] = by_hour.get(hour, 0) + 1
+                    item = e.get("item") or ""
+                    item_counts[item] = item_counts.get(item, 0) + 1
+                    if e.get("kind") == "interactive":
+                        interactive_n += 1
+                    elif e.get("kind") == "refresh":
+                        refresh_n += 1
+                top_items = sorted(
+                    [{"item": k, "count": v} for k, v in item_counts.items()],
+                    key=lambda x: (-x["count"], x["item"]),
+                )
+                result = {
+                    "user": user,
+                    "operationCount": len(events),
+                    "operationCounts": op_counts,
+                    "topItems": top_items,
+                    "byHour": by_hour,
+                    "interactiveVsRefresh": {"interactiveCount": interactive_n, "refreshCount": refresh_n},
+                    "spikes": [],   # cost-blind: no cost-ranked spike list on Tier-1
+                    "rankedBy": "operationFrequency",
+                }
             result["source"] = "live" if _has_live_event_source(os.environ) else "mock"
             result["cuUnit"] = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
+            result["tier"] = meta["tier"]
+            if meta.get("coverageNote") is not None:
+                result["coverageNote"] = meta["coverageNote"]
             if meta["truncated"]:
                 result["truncated"] = True   # cap hit: costliest events only, counts are a floor
             for s in result.get("spikes") or []:
@@ -512,7 +665,7 @@ def create_tool_definitions(base_dir=None):
         inp = _input or {}
         try:
             top_n = inp.get("topN") if inp.get("topN") is not None else 5
-            events, _series, meta = _events_or_mock(
+            events, _series, meta = _resolve_event_sources(
                 days=inp.get("days"), hours=inp.get("hours"),
                 start=inp.get("start"), end=inp.get("end"),
                 item=inp.get("item"),
@@ -521,14 +674,41 @@ def create_tool_definitions(base_dir=None):
                 # Live event query failed: return an honest error payload, not zeros dressed as data.
                 return {"events": [], "error": meta["error"],
                         "source": "live" if _has_live_event_source(os.environ) else "mock"}
-            baseline = _compute_baseline(events)
-            p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
-            spike_list = [
-                e for e in events
-                if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
-            ]
-            capped_spike_list, cap_meta = _cap_rows(spike_list)
-            result_events = _top_expensive(capped_spike_list, n=top_n)
+            if meta["tier"] != "operationLevel":
+                # perQuery (Tier-2) and mock both carry real per-event cuSeconds numbers (mock
+                # fixture costs are fixture data, not authoritative -- hence hasRealCost=False --
+                # but still concrete numbers usable for p95 ranking, unlike Tier-1's uniformly-
+                # None costs). Only Tier-1 needs the cost-blind frequency ranking below.
+                baseline = _compute_baseline(events)
+                p95_all = baseline.get("p95") if baseline.get("p95") is not None else 0
+                spike_list = [
+                    e for e in events
+                    if _events_mod.is_spike(e, p95=p95_all, floor_cu=None)
+                ]
+                capped_spike_list, cap_meta = _cap_rows(spike_list)
+                result_events = _top_expensive(capped_spike_list, n=top_n)
+                ranked_by = "cuSeconds"
+            else:
+                # Cost-blind (Tier-1): a spike list ranked on all-None costs would be arbitrary
+                # order presented as ranking -- rank by (item, user) operation frequency instead.
+                capped_events, cap_meta = _cap_rows(events)
+                freq = {}
+                order_seen = []
+                for e in capped_events:
+                    key = (e.get("item"), e.get("user"))
+                    if key not in freq:
+                        freq[key] = 0
+                        order_seen.append(key)
+                    freq[key] += 1
+                ranked_keys = sorted(order_seen, key=lambda k: -freq[k])[:top_n]
+                result_events = []
+                for key in ranked_keys:
+                    e = next(e for e in capped_events if (e.get("item"), e.get("user")) == key)
+                    result_events.append({
+                        "ts": e.get("ts"), "user": e.get("user"), "item": e.get("item"),
+                        "cuSeconds": None, "queryText": None, "operationCount": freq[key],
+                    })
+                ranked_by = "operationFrequency"
             for e in result_events:
                 add_display_time(e, "ts", "tsDisplay")
             cap_meta["windowLabel"] = meta["windowLabel"]
@@ -538,7 +718,11 @@ def create_tool_definitions(base_dir=None):
                 "events": result_events,
                 "source": "live" if _has_live_event_source(os.environ) else "mock",
                 "cuUnit": "cuSeconds (CPU-time proxy; not authoritative capacity CU)",
+                "rankedBy": ranked_by,
             }, rows_key="events", kql=meta["eventKql"], extra=cap_meta)
+            out["tier"] = meta["tier"]
+            if meta.get("coverageNote") is not None:
+                out["coverageNote"] = meta["coverageNote"]
             if inp.get("format") == "columnar":
                 # rowCount must stay the TRUE row count (finish already computed it above from the
                 # records list) -- only the events value itself becomes column-major.
@@ -568,7 +752,7 @@ def create_tool_definitions(base_dir=None):
             clamped = requested_top_n > _RAW_EVENTS_HARD_CAP
             effective_top_n = min(requested_top_n, _RAW_EVENTS_HARD_CAP)
 
-            events, _series, meta = _events_or_mock(
+            events, _series, meta = _resolve_event_sources(
                 days=inp.get("days"), hours=inp.get("hours"),
                 start=inp.get("start"), end=inp.get("end"),
                 user=(inp.get("user") or None), item=(inp.get("item") or None),
@@ -600,6 +784,9 @@ def create_tool_definitions(base_dir=None):
                 "events": capped_events,
                 "source": source,
             }, rows_key="events", kql=meta["eventKql"], extra=cap_meta)
+            out["tier"] = meta["tier"]
+            if meta.get("coverageNote") is not None:
+                out["coverageNote"] = meta["coverageNote"]
             if inp.get("format") == "columnar":
                 # rowCount must stay the TRUE row count (finish already computed it above from the
                 # records list) -- only the events value itself becomes column-major.
@@ -624,7 +811,7 @@ def create_tool_definitions(base_dir=None):
         try:
             # order="recent": bucketed surge detection needs CONTIGUOUS time coverage under the cap;
             # the default cost-order would leave time gaps and fabricate/miss surges when truncated.
-            events, capacity_series, meta = _events_or_mock(
+            events, capacity_series, meta = _resolve_event_sources(
                 days=(inp.get("days") if inp.get("days") is not None else 1),
                 hours=inp.get("hours"), start=inp.get("start"), end=inp.get("end"),
                 order="recent",
@@ -672,6 +859,9 @@ def create_tool_definitions(base_dir=None):
                 result["seriesError"] = meta["seriesError"]   # events fine; CU% coupling unavailable
             if meta["truncated"]:
                 result["truncated"] = True
+            result["tier"] = meta["tier"]
+            if meta.get("coverageNote") is not None:
+                result["coverageNote"] = meta["coverageNote"]
             return result
         except ValueError as exc:
             return {"error": str(exc), "source": source}
