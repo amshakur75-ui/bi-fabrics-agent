@@ -13,7 +13,7 @@ actions are delivering findings and sending notifications.
 
 ## Status & rollout (new session: start here)
 
-Build is **complete & verified** (`python -m pytest -q` → **666 passed, 1 skipped**; byte-identical
+Build is **complete & verified** (`python -m pytest -q` → **802 passed, 3 skipped**; byte-identical
 to the Node reference). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** (read-only App + MCP deployed & verified end-to-end — see `docs/DEPLOY-STATUS.md`; scheduled Job/Teams pending):
 
 1. **Phase 1 — local CSV test** (done): `python run.py import data.csv [Items.csv]`.
@@ -71,9 +71,10 @@ adapters). Nothing in the core knows about HTTP, files, or external services.
 
 ## Conversational / Pull Surface
 
-`tools.py` (`create_tool_definitions`) exposes the auditor as **12 read-only tools** (audit/verdict,
-user attribution, event depth + time windows, schema/sample grounding, capacity diagnostics — see
-`MCP-AGENT.md` for the full grouped list); `data_agent.py` (`build_data_agent_manifest`) produces
+`tools.py` (`create_tool_definitions`) exposes the auditor as **16 read-only tools** (audit/verdict,
+user attribution, event depth + time windows, schema/sample grounding, capacity diagnostics,
+deduction, memory, per-user — see `MCP-AGENT.md` for the full grouped list); `data_agent.py`
+(`build_data_agent_manifest`) produces
 the Fabric Data Agent / MCP manifest (handler stripped, `readOnly: true`); `mcp_server.py` serves
 it. `conversation.py` handles the Teams two-way surface (`build_concentration_alert`,
 `answer_question`). See `DEPLOYMENT.md`.

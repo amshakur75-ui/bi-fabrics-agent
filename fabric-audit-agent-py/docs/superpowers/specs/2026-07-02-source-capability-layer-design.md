@@ -1,7 +1,8 @@
 # Source-Capability Layer — Design Spec
 
 **Date:** 2026-07-02
-**Status:** design approved; awaiting spec review → implementation plan.
+**Status:** design approved; awaiting spec review → implementation plan. **Implemented 2026-07-07**
+(Phase-4 plan, tasks 1-15, branch `feat/phase4-capability-deepening`).
 
 ## Goal
 

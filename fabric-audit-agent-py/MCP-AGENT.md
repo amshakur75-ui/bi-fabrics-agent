@@ -13,7 +13,7 @@ so it always responds). Read-only throughout.
 
 ## Tools
 
-The MCP server exposes **12 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`),
+The MCP server exposes **16 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`),
 not just `run_audit`:
 
 | Purpose | Tools |
@@ -23,6 +23,9 @@ not just `run_audit`:
 | Event depth + time windows | `spike_events`, `raw_events`, `capacity_patterns` |
 | Grounding (schema/sample before querying) | `describe_source`, `sample_events` |
 | Capacity diagnostics | `capacity_diagnostics` |
+| Deduction | `diagnose`, `analyze_dax` |
+| Memory | `whats_changed` |
+| Per-user | `user_timeline` |
 
 `user_spike_history`/`spike_events`/`capacity_patterns`/`raw_events` accept `hours` (e.g. "last 6
 hours") or `start`+`end` (absolute ISO-8601 window) in addition to `days`. `spike_events`/`raw_events`
@@ -30,6 +33,20 @@ support `format:"columnar"` for token-cheaper large pulls. A result envelope car
 (the exact query run) so an answer can quote it rather than paraphrase, and Kusto-backed results
 (`describe_source`/`sample_events`/`capacity_diagnostics`) also carry `verifyUrl(s)` — a
 click-to-rerun-in-Fabric deeplink.
+
+**Tiered coverage.** Event-backed tools (`spike_events`, `raw_events`, `capacity_patterns`,
+`user_spike_history`, `diagnose`, `user_timeline`) run in one of two tiers depending on what's
+configured: **Tier-2** (Log Analytics or Workspace Monitoring Eventhouse wired) returns real
+per-query events — exact DAX/query text and `cuSeconds`; **Tier-1** (only Activity Events /
+`userAttribution` configured, no per-workspace depth) synthesizes operation-level events from the
+tenant-wide audit log — no CU figure, coarser granularity. Every result carries a `tier` field and,
+on Tier-1, a `coverageNote` explaining the gap, so an answer can honestly state what it can and
+can't see rather than presenting synthesized data as if it were metered cost.
+
+**`user_timeline` deployment note:** this tool reads **admin audit-log data** — per-person
+day-tracking is an **org-policy question for the deployer, not a technical gate**. The tool itself
+enforces no additional access control beyond the existing read-only Fabric/Entra credentials; whether
+and how per-user timelines are exposed to end users (vs. admins only) is a deployment decision.
 
 ## 1. Host the MCP server as a Databricks App
 The server is the console entry **`fabric-audit-mcp`** (`mcp_server:main`), served over HTTP at
