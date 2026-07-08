@@ -40,7 +40,7 @@ from .timefmt import add_display_time
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _load_query_library(base):
+def _load_query_library():
     """Load the grounded KQL template catalog. Ships INSIDE the package (next to this file,
     not under ``fixtures/`` at the repo root like the mock estate) since it's package data the
     agent always has, live or offline. Tolerates a missing or malformed file (returns ``[]``)
@@ -1590,7 +1590,7 @@ def create_tool_definitions(base_dir=None):
         """Catalog of grounded, firewall-safe KQL templates. No arg -> compact list (name/category/
         engine/description). name -> the full entry incl. kql, to hand to run_kql (edit a copy if you
         need a different window/user; the edit re-enters the firewall). Read-only; runs nothing."""
-        templates = _load_query_library(base)
+        templates = _load_query_library()
         inp = _input or {}
         name = inp.get("name")
         if not name:
