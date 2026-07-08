@@ -2332,3 +2332,90 @@ def test_whats_changed_malformed_history_is_error_not_empty(tmp_path, monkeypatc
     out = _handler("whats_changed")({})
     assert "error" in out
     assert "new" not in out
+
+
+# --- Task 13 (Phase 4): user_timeline -- merged per-user activity+engine timeline (16th tool) ---
+
+def test_user_timeline_mock_path_merged_shape_sorted_by_ts(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({"user": "alice@co"})
+    assert out["tier"] == "mock"
+    assert out["timeline"] == sorted(out["timeline"], key=lambda e: e["ts"])
+    for e in out["timeline"]:
+        assert set(["ts", "source", "operation", "item", "workspace", "kind",
+                     "cuSeconds", "queryText"]) <= set(e.keys())
+        assert e["source"] in ("activity", "engine")
+    assert out["counts"]["engine"] + out["counts"]["activity"] == len(out["timeline"])
+
+
+def test_user_timeline_tier1_all_activity_source_no_cost(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake_events = [
+        {"ts": "2026-07-07T09:00:00Z", "user": "john@co", "item": "Sales", "workspace": "Fin",
+         "kind": "interactive", "cuSeconds": None, "queryText": None, "operation": "ViewReport"},
+        {"ts": "2026-07-07T08:00:00Z", "user": "john@co", "item": "HR", "workspace": "P",
+         "kind": "refresh", "cuSeconds": None, "queryText": None, "operation": "RefreshEnd"},
+    ]
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake_events})
+    out = _handler("user_timeline")({"user": "JOHN@co", "days": 1})
+    assert all(e["source"] == "activity" for e in out["timeline"])
+    assert all(e["cuSeconds"] is None for e in out["timeline"])
+    assert out["coverageNote"]
+    assert out["counts"] == {"activity": 2, "engine": 0}
+    # sorted by ts ascending despite the fake collector returning newest-first
+    assert [e["ts"] for e in out["timeline"]] == ["2026-07-07T08:00:00Z", "2026-07-07T09:00:00Z"]
+
+
+def test_user_timeline_missing_user_is_error_envelope(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({})
+    assert out == {"error": "user is required"}
+
+
+def test_user_timeline_counts_match_entry_sources(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({"user": "alice@co"})
+    engine_n = sum(1 for e in out["timeline"] if e["source"] == "engine")
+    activity_n = sum(1 for e in out["timeline"] if e["source"] == "activity")
+    assert out["counts"] == {"engine": engine_n, "activity": activity_n}
+
+
+def test_user_timeline_default_window_is_24h(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({"user": "alice@co"})
+    assert out["windowLabel"] == "last 24h"
+
+
+def test_user_timeline_tier2_activity_stream_failure_is_resilient(monkeypatch):
+    # THE load-bearing test: eventDepth (Tier-2) AND userAttribution both configured, so the
+    # handler fetches the engine stream (succeeds) AND the separate activity stream (raises).
+    # The engine entries must still come back, counts["activity"] must be 0, and streamNotes
+    # must explain the failure -- never a crash, never a silent hole.
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake_engine_events = [
+        {"TimeGenerated": "2026-07-07T09:00:00Z", "ExecutingUser": "john@co",
+         "ArtifactName": "Sales", "PowerBIWorkspaceName": "Fin", "OperationName": "QueryEnd",
+         "CpuTimeMs": 4000, "EventText": "EVALUATE Sales"},
+    ]
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query",
+                        lambda *a, **kw: (lambda kql: fake_engine_events))
+    import fabric_audit_agent.tools as tools_mod
+
+    def boom(http, cfg):
+        raise RuntimeError("activity collector unavailable")
+
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector", boom)
+    out = _handler("user_timeline")({"user": "john@co"})
+    assert out["tier"] == "perQuery"
+    assert out["counts"]["activity"] == 0
+    assert out["counts"]["engine"] >= 1
+    assert any(e["source"] == "engine" for e in out["timeline"])
+    assert out["streamNotes"]
+    assert "activity" in out["streamNotes"][0]
