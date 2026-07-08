@@ -40,7 +40,13 @@ reads / plugin surface); **(2) take-0 rehearsal** — the validated query is re-
 against the real engine, so a nonexistent table/column fails with the engine's own binder error
 before any real execution; **(3) bounded execute** — only after both gates pass does the query run
 for real, with a server-side `| take <maxRows>` (default 100, hard cap 1000) appended after
-validation so the cap itself can't be bypassed by query text. `query_library` is the paired,
+validation so the cap itself can't be bypassed by query text. **Fail-closed syntax restrictions
+(a query using any of these is rejected before it runs, so phrase around them):** ad-hoc queries
+may **not** contain verbatim strings (`@"..."` / `@'...'`), backticks or triple-backtick literals,
+or `//` line comments — these KQL forms aren't modeled by the read-only/deny-list parser and are
+rejected outright to prevent a parser-desync bypass. Note `//` is rejected **even inside a URL
+string literal** (e.g. `"https://..."`), so write URLs without `//` (or avoid URL literals) and
+never use inline comments in an ad-hoc query. `query_library` is the paired,
 lower-risk tool: it only reads a local JSON catalog of 21 templates pre-authored and grounded
 against the agent's runbooks and confirmed schema (no engine call, no firewall needed to *list*
 them) — an agent fetches a template by name and hands it to `run_kql` as-is or lightly edited,
