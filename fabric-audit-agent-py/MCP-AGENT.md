@@ -13,7 +13,7 @@ so it always responds). Read-only throughout.
 
 ## Tools
 
-The MCP server exposes **16 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`),
+The MCP server exposes **18 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`),
 not just `run_audit`:
 
 | Purpose | Tools |
@@ -26,6 +26,34 @@ not just `run_audit`:
 | Deduction | `diagnose`, `analyze_dax` |
 | Memory | `whats_changed` |
 | Per-user | `user_timeline` |
+| Ad-hoc + library | `run_kql`, `query_library` |
+
+**Ad-hoc KQL + the query firewall.** `run_kql` lets the agent compose and run a single read-only
+KQL query (`engine`: `"capacity"` for the Capacity Eventhouse, or `"la"` for Log Analytics
+`PowerBIDatasetsWorkspace`) when no fixed tool answers the question. Every attempt passes through
+three gates before a row is returned: **(1) validate** — a pure static firewall
+(`fabric_audit_agent/query/firewall.py::validate_adhoc_kql`) rejects queries over the length cap,
+queries with a top-level `;` (multiple statements), any write/control command, and a deny-list of
+dangerous operators blocked in both KQL flavors — `cluster(...)`, `database(...)`, `workspace(...)`,
+`app(...)` (cross-resource escapes) and `externaldata`, `external_table`, `evaluate` (external
+reads / plugin surface); **(2) take-0 rehearsal** — the validated query is re-run with `| take 0`
+against the real engine, so a nonexistent table/column fails with the engine's own binder error
+before any real execution; **(3) bounded execute** — only after both gates pass does the query run
+for real, with a server-side `| take <maxRows>` (default 100, hard cap 1000) appended after
+validation so the cap itself can't be bypassed by query text. `query_library` is the paired,
+lower-risk tool: it only reads a local JSON catalog of 21 templates pre-authored and grounded
+against the agent's runbooks and confirmed schema (no engine call, no firewall needed to *list*
+them) — an agent fetches a template by name and hands it to `run_kql` as-is or lightly edited,
+which re-enters the full firewall on any edit.
+
+**Audit-log deployment note:** every `run_kql` attempt — allowed or rejected, at any stage — writes
+one structured `[adhoc-kql]` JSON line to stdout (captured by Databricks App logging), carrying the
+engine, verdict, rejection stage/reason where applicable, row count, and the **query text itself**
+(secrets redacted via `query/redact.py`, not the query withheld). This is both the security trail
+for what ad-hoc KQL ran against production telemetry and, longer-term, the mining signal for which
+ad-hoc queries are common enough to promote into `query_library` — an org-policy parallel to
+`user_timeline`'s admin-audit-log read: the tool enforces no extra access control beyond existing
+read-only credentials, and who gets to see the raw log stream is a deployment decision.
 
 `user_spike_history`/`spike_events`/`capacity_patterns`/`raw_events` accept `hours` (e.g. "last 6
 hours") or `start`+`end` (absolute ISO-8601 window) in addition to `days`. `spike_events`/`raw_events`

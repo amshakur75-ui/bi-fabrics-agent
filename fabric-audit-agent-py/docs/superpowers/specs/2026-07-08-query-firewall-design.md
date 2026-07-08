@@ -1,7 +1,7 @@
 # Query Firewall — Design Spec
 
 **Date:** 2026-07-08
-**Status:** design approved (brainstorm 2026-07-08); awaiting spec review → implementation plan.
+**Status:** design approved (brainstorm 2026-07-08); implemented 2026-07-08 (this plan, tasks 1-4, branch `feat/query-firewall`).
 **Builds on:** the source-capability/coverage layer landed 2026-07-07 (PR #10, `main` @ 6193740).
 
 ## Goal
