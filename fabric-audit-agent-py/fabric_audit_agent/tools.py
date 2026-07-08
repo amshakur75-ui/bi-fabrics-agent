@@ -44,6 +44,33 @@ _LIVE_SOURCE_VARS = ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUST
                      "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID")
 
 
+def _load_history(env):
+    """Load-only read of the Job's run-history file (``adapters/store_local.py``'s ``history``
+    contract, consumed from a different process). Deliberately has NO write/append path -- this
+    is a read seam for the conversational agent, not another writer.
+
+    Deployment note: the App points ``FABRIC_HISTORY_PATH`` at the same Volume path the
+    scheduled Job's ``AUDIT_HISTORY_PATH`` writes (``adapters.store_local.create_local_store``),
+    so the conversational agent sees exactly what the Job has appended so far.
+
+    Returns ``None`` when unconfigured or the file doesn't exist yet (missing is not an error --
+    the Job just hasn't run, or the App isn't wired up yet). Raises ``ValueError`` when the file
+    exists but is unreadable JSON -- that's the atomic-write race window (see
+    ``store_local.append``'s temp-file + ``os.replace``), and a race must surface as an error,
+    never be silently conflated with "no history yet".
+    """
+    path = env.get("FABRIC_HISTORY_PATH")
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        raise ValueError("history file unreadable — possibly mid-write; retry")
+
+
 def _has_live_source(env):
     """True if any real source is configured (CSV / REST / Eventhouse / Log Analytics).
 
@@ -1160,6 +1187,77 @@ def create_tool_definitions(base_dir=None):
         except ValueError as exc:
             return {"error": str(exc), "source": source}
 
+    def _fkey(f):
+        return f.get("key") or (f.get("where"), f.get("what"))
+
+    def whats_changed_handler(_input=None):
+        """Diff the latest run against the previous one in the Job's run-history file: new /
+        recurring / resolved findings, plus the peak-CU trend. Pure read -- ``_load_history``
+        has no append path, so this tool cannot mutate the history file it reads (load-only by
+        construction). Deterministic: staleness is a plain string built from the latest run's
+        ``runAt``, no wall-clock math here -- the LLM compares that timestamp to 'now'."""
+        inp = _input or {}
+        runs_n = inp.get("runs")
+        runs_n = 2 if runs_n is None else runs_n
+        runs_n = max(2, min(30, runs_n))
+        try:
+            history = _load_history(os.environ)
+        except ValueError as exc:
+            return {"error": str(exc), "source": "history"}
+        if history is None:
+            return {
+                "source": "none",
+                "note": (
+                    "No run history available — FABRIC_HISTORY_PATH is not configured, or the "
+                    "scheduled Job hasn't produced a run yet."
+                ),
+            }
+        if len(history) < 2:
+            last_run_at = history[-1]["runAt"] if history else None
+            trend = [{"runAt": r["runAt"], "peakCuPct": r["metrics"]["peakCuPct"]} for r in history]
+            return {
+                "comparedRuns": {"latest": last_run_at, "previous": None},
+                "new": [], "recurring": [], "resolved": [],
+                "peakCuTrend": trend,
+                "lastRunAt": last_run_at,
+                "staleness": f"last sweep {last_run_at}" if last_run_at else "no runs recorded",
+                "source": "history",
+                "note": "only one run in history — nothing to diff against yet",
+            }
+        latest_run, previous_run = history[-1], history[-2]
+
+        def _active(run):
+            return {_fkey(f): f for f in run.get("findings", []) if not f.get("suppressed")}
+
+        latest_active, previous_active = _active(latest_run), _active(previous_run)
+        new = [latest_active[k] for k in latest_active if k not in previous_active]
+        resolved = [previous_active[k] for k in previous_active if k not in latest_active]
+        runs_seen = {}
+        for run in history:
+            for f in run.get("findings", []):
+                if f.get("suppressed"):
+                    continue
+                k = _fkey(f)
+                runs_seen[k] = runs_seen.get(k, 0) + 1
+        recurring = [
+            {**latest_active[k], "runsSeen": runs_seen.get(k, 0)}
+            for k in latest_active if k in previous_active
+        ]
+        trend_runs = history[-runs_n:]
+        peak_cu_trend = [
+            {"runAt": r["runAt"], "peakCuPct": r["metrics"]["peakCuPct"]} for r in trend_runs
+        ]
+        return {
+            "comparedRuns": {"latest": latest_run["runAt"], "previous": previous_run["runAt"]},
+            "new": new,
+            "recurring": recurring,
+            "resolved": resolved,
+            "peakCuTrend": peak_cu_trend,
+            "lastRunAt": latest_run["runAt"],
+            "staleness": f"last sweep {latest_run['runAt']}",
+            "source": "history",
+        }
+
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
     # spike_events, capacity_patterns) -- merged into each tool's "days"-carrying input_schema so
     # a caller can ask for "last 6 hours" or an absolute "12:45pm-1pm yesterday" window, not just
@@ -1537,5 +1635,29 @@ def create_tool_definitions(base_dir=None):
                 "required": ["symptom"],
             },
             "handler": diagnose_handler,
+        },
+        {
+            "name": "whats_changed",
+            "description": (
+                "What changed since the last scheduled sweep: new / recurring / resolved "
+                "findings + capacity-peak trend, from the Job's run history. Answers 'what's "
+                "new this week?', 'is this recurring?', 'did the fix hold?'. Read-only "
+                "(load-only history port)."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "runs": {
+                        "type": "integer",
+                        "description": (
+                            "How many trailing history entries to include in peakCuTrend "
+                            "(default 2, clamped to [2, 30]). The new/recurring/resolved diff "
+                            "always compares only the latest two runs."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+            "handler": whats_changed_handler,
         },
     ]

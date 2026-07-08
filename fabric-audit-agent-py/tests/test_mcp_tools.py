@@ -2279,3 +2279,56 @@ def test_diagnose_refresh_symptom_on_mock_runs_and_eliminates(monkeypatch):
     out = _handler("diagnose")({"symptom": "refresh"})
     assert out["symptom"] == "refresh"
     assert out["eliminated"] == ["refresh failure"]
+
+
+# --- Task 12 (Phase 4): whats_changed -- run-history diff (agent memory) ------------------
+_HIST = [
+    {"runAt": "2026-07-06T06:00:00Z", "metrics": {"peakCuPct": 88.0}, "findings": [
+        {"key": "cap.hot", "level": "warn", "where": "F64", "what": "hot", "suppressed": False},
+        {"key": "model.big", "level": "info", "where": "W/S", "what": "big", "suppressed": False}]},
+    {"runAt": "2026-07-07T06:00:00Z", "metrics": {"peakCuPct": 96.0}, "findings": [
+        {"key": "cap.hot", "level": "warn", "where": "F64", "what": "hot", "suppressed": False},
+        {"key": "refresh.storm", "level": "warn", "where": "W/S", "what": "storm", "suppressed": False},
+        {"key": "sec.x", "level": "info", "where": "W", "what": "x", "suppressed": True}]},
+]
+
+def _hist_env(tmp_path, monkeypatch, hist=_HIST):
+    import json as _json
+    p = tmp_path / "history.json"
+    p.write_text(_json.dumps(hist), encoding="utf-8")
+    monkeypatch.setenv("FABRIC_HISTORY_PATH", str(p))
+
+def test_whats_changed_diffs_new_recurring_resolved(tmp_path, monkeypatch):
+    _hist_env(tmp_path, monkeypatch)
+    out = _handler("whats_changed")({})
+    assert [f["key"] for f in out["new"]] == ["refresh.storm"]
+    assert [f["key"] for f in out["recurring"]] == ["cap.hot"]
+    assert [f["key"] for f in out["resolved"]] == ["model.big"]
+    assert all(f["key"] != "sec.x" for f in out["new"])          # suppressed excluded
+    assert out["peakCuTrend"][-1] == {"runAt": "2026-07-07T06:00:00Z", "peakCuPct": 96.0}
+    assert out["lastRunAt"] == "2026-07-07T06:00:00Z"
+
+def test_whats_changed_unconfigured_is_honest(monkeypatch):
+    monkeypatch.delenv("FABRIC_HISTORY_PATH", raising=False)
+    out = _handler("whats_changed")({})
+    assert out["source"] == "none" and "FABRIC_HISTORY_PATH" in out["note"]
+
+def test_whats_changed_single_run_history(tmp_path, monkeypatch):
+    _hist_env(tmp_path, monkeypatch, hist=_HIST[-1:])
+    out = _handler("whats_changed")({})
+    assert out["new"] == [] and out["resolved"] == []
+    assert "only one run" in out["note"]
+
+def test_whats_changed_never_writes(tmp_path, monkeypatch):
+    _hist_env(tmp_path, monkeypatch)
+    before = (tmp_path / "history.json").read_text(encoding="utf-8")
+    _handler("whats_changed")({})
+    assert (tmp_path / "history.json").read_text(encoding="utf-8") == before
+
+def test_whats_changed_malformed_history_is_error_not_empty(tmp_path, monkeypatch):
+    p = tmp_path / "history.json"
+    p.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setenv("FABRIC_HISTORY_PATH", str(p))
+    out = _handler("whats_changed")({})
+    assert "error" in out
+    assert "new" not in out
