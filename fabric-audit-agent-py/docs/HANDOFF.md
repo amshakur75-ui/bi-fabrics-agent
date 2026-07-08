@@ -21,9 +21,9 @@ A **read-only** Microsoft Fabric / Power BI capacity & performance **audit agent
 
 ### 1a. Where the code is RIGHT NOW
 
-- **`main` @ `6193740`** — everything below through Phase 4 is merged and green.
+- **`main` @ `bddbdb8`** — Phase 4 merged (PR #10) plus 4 follow-ups: a loop.py forced-answer fix, a version bump, a schema-mirror test fix, and **`whats_changed` code-side activation** (`FABRIC_HISTORY_PATH` set → `run_audit` appends history + the diff works; the durable Job path is the only piece left) + a diagnose stage-3 over-window refetch. This branch (`feat/query-firewall`) is rebased onto `bddbdb8`.
 - **Current working branch: `feat/query-firewall`** (2 commits ahead of main: the firewall **spec** `4f78a60` and **plan** `2c07c62` — docs only, no code yet).
-- **Test baseline: `804 passed, 3 skipped`** (`cd fabric-audit-agent-py && python -m pytest -q`). Evals: `python -m fabric_audit_agent eval-agent` → 17/17; `eval-investigations` → 2/2.
+- **Test baseline: `809 passed, 3 skipped`** (`cd fabric-audit-agent-py && python -m pytest -q`, measured on this rebased branch). Evals: `python -m fabric_audit_agent eval-agent` → 17/17; `eval-investigations` → 2/2.
 - **16 read-only tools** live on `main` (`python -c "from fabric_audit_agent.tools import create_tool_definitions as f; print(len(f()))"` → 16).
 
 ### 1b. The tools that exist (16)
@@ -107,7 +107,7 @@ This project uses **superpowers subagent-driven-development**. The pattern that 
 
 ### Your execution directions (do this)
 
-1. **You are already on `feat/query-firewall`** (branch exists, spec + plan committed). Confirm: `cd C:/Users/shaku/corporate && git branch --show-current` → `feat/query-firewall`; `cd fabric-audit-agent-py && python -m pytest -q` → `804 passed, 3 skipped`.
+1. **You are already on `feat/query-firewall`** (branch exists, spec + plan committed). Confirm: `cd C:/Users/shaku/corporate && git branch --show-current` → `feat/query-firewall`; `cd fabric-audit-agent-py && python -m pytest -q` → `809 passed, 3 skipped`.
 2. **Invoke the `superpowers:subagent-driven-development` skill** and execute `docs/superpowers/plans/2026-07-08-query-firewall.md` task-by-task, per Part 1g above. Create the ledger section for these 4 tasks first.
 3. **Task order (from the plan):** T1 firewall (pure) → T2 `run_kql` + audit log → T3 `query_library.json` + tool + grounding-bar test → T4 eval golden cases + docs (16→18) + final sweep.
 4. **Watch these load-bearing points** (they're in the plan, but they're where a defect would hide):
@@ -133,7 +133,7 @@ Do these **in order**, each as its own brainstorm → spec → plan → subagent
 
 **A. Verified-query library growth loop (small, ungated).** The firewall ships with the stdout audit log as the learning signal. Once real ad-hoc queries flow, mine the App logs for the most-repeated *allowed* query shapes and promote them into `query_library.json` (each still must pass the grounding bar). This is a recurring ~10-minute PR, not a one-time build. It's the payoff for logging — do a first pass after the agent has real usage.
 
-**B. Deploy-switch activation (ops, ungated, needs the user).** Two things flip capability on without new code: set `FABRIC_HISTORY_PATH` on the MCP App to the Job's history file → `whats_changed` goes live; redeploy the App/Job wheel so the 18 tools + firewall reach production. Coordinate with the user; confirm the read-only App still can't write.
+**B. Deploy-switch activation (ops, ungated, needs the user).** PARTLY DONE as of `bddbdb8`: the code-side `whats_changed` activation already landed — when `FABRIC_HISTORY_PATH` is set, `run_audit` appends its run record via the `store_local` contract and the diff works; an interim local container path is wired in `app.yaml` (ephemeral across redeploys). What REMAINS: point `FABRIC_HISTORY_PATH` at a durable path (the scheduled Job's `AUDIT_HISTORY_PATH`, same contract), and redeploy the App/Job wheel so the 18 tools + firewall reach production. Coordinate with the user; confirm the read-only App still can't write anywhere it shouldn't.
 
 ### Gated — build only when the gate opens (ask the user first each time)
 
@@ -156,7 +156,7 @@ Do these **in order**, each as its own brainstorm → spec → plan → subagent
 ## Quick-start checklist for the next Claude
 
 - [ ] `cd C:/Users/shaku/corporate` — confirm branch `feat/query-firewall`, `git log --oneline main..HEAD` shows the spec + plan commits.
-- [ ] `cd fabric-audit-agent-py && python -m pytest -q` → `804 passed, 3 skipped`.
+- [ ] `cd fabric-audit-agent-py && python -m pytest -q` → `809 passed, 3 skipped`.
 - [ ] Read `docs/superpowers/specs/2026-07-08-query-firewall-design.md` then `docs/superpowers/plans/2026-07-08-query-firewall.md`.
 - [ ] Invoke `superpowers:subagent-driven-development`; create the ledger; execute the 4 tasks with per-task review.
 - [ ] Final whole-branch review (opus) → fix wave → merge (push, PR, CI green on 3.10+3.12, merge, sync, verify 18 tools on main).

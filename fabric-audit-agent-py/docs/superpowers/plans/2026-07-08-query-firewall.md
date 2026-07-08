@@ -18,8 +18,8 @@
 - **The library gets NO privileged bypass** — templates run through `run_kql` like any query.
 - **`_make_tool_fn`** derives each tool's FastMCP signature from its `input_schema`; new tools need only a complete schema (no `mcp_server` registration edits beyond the docstring tool list).
 - MIT attribution in `firewall.py` (adapts fabric-rti-mcp + mcp-kql-server validation patterns).
-- Offline deterministic tests (engine callables faked); full suite green (baseline **804 passed, 3 skipped**).
-- Branch: `feat/query-firewall` (already created off `main` @ 6193740; the spec commit 4f78a60 is its first commit).
+- Offline deterministic tests (engine callables faked); full suite green (baseline **809 passed, 3 skipped** — rebased onto `bddbdb8`; the older 804 figure predates 4 main follow-ups).
+- Branch: `feat/query-firewall` (rebased onto `main` @ bddbdb8; carries the firewall spec + this plan + docs/HANDOFF.md as its docs-only commits).
 
 ## Interfaces this plan builds on (all live on the branch — verified)
 
