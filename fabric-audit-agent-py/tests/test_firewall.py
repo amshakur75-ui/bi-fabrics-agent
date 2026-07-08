@@ -167,3 +167,36 @@ def test_multiline_string_bare_triple_backtick_block_rejected():
 def test_multiline_string_single_stray_backtick_rejected():
     kql = 'T | where m == `x | take 1'
     assert _reject(kql).stage == "multiline-string"
+
+
+# --- '//' line comment bypass (final-review C-1c) ----------------------------------------------
+# KQL '//' line comments are the SAME unmodeled-content bypass class as verbatim strings and
+# triple-backtick blocks: the '/" quote-parity state machines in kql_guard scan comment text as if
+# it were code. A stray '/" inside a '//' comment (e.g. an apostrophe in "it's") desyncs parity;
+# the comment ends at the newline, but the desync persists into the NEXT line, so a denied call
+# there is silently blanked before the deny-list ever sees it. KQL has no '/* */' block comments.
+
+def test_line_comment_bypass_cross_database_read_rejected():
+    kql = "T // it's\n| union database('SecretDB').SecretTable"
+    assert _reject(kql).stage == "comment"
+
+
+def test_line_comment_bypass_cross_database_read_rejected_after_where():
+    kql = "CapacityEvents | where x == 1 // it's a comment\n| union database('SecretDB').SecretTable"
+    assert _reject(kql).stage == "comment"
+
+
+def test_line_comment_bypass_evaluate_bag_unpack_rejected():
+    kql = "T // it's\n| evaluate bag_unpack(x)"
+    assert _reject(kql).stage == "comment"
+
+
+def test_line_comment_bypass_cross_cluster_read_rejected():
+    kql = "T // it's\n| where cluster('c.kusto.windows.net').database('d').X > 1"
+    assert _reject(kql).stage == "comment"
+
+
+def test_line_comment_without_stray_quote_still_rejected():
+    # Fail-closed: ALL comments are rejected, even ones with no odd-quote-count desync risk.
+    kql = "CapacityEvents | take 5 // note"
+    assert _reject(kql).stage == "comment"
