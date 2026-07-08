@@ -2611,3 +2611,20 @@ def test_run_kql_emits_audit_line(monkeypatch, capsys):
     _handler("run_kql")({"kql": "CapacityEvents | take 1", "engine": "capacity"})
     line = capsys.readouterr().out
     assert "[adhoc-kql]" in line and '"verdict"' in line and '"engine": "capacity"' in line
+
+
+# --- Task 3 (firewall): query_library --------------------------------------------------
+def test_query_library_catalog_lists_names_without_kql():
+    out = _handler("query_library")({})
+    assert isinstance(out["templates"], list) and out["templates"]
+    first = out["templates"][0]
+    assert set(first) == {"name", "category", "engine", "description"}   # NO kql in the catalog
+
+def test_query_library_get_by_name_returns_full_entry():
+    name = _handler("query_library")({})["templates"][0]["name"]
+    out = _handler("query_library")({"name": name})
+    assert out["template"]["name"] == name and out["template"]["kql"]
+
+def test_query_library_unknown_name_lists_available():
+    out = _handler("query_library")({"name": "no-such-template"})
+    assert out["error"] and isinstance(out["available"], list) and out["available"]

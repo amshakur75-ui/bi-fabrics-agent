@@ -39,6 +39,19 @@ from .timefmt import add_display_time
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def _load_query_library(base):
+    """Load the grounded KQL template catalog. Ships INSIDE the package (next to this file,
+    not under ``fixtures/`` at the repo root like the mock estate) since it's package data the
+    agent always has, live or offline. Tolerates a missing or malformed file (returns ``[]``)
+    so a packaging slip degrades to an empty catalog rather than crashing the tool."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query_library.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return []
+
 # Any of these means a real telemetry source is wired; otherwise the offline mock is used.
 _LIVE_SOURCE_VARS = ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
                      "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID")
@@ -1573,6 +1586,23 @@ def create_tool_definitions(base_dir=None):
             out["rows"] = _to_columnar(capped)
         return out
 
+    def query_library_handler(_input=None):
+        """Catalog of grounded, firewall-safe KQL templates. No arg -> compact list (name/category/
+        engine/description). name -> the full entry incl. kql, to hand to run_kql (edit a copy if you
+        need a different window/user; the edit re-enters the firewall). Read-only; runs nothing."""
+        templates = _load_query_library(base)
+        inp = _input or {}
+        name = inp.get("name")
+        if not name:
+            return {"templates": [{"name": t["name"], "category": t["category"],
+                                    "engine": t["engine"], "description": t["description"]}
+                                   for t in templates], "count": len(templates), "source": "library"}
+        match = next((t for t in templates if t["name"] == name), None)
+        if match is None:
+            return {"error": f"no template named '{name}'",
+                    "available": [t["name"] for t in templates], "source": "library"}
+        return {"template": match, "source": "library"}
+
     return [
         {
             "name": "run_audit",
@@ -1997,5 +2027,23 @@ def create_tool_definitions(base_dir=None):
                 "required": ["kql", "engine"],
             },
             "handler": run_kql_handler,
+        },
+        {
+            "name": "query_library",
+            "description": (
+                "Catalog of proven, ready-to-run READ-ONLY KQL templates (capacity + Log Analytics), "
+                "grounded in the agent's runbooks and confirmed schema. No argument lists the catalog "
+                "(name/category/engine/description); pass 'name' to get a template's full KQL, then run "
+                "it (or an edited copy) via run_kql. Prefer a template over free-handing when one fits. "
+                "Read-only; this tool only lists — run_kql executes."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Template name to fetch in full; omit to list the catalog."},
+                },
+                "required": [],
+            },
+            "handler": query_library_handler,
         },
     ]
