@@ -1,8 +1,9 @@
-"""Pure foundation for the query-library growth loop: the [adhoc-kql] audit-log parser and the
-shape canonicalizer. No I/O, no ranking, no CLI yet (later tasks)."""
+"""Pure foundation for the query-library growth loop: the [adhoc-kql] audit-log parser, the
+shape canonicalizer, and candidate ranking. No I/O, no CLI yet (later task)."""
 import json
 
-from fabric_audit_agent.query.mine import parse_audit_lines, shape_key
+from fabric_audit_agent.query.firewall import validate_adhoc_kql
+from fabric_audit_agent.query.mine import parse_audit_lines, rank_candidates, shape_key
 
 
 def _line(engine="capacity", verdict="allowed", kql="CapacityEvents | take 50", **extra):
@@ -213,3 +214,158 @@ def test_shape_key_genuinely_different_queries_are_different_shapes():
 def test_shape_key_is_pure_and_deterministic():
     assert shape_key(_PEAK_WINDOWS_24H) == shape_key(_PEAK_WINDOWS_24H)
     assert isinstance(shape_key(_PEAK_WINDOWS_24H), str)
+
+
+# ---------------------------------------------------------------------------
+# rank_candidates
+# ---------------------------------------------------------------------------
+
+def _rec(engine, kql):
+    return {"tag": "adhoc-kql", "engine": engine, "verdict": "allowed", "kql": kql}
+
+
+_SHAPE_A_BASE = "CapacityEvents | where ingestion_time() > ago(1d) | project win"
+_SHAPE_B_BASE = "CapacityEvents | where used > 80 | project win"
+_LA_SHAPE_BASE = "PowerBIDatasetsWorkspace | where TimeGenerated > ago(1d) | project ExecutingUser"
+
+
+def test_rank_empty_records_returns_empty_list():
+    assert rank_candidates([], []) == []
+
+
+def test_rank_groups_by_engine_and_shape_and_honors_min_count():
+    records = [
+        _rec("capacity", _SHAPE_A_BASE + "\n| take 50"),
+        _rec("capacity", _SHAPE_A_BASE + "\n| take 100"),
+        _rec("capacity", _SHAPE_A_BASE + "\n| take 200"),
+        # A second shape that only shows up twice -- below min_count=3, must be dropped.
+        _rec("capacity", _SHAPE_B_BASE + "\n| take 50"),
+        _rec("capacity", _SHAPE_B_BASE + "\n| take 50"),
+    ]
+    out = rank_candidates(records, [], min_count=3)
+    assert len(out) == 1
+    assert out[0]["engine"] == "capacity"
+    assert out[0]["shapeKey"] == shape_key(_SHAPE_A_BASE)
+    assert out[0]["hitCount"] == 3
+
+
+def test_rank_per_engine_grouping_same_kql_text_different_engine():
+    # Identical kql text but different engine must form two distinct groups, not merge.
+    records = (
+        [_rec("capacity", _LA_SHAPE_BASE + "\n| take 50")] * 3
+        + [_rec("la", _LA_SHAPE_BASE + "\n| take 50")] * 3
+    )
+    out = rank_candidates(records, [], min_count=3)
+    assert {c["engine"] for c in out} == {"capacity", "la"}
+    assert len(out) == 2
+    for c in out:
+        assert c["hitCount"] == 3
+
+
+def test_rank_honors_top_n():
+    records = []
+    # Distinguish shapes by projected column name (not a comparison threshold, which shape_key
+    # placeholders) so each is genuinely a different shape_key.
+    shapes = [f"CapacityEvents | where x > 1 | project col{i}" for i in range(5)]
+    # Give each shape a distinct count (3..7) so ranking-by-count is unambiguous.
+    for i, shape in enumerate(shapes):
+        count = 3 + i
+        records += [_rec("capacity", shape + "\n| take 50")] * count
+    out = rank_candidates(records, [], min_count=3, top_n=2)
+    assert len(out) == 2
+    assert [c["hitCount"] for c in out] == [7, 6]
+
+
+def test_rank_deterministic_order_count_desc_shapekey_asc_tie_break():
+    # Two groups tied on count -- must break the tie by shapeKey ascending.
+    shape_z = "CapacityEvents | where z > 1 | project win"
+    shape_a = "CapacityEvents | where a > 1 | project win"
+    records = (
+        [_rec("capacity", shape_z + "\n| take 50")] * 3
+        + [_rec("capacity", shape_a + "\n| take 50")] * 3
+    )
+    out = rank_candidates(records, [], min_count=3)
+    assert len(out) == 2
+    assert out[0]["hitCount"] == out[1]["hitCount"] == 3
+    assert out[0]["shapeKey"] < out[1]["shapeKey"]
+    assert out[0]["shapeKey"] == shape_key(shape_a)
+    assert out[1]["shapeKey"] == shape_key(shape_z)
+
+
+def test_rank_dedup_against_existing_template_after_trailing_bound_strip():
+    # Existing template ends "| take 100"; mined records for the SAME shape end "| take 50" --
+    # after looped trailing-bound strip on both sides, they must be recognized as the same shape
+    # and the mined group deduped away entirely.
+    existing = [{"engine": "capacity", "kql": _SHAPE_A_BASE + "\n| take 100"}]
+    records = [_rec("capacity", _SHAPE_A_BASE + "\n| take 50")] * 5
+    assert rank_candidates(records, existing, min_count=3) == []
+
+
+def test_rank_keeps_shape_not_covered_by_existing():
+    existing = [{"engine": "capacity", "kql": _SHAPE_A_BASE + "\n| take 100"}]
+    records = [_rec("capacity", _SHAPE_B_BASE + "\n| take 50")] * 3
+    out = rank_candidates(records, existing, min_count=3)
+    assert len(out) == 1
+    assert out[0]["shapeKey"] == shape_key(_SHAPE_B_BASE)
+
+
+def test_rank_fail_closed_clean_minority_member_wins_over_redacted_modal():
+    # Modal (most frequent) exact text is redacted; a less-frequent, unique clean member exists.
+    # The redacted text lives inside a string literal so shape_key (which blanks string-literal
+    # content) still groups the two together. The clean member must be chosen as representative.
+    redacted = _SHAPE_A_BASE + "\n| extend tag='***'\n| take 50"
+    clean = _SHAPE_A_BASE + "\n| extend tag='ok'\n| take 50"
+    assert shape_key(redacted) == shape_key(clean)  # precondition: same group
+    records = (
+        [_rec("capacity", redacted)] * 3   # modal, but contains ***
+        + [_rec("capacity", clean)]        # minority, but clean
+    )
+    out = rank_candidates(records, [], min_count=3)
+    assert len(out) == 1
+    assert "***" not in out[0]["kql"]
+    assert out[0]["kql"] == _SHAPE_A_BASE + "\n| extend tag='ok'"
+    assert out[0]["hitCount"] == 4
+
+
+def test_rank_drops_group_where_every_member_is_redacted():
+    redacted1 = _SHAPE_A_BASE.replace("ingestion_time()", "sig=***") + "\n| take 50"
+    redacted2 = _SHAPE_A_BASE.replace("ingestion_time()", "sig=***") + "\n| take 100"
+    records = [_rec("capacity", redacted1)] * 2 + [_rec("capacity", redacted2)] * 2
+    assert rank_candidates(records, [], min_count=3) == []
+
+
+def test_rank_drops_group_whose_representative_fails_firewall():
+    # Every member of this group is identical and uses a denied cross-database call -- the
+    # representative fails validate_adhoc_kql, so the whole group must be dropped.
+    dangerous = "CapacityEvents | union database('X').Y | take 50"
+    records = [_rec("capacity", dangerous)] * 3
+    assert rank_candidates(records, [], min_count=3) == []
+
+
+def test_rank_representative_is_a_literal_observed_member_not_synthesized():
+    variant1 = _SHAPE_A_BASE + "\n| take 50"
+    variant2 = _SHAPE_A_BASE + "\n| take 100"
+    variant3 = _SHAPE_A_BASE + "\n| take 200"
+    records = (
+        [_rec("capacity", variant1)] * 3
+        + [_rec("capacity", variant2)] * 1
+        + [_rec("capacity", variant3)] * 1
+    )
+    out = rank_candidates(records, [], min_count=3)
+    assert len(out) == 1
+    # The representative must be the literal post-strip text of the modal member, not a form
+    # derived from shape_key (which would blank/placeholder content).
+    assert out[0]["kql"] == _SHAPE_A_BASE
+    assert out[0]["kql"] != shape_key(variant1)
+
+
+def test_rank_every_returned_kql_passes_the_real_firewall():
+    records = (
+        [_rec("capacity", _SHAPE_A_BASE + "\n| take 50")] * 4
+        + [_rec("la", _LA_SHAPE_BASE + "\n| take 20")] * 3
+    )
+    out = rank_candidates(records, [], min_count=3)
+    assert len(out) == 2
+    for candidate in out:
+        # Must not raise.
+        assert validate_adhoc_kql(candidate["kql"]) == candidate["kql"]
