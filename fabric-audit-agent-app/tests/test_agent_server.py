@@ -331,6 +331,37 @@ class TestInlinedLoopParity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["toolResults"]), 1)
         self.assertEqual(result["toolResults"][0]["tool"], "run_audit")
 
+    async def test_forced_final_step_carries_budget_nudge(self):
+        """Parity with loop.py: the forced-answer step must inject the budget-exhausted
+        instruction (observed live: without it the model narrated its next tool call)."""
+        seen = []
+        responses = [
+            _Resp([_Block(type="tool_use", id="t1", name="run_audit", input={"n": 1})], "tool_use"),
+            _Resp([_Block(type="tool_use", id="t2", name="run_audit", input={"n": 2})], "tool_use"),
+            _Resp([_Block(type="text", text="final")], "end_turn"),
+        ]
+        idx = [0]
+
+        class _Messages:
+            def create(self_inner, model=None, max_tokens=None, system=None, messages=None, tools=None):
+                seen.append({"messages": list(messages), "tools": list(tools or [])})
+                r = responses[idx[0]]; idx[0] += 1
+                return r
+
+        client = types.SimpleNamespace(messages=_Messages())
+        dispatch = {"run_audit": _async_handler({})}
+        result = await _agent._run_tool_loop(
+            client, model="m", system="s",
+            messages=[{"role": "user", "content": "q"}],
+            tools=[{"name": "run_audit", "description": "", "input_schema": {}}],
+            dispatch=dispatch, max_steps=3,
+        )
+        self.assertEqual(result["text"], "final")
+        self.assertEqual(seen[-1]["tools"], [])
+        nudge = seen[-1]["messages"][-1]
+        self.assertEqual(nudge["role"], "user")
+        self.assertIn("budget exhausted", nudge["content"].lower())
+
     async def test_budget_exhaustion(self):
         # The fake client replays this list regardless of the tools= it was called
         # with, so even though _run_tool_loop passes tools=[] on the final step, the

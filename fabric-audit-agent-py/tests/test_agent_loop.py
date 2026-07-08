@@ -47,6 +47,54 @@ def test_loop_dedups_identical_tool_calls():
     assert out["toolResults"][0]["tool"] == "investigate_user"
 
 
+def test_forced_final_step_tells_the_model_the_budget_is_gone():
+    """Observed live: withholding tools on the last step without saying why made the model
+    NARRATE its next intended tool call instead of answering. The loop must inject an explicit
+    budget-exhausted instruction before the forced-answer create()."""
+    seen = []
+
+    class _Recorder:
+        class messages:
+            @staticmethod
+            def create(model=None, max_tokens=None, system=None, messages=None, tools=None):
+                seen.append({"messages": list(messages), "tools": list(tools or [])})
+                if len(seen) < 3:   # keep calling tools until the forced final step
+                    return _M([_B("tool_use", id=f"t{len(seen)}", name="investigate_user",
+                                  input={"user": f"u{len(seen)}@co"})], "tool_use")
+                return _M([_B("text", text="final answer")], "end_turn")
+
+    dispatch, _ = _dispatch()
+    out = run_tool_loop(_Recorder(), model="m", system="s",
+                        messages=[{"role": "user", "content": "?"}],
+                        tools=[{"name": "investigate_user"}], dispatch=dispatch, max_steps=3)
+    assert out["text"] == "final answer" and out["stoppedReason"] == "answer"
+    final_call = seen[-1]
+    assert final_call["tools"] == []                                   # tools withheld
+    nudge = final_call["messages"][-1]
+    assert nudge["role"] == "user" and "budget exhausted" in nudge["content"].lower()
+    # earlier steps must NOT carry the nudge
+    assert not any("budget exhausted" in str(m).lower() for m in seen[0]["messages"])
+
+
+def test_no_nudge_when_model_answers_directly():
+    """A direct answer (no tool calls ever) must not get the budget message -- there's no
+    investigation to conclude."""
+    seen = []
+
+    class _Recorder:
+        class messages:
+            @staticmethod
+            def create(model=None, max_tokens=None, system=None, messages=None, tools=None):
+                seen.append(list(messages))
+                return _M([_B("text", text="direct")], "end_turn")
+
+    out = run_tool_loop(_Recorder(), model="m", system="s",
+                        messages=[{"role": "user", "content": "?"}],
+                        tools=[{"name": "investigate_user"}], dispatch={}, max_steps=1)
+    assert out["text"] == "direct"
+    assert not any("budget exhausted" in str(m).lower() for m in seen[0])
+
+
 def test_loop_spotlights_tool_results():
     """Tool result content fed back in the follow-up create() must carry the UNTRUSTED marker
     AND still contain the underlying data (spotlighting, not stripping)."""

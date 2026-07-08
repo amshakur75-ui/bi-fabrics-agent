@@ -21,6 +21,13 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
     trajectory, cache, tool_results = [], {}, []
     for step in range(max_steps):
         use_tools = tools if step < max_steps - 1 else []   # force-answer on the last allowed step
+        if not use_tools and tools and step == max_steps - 1 and trajectory:
+            # Withholding tools alone doesn't tell the model WHY -- observed live, it narrated
+            # its next intended tool call ("Let me pull...") instead of answering. Say it plainly.
+            messages.append({"role": "user", "content": (
+                "[SYSTEM] Tool budget exhausted -- no more tool calls are possible. Give your "
+                "complete final answer NOW from the evidence already gathered. Do not propose, "
+                "describe, or promise further tool calls.")})
         resp = client.messages.create(model=model, max_tokens=4096, system=system,
                                       messages=messages, tools=use_tools)
         if getattr(resp, "stop_reason", None) != "tool_use":
