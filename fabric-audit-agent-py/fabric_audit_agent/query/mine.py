@@ -1,10 +1,12 @@
-"""Query-library growth loop: pure log-parsing, shape-canonicalization, and ranking (Tasks 1-2).
+"""Query-library growth loop: pure log-parsing, shape-canonicalization, ranking, and library-entry
+projection (Tasks 1-3).
 
-No I/O here (stdlib ``json``/``re``/``collections`` only). File reads (the audit log, the library)
-and the ``--write`` mutation live in ``entrypoints.py`` (later task) -- mirrors the "mine.py is
-pure" architecture decision in the plan. Projection (``to_library_entries``) lands in a later task;
-this module exposes ``parse_audit_lines``, ``shape_key``, and ``rank_candidates``.
+No I/O here (stdlib ``json``/``re``/``hashlib``/``collections`` only). File reads (the audit log,
+the library) and the ``--write`` mutation live in ``entrypoints.py`` (later task) -- mirrors the
+"mine.py is pure" architecture decision in the plan. This module exposes ``parse_audit_lines``,
+``shape_key``, ``rank_candidates``, and ``to_library_entries``.
 """
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
@@ -199,3 +201,115 @@ def rank_candidates(records, existing_templates, *, min_count=3, top_n=10) -> li
 
     candidates.sort(key=lambda c: (-c["hitCount"], c["shapeKey"]))
     return candidates[:top_n]
+
+
+# --------------------------------------------------------------------------------------------
+# to_library_entries (Task 3)
+# --------------------------------------------------------------------------------------------
+
+# The token immediately following a top-level "|" -- letters/digits/underscore/hyphen so
+# multi-word operators like "mv-expand" or "project-away" are captured whole.
+_PIPE_TOKEN_RE = re.compile(r"\|\s*([A-Za-z][A-Za-z0-9_-]*)")
+
+# A "reasonable operator set" (plan Task 3): only these are confidently named. Anything else
+# (or no pipe at all) falls back to the honest 'query' label rather than guessing.
+_KNOWN_OPERATORS = frozenset({
+    "where", "summarize", "project", "extend", "join", "union", "distinct", "count",
+    "top", "sort", "order", "take", "limit", "parse", "render", "mv-expand", "evaluate",
+    "sample", "getschema", "project-away", "project-rename", "lookup", "make-series",
+    "serialize",
+})
+
+_NAME_UNSAFE_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _sanitize_name_part(s: str) -> str:
+    """Fold to the [a-z0-9-] name charset; empty/unsafe input becomes 'query'."""
+    s = s.lower().replace("_", "-")
+    s = _NAME_UNSAFE_RE.sub("-", s).strip("-")
+    return s or "query"
+
+
+def _dominant_operator(kql: str) -> str:
+    """The dominant top-level KQL pipe operator in *kql*: the token right after each '|',
+    restricted to a known operator vocabulary (``_KNOWN_OPERATORS``) so an unrecognized token
+    never wins. Highest count wins; ties are broken by first-appearance order in the text.
+    Falls back to ``'query'`` when no known operator is found. Deterministic, pure.
+    """
+    counts = Counter()
+    first_seen_order = []
+    for match in _PIPE_TOKEN_RE.finditer(str(kql)):
+        token = _sanitize_name_part(match.group(1))
+        if token not in _KNOWN_OPERATORS:
+            continue
+        if token not in counts:
+            first_seen_order.append(token)
+        counts[token] += 1
+
+    if not counts:
+        return "query"
+
+    max_count = max(counts.values())
+    for token in first_seen_order:
+        if counts[token] == max_count:
+            return token
+    return "query"  # pragma: no cover -- unreachable, defensive only
+
+
+def to_library_entries(ranked, existing_templates) -> list[dict]:
+    """Project each ranked group (``rank_candidates`` output: ``{engine, shapeKey, kql,
+    hitCount}``) into a library-schema entry with keys in EXACTLY this order: ``name, category,
+    engine, description, kql, groundedIn, hitCount`` (the existing on-disk key order plus a
+    trailing ``hitCount``). Preserves the input order of *ranked*. Pure, no I/O.
+
+    - ``category``   = ``"adhoc-mined"``
+    - ``groundedIn`` = ``"mined from adhoc audit log"``
+    - ``description``= ``f"Auto-mined {engine} query ({op}); seen {hitCount}x in the ad-hoc
+      audit log."`` -- factual, never a placeholder.
+    - ``kql``        = the group's representative kql, unchanged.
+    - ``name``       = ``f"adhoc-{engine}-{op}-{h}"``, lowercase/no-spaces/kebab, where ``op`` is
+      the dominant operator (``_dominant_operator``, derived from the representative kql text --
+      not the shape key, which is already keyword-lowercased for a different purpose) and ``h``
+      is ``hashlib.sha1(shapeKey.encode()).hexdigest()[:6]``. Name uniqueness is enforced both
+      against *existing_templates*' names and against names already emitted earlier in this same
+      batch; on collision, ``h`` is lengthened one hex character at a time (7, 8, ... up to the
+      full 40-char digest) until unique.
+    """
+    if not ranked:
+        return []
+
+    used_names = set()
+    for tmpl in existing_templates or ():
+        if isinstance(tmpl, dict) and tmpl.get("name") is not None:
+            used_names.add(tmpl["name"])
+
+    entries = []
+    for group in ranked:
+        engine = group["engine"]
+        shape = group["shapeKey"]
+        kql = group["kql"]
+        hit_count = group["hitCount"]
+
+        op = _dominant_operator(kql)
+        digest = hashlib.sha1(str(shape).encode("utf-8")).hexdigest()
+
+        name = f"adhoc-{engine}-{op}-{digest[:6]}"
+        length = 6
+        while name in used_names and length < len(digest):
+            length += 1
+            name = f"adhoc-{engine}-{op}-{digest[:length]}"
+        used_names.add(name)
+
+        entries.append({
+            "name": name,
+            "category": "adhoc-mined",
+            "engine": engine,
+            "description": (
+                f"Auto-mined {engine} query ({op}); seen {hit_count}x in the ad-hoc audit log."
+            ),
+            "kql": kql,
+            "groundedIn": "mined from adhoc audit log",
+            "hitCount": hit_count,
+        })
+
+    return entries

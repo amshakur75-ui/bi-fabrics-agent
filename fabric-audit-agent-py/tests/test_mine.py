@@ -1,9 +1,17 @@
 """Pure foundation for the query-library growth loop: the [adhoc-kql] audit-log parser, the
-shape canonicalizer, and candidate ranking. No I/O, no CLI yet (later task)."""
+shape canonicalizer, candidate ranking, and library-entry projection. No I/O, no CLI yet
+(later task)."""
+import hashlib
 import json
 
+import fabric_audit_agent.query.mine as mine_module
 from fabric_audit_agent.query.firewall import validate_adhoc_kql
-from fabric_audit_agent.query.mine import parse_audit_lines, rank_candidates, shape_key
+from fabric_audit_agent.query.mine import (
+    parse_audit_lines,
+    rank_candidates,
+    shape_key,
+    to_library_entries,
+)
 
 
 def _line(engine="capacity", verdict="allowed", kql="CapacityEvents | take 50", **extra):
@@ -386,3 +394,174 @@ def test_rank_tolerates_malformed_records_and_none_existing():
     # never raise -- a malformed captured log degrades to "no candidates", not a crash.
     records = [{"kql": "x"}, None, {"engine": "capacity"}, "not-a-dict"]
     assert rank_candidates(records, None, min_count=1) == []
+
+
+# ---------------------------------------------------------------------------
+# to_library_entries
+# ---------------------------------------------------------------------------
+
+def _group(engine="capacity", shape="shape-x", kql=None, hit_count=5):
+    if kql is None:
+        kql = _SHAPE_A_BASE
+    return {"engine": engine, "shapeKey": shape, "kql": kql, "hitCount": hit_count}
+
+
+def test_to_library_entries_empty_input_returns_empty_list():
+    assert to_library_entries([], []) == []
+    assert to_library_entries([], None) == []
+
+
+def test_to_library_entries_key_order_matches_schema_plus_hitcount():
+    group = _group(kql=_SHAPE_A_BASE, hit_count=4)
+    out = to_library_entries([group], [])
+    assert len(out) == 1
+    assert list(out[0].keys()) == [
+        "name", "category", "engine", "description", "kql", "groundedIn", "hitCount",
+    ]
+
+
+def test_to_library_entries_provenance_and_description():
+    group = _group(engine="capacity", kql=_SHAPE_A_BASE, hit_count=7)
+    entry = to_library_entries([group], [])[0]
+    assert entry["category"] == "adhoc-mined"
+    assert entry["groundedIn"] == "mined from adhoc audit log"
+    assert entry["description"].strip() == entry["description"]
+    assert entry["description"]
+    assert "capacity" in entry["description"]
+    assert "7" in entry["description"]
+    lowered = entry["description"].lower()
+    assert "todo" not in lowered and "placeholder" not in lowered
+    assert entry["kql"] == _SHAPE_A_BASE
+    assert entry["engine"] == "capacity"
+    assert entry["hitCount"] == 7
+
+
+def test_to_library_entries_names_are_lowercase_spaceless_kebab_and_unique_in_batch():
+    groups = [
+        _group(engine="capacity", shape="shape-a", kql=_SHAPE_A_BASE, hit_count=5),
+        _group(engine="la", shape="shape-b", kql=_LA_SHAPE_BASE, hit_count=3),
+    ]
+    out = to_library_entries(groups, [])
+    names = [e["name"] for e in out]
+    assert len(names) == len(set(names))
+    for n in names:
+        assert n == n.lower()
+        assert " " not in n
+        assert all(c.isalnum() or c == "-" for c in n)
+
+
+def test_to_library_entries_preserves_input_order():
+    groups = [
+        _group(engine="capacity", shape="shape-a", kql=_SHAPE_A_BASE, hit_count=9),
+        _group(engine="la", shape="shape-b", kql=_LA_SHAPE_BASE, hit_count=3),
+    ]
+    out = to_library_entries(groups, [])
+    assert out[0]["hitCount"] == 9
+    assert out[1]["hitCount"] == 3
+
+
+def test_to_library_entries_dominant_op_two_where_one_summarize():
+    kql = (
+        "CapacityEvents | where a > 1 | where b > 2 | summarize count() by a"
+    )
+    group = _group(kql=kql, hit_count=3)
+    entry = to_library_entries([group], [])[0]
+    assert entry["name"].split("-")[2] == "where"
+
+
+def test_to_library_entries_dominant_op_tie_breaks_first_appearing():
+    kql = "CapacityEvents | where a > 1 | project a"
+    group = _group(kql=kql, hit_count=3)
+    entry = to_library_entries([group], [])[0]
+    assert entry["name"].split("-")[2] == "where"
+
+
+def test_to_library_entries_unknown_op_falls_back_to_query():
+    # No recognized operator keyword at all -- falls back to 'query'.
+    kql = "CapacityEvents"
+    group = _group(kql=kql, hit_count=3)
+    entry = to_library_entries([group], [])[0]
+    assert entry["name"].split("-")[2] == "query"
+
+
+def test_to_library_entries_name_format_matches_expected_pattern():
+    group = _group(engine="capacity", shape="a-particular-shape", kql=_SHAPE_A_BASE, hit_count=3)
+    entry = to_library_entries([group], [])[0]
+    h = hashlib.sha1("a-particular-shape".encode("utf-8")).hexdigest()[:6]
+    assert entry["name"] == f"adhoc-capacity-where-{h}"
+
+
+def test_to_library_entries_collision_with_existing_template_lengthens_hash():
+    shape = "collide-shape"
+    kql = _SHAPE_A_BASE
+    h6 = hashlib.sha1(shape.encode("utf-8")).hexdigest()[:6]
+    would_be_name = f"adhoc-capacity-where-{h6}"
+    existing = [{
+        "name": would_be_name, "category": "adhoc-mined", "engine": "capacity",
+        "description": "pre-existing", "kql": "T | where 1 == 1", "groundedIn": "test seed",
+    }]
+    group = _group(engine="capacity", shape=shape, kql=kql, hit_count=3)
+    entry = to_library_entries([group], existing)[0]
+    assert entry["name"] != would_be_name
+    h7 = hashlib.sha1(shape.encode("utf-8")).hexdigest()[:7]
+    assert entry["name"] == f"adhoc-capacity-where-{h7}"
+    assert entry["name"] not in {t["name"] for t in existing}
+
+
+def test_to_library_entries_within_batch_engineered_sha1_prefix_collision_stays_unique(monkeypatch):
+    # Engineer two DISTINCT shapeKeys whose sha1 hexdigests share the same first-6-hex prefix (via
+    # a monkeypatched hashlib.sha1) but diverge after -- proves the collision-resolution loop works
+    # within a single batch, not just against existing_templates.
+    fake_digests = {
+        "shape-one": "aaaaaa1111111111111111111111111111111a",
+        "shape-two": "aaaaaa2222222222222222222222222222222b",
+    }
+
+    class _FakeDigest:
+        def __init__(self, text):
+            self._text = text
+
+        def hexdigest(self):
+            return fake_digests[self._text]
+
+    def fake_sha1(data):
+        return _FakeDigest(data.decode("utf-8"))
+
+    monkeypatch.setattr(mine_module.hashlib, "sha1", fake_sha1)
+
+    same_op_kql = "CapacityEvents | where a > 1 | project a"
+    groups = [
+        _group(engine="capacity", shape="shape-one", kql=same_op_kql, hit_count=5),
+        _group(engine="capacity", shape="shape-two", kql=same_op_kql, hit_count=4),
+    ]
+    out = to_library_entries(groups, [])
+    names = [e["name"] for e in out]
+    assert len(names) == len(set(names)) == 2
+    # First group takes the 6-char prefix; second must lengthen since the prefixes collide.
+    assert names[0] == "adhoc-capacity-where-aaaaaa"
+    assert names[1] == "adhoc-capacity-where-aaaaaa2"
+
+
+def test_to_library_entries_every_entry_passes_firewall_and_schema_gates():
+    group = _group(engine="la", shape="la-shape", kql=_LA_SHAPE_BASE, hit_count=6)
+    entry = to_library_entries([group], [])[0]
+    assert validate_adhoc_kql(entry["kql"]) == entry["kql"]
+    assert entry["engine"] in ("capacity", "la")
+    assert entry["description"].strip()
+    assert entry["groundedIn"].strip()
+
+
+def test_to_library_entries_integration_with_rank_candidates():
+    records = [_rec("capacity", _SHAPE_A_BASE + "\n| take 50")] * 5
+    ranked = rank_candidates(records, [], min_count=3)
+    assert len(ranked) == 1
+    entries = to_library_entries(ranked, [])
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["kql"] == _SHAPE_A_BASE
+    assert entry["hitCount"] == 5
+    assert entry["engine"] == "capacity"
+    assert list(entry.keys()) == [
+        "name", "category", "engine", "description", "kql", "groundedIn", "hitCount",
+    ]
+    validate_adhoc_kql(entry["kql"])
