@@ -2120,3 +2120,41 @@ def test_tier1_entra_http_client_is_memoized_across_calls(monkeypatch):
     _handler("spike_events")({"days": 7})
     assert builds["n"] == 1
     assert seen[0] is seen[1]
+
+
+# --- Task 5 (Phase 4): read-only queryplan cost estimate (pre-flight primitive) ----------
+def test_queryplan_estimate_sends_show_queryplan_prefixed_command():
+    from fabric_audit_agent.tools import _queryplan_estimate
+    sent = {}
+    def fake_query(cmd):
+        sent["cmd"] = cmd
+        return [{"PlanSize": 12, "RelopSize": 3}]
+    out = _queryplan_estimate("CapacityEvents | take 5; .drop table x", query=fake_query)
+    assert sent["cmd"].startswith(".show queryplan")
+    assert ".drop" not in sent["cmd"]                 # first_statement guard applied to the kql
+    assert out == {"available": True, "plan": [{"PlanSize": 12, "RelopSize": 3}], "error": None}
+
+def test_queryplan_estimate_unavailable_on_error_never_raises():
+    def boom(cmd):
+        raise RuntimeError("cluster rejected")
+    from fabric_audit_agent.tools import _queryplan_estimate
+    out = _queryplan_estimate("T | take 1", query=boom)
+    assert out == {"available": False, "plan": None, "error": "cluster rejected"}
+
+def test_describe_source_estimate_kql_attaches_plan(monkeypatch):
+    # spec ADD 2 "immediately usable today": describe_source gains optional estimateKql.
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://x.kusto.fabric.microsoft.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    # describe_source's capacity branch still fetches the live cslschema BEFORE the plan-estimate
+    # wiring runs, so the kusto client builder needs a fake (same pattern as the existing
+    # describe_source capacity-live tests above) -- otherwise it tries a real 'azure' import.
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **kw: (lambda kql: [{"Schema": "ts:datetime"}]))
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_queryplan_estimate",
+                        lambda kql, **kw: {"available": True, "plan": [{"PlanSize": 1}], "error": None})
+    out = _handler("describe_source")({"source": "capacity", "estimateKql": "CapacityEvents | take 5"})
+    assert out["planEstimate"]["available"] is True

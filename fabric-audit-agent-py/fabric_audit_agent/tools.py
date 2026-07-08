@@ -68,6 +68,55 @@ def dry_run(query_callable, kql):
         return {"valid": False, "error": str(exc)}
 
 
+def _capacity_kusto_query(env):
+    """Return a live ``query(kql) -> list[dict]`` callable for the capacity/Eventhouse Kusto
+    source, built the SAME way ``_events_or_mock`` acquires it (``clients.build_kusto_query``
+    gated on FABRIC_CAPACITY_EVENTS_CLUSTER/_DB). The cluster URI is passed through
+    ``assert_kusto_host`` FIRST (anti-SSRF) -- raises ``ValueError`` on a bad scheme/host,
+    exactly like a missing-env ``_require`` failure, so callers can catch either uniformly.
+    Memoized on the same credential-tuple key shape as ``_events_or_mock`` (fresh MSAL per
+    call would defeat its token cache -- one AAD round-trip per grounding call).
+
+    Module-level (hoisted out of ``create_tool_definitions``) so it has exactly ONE definition --
+    a drifted duplicate of the ``assert_kusto_host`` anti-SSRF gate would be a security risk, not
+    a style nit. ``create_tool_definitions``'s closures and ``_queryplan_estimate`` both call this
+    same function."""
+    from .job import _require
+    from .adapters.clients import build_kusto_query
+    cluster_uri = _assert_kusto_host(env["FABRIC_CAPACITY_EVENTS_CLUSTER"])
+    tenant = _require(env, "FABRIC_TENANT_ID")
+    secret = _require(env, "FABRIC_CLIENT_SECRET")
+    return _memo_client(
+        ("kusto", cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
+         tenant, env["FABRIC_CLIENT_ID"], secret),
+        lambda: build_kusto_query(
+            cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
+            tenant, env["FABRIC_CLIENT_ID"], secret),
+    )
+
+
+def _queryplan_estimate(kql, *, query=None):
+    """Read-only pre-flight cost estimate: retrieve the execution plan WITHOUT running the query.
+    Adapted from fabric-rti-mcp's ``kusto_show_queryplan`` (MIT; see
+    research/23-mcp-harvest-inventory.md line 32 -- the inventory only points at the upstream
+    source's line numbers, it does not itself carry the literal command text, so the exact
+    ``.show queryplan <| <query>`` syntax below should be re-verified against the live
+    fabric-rti-mcp source if this degrades in production). If the live cluster rejects the
+    command, this degrades to ``{"available": False}`` and callers fall back to the existing
+    ``| take 0`` syntax-only ``dry_run``. Never raises; never executes the target query."""
+    from .query.kql_guard import first_statement
+    try:
+        q = query
+        if q is None:
+            q = _capacity_kusto_query(os.environ)   # the HOISTED module-level builder (see
+                                                     # refactor note) -- one SSRF gate, no twin
+        cmd = ".show queryplan <| " + first_statement(str(kql))
+        rows = q(cmd) or []
+        return {"available": True, "plan": rows, "error": None}
+    except Exception as exc:
+        return {"available": False, "plan": None, "error": str(exc)}
+
+
 def _has_live_event_source(env):
     """True only if the RAW per-event LA source (events_or_mock's actual live branch) is
     configured. Narrower than ``_has_live_source`` on purpose: the Phase-3 event tools
@@ -884,27 +933,6 @@ def create_tool_definitions(base_dir=None):
         return bool(env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
                     and env.get("FABRIC_CLIENT_ID"))
 
-    def _capacity_kusto_query(env):
-        """Return a live ``query(kql) -> list[dict]`` callable for the capacity/Eventhouse Kusto
-        source, built the SAME way ``_events_or_mock`` acquires it (``clients.build_kusto_query``
-        gated on FABRIC_CAPACITY_EVENTS_CLUSTER/_DB). The cluster URI is passed through
-        ``assert_kusto_host`` FIRST (anti-SSRF) -- raises ``ValueError`` on a bad scheme/host,
-        exactly like a missing-env ``_require`` failure, so callers can catch either uniformly.
-        Memoized on the same credential-tuple key shape as ``_events_or_mock`` (fresh MSAL per
-        call would defeat its token cache -- one AAD round-trip per grounding call)."""
-        from .job import _require
-        from .adapters.clients import build_kusto_query
-        cluster_uri = _assert_kusto_host(env["FABRIC_CAPACITY_EVENTS_CLUSTER"])
-        tenant = _require(env, "FABRIC_TENANT_ID")
-        secret = _require(env, "FABRIC_CLIENT_SECRET")
-        return _memo_client(
-            ("kusto", cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
-             tenant, env["FABRIC_CLIENT_ID"], secret),
-            lambda: build_kusto_query(
-                cluster_uri, env["FABRIC_CAPACITY_EVENTS_DB"],
-                tenant, env["FABRIC_CLIENT_ID"], secret),
-        )
-
     def _la_query(env):
         """Memoized LA query callable -- the same client ``_events_or_mock`` uses (identical
         cache key, so grounding tools and event tools share one MSAL token cache)."""
@@ -960,6 +988,8 @@ def create_tool_definitions(base_dir=None):
             deeplink = _kusto_deeplink(env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"], kql)
             if deeplink:
                 result["verifyUrl"] = deeplink
+            if inp.get("estimateKql") is not None:
+                result["planEstimate"] = _queryplan_estimate(inp["estimateKql"])
             return result
         except Exception as exc:
             return {"error": str(exc), "source": source}
@@ -1339,6 +1369,13 @@ def create_tool_definitions(base_dir=None):
                         "description": (
                             "Optional table name override (default 'PowerBIDatasetsWorkspace' "
                             "for events, 'CapacityEvents' for capacity)."
+                        ),
+                    },
+                    "estimateKql": {
+                        "type": "string",
+                        "description": (
+                            "Optional KQL to cost-estimate against the capacity cluster WITHOUT "
+                            "running it — returns planEstimate alongside the schema."
                         ),
                     },
                 },
