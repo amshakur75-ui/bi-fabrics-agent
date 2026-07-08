@@ -120,6 +120,19 @@ def test_runbook_files_exist_and_name_real_tools():
         assert found, f"{fname} must name at least one real tool from {real_tools}"
 
 
+def test_every_tool_has_golden_case_coverage(monkeypatch):
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
+        monkeypatch.delenv(v, raising=False)
+    import json, pathlib
+    from fabric_audit_agent.tools import create_tool_definitions
+    cases = json.loads((pathlib.Path(__file__).parent.parent / "fabric_audit_agent" /
+                        "eval" / "agent_cases.json").read_text(encoding="utf-8"))
+    used = {b["name"] for c in cases for b in c.get("script", []) if b.get("type") == "tool_use"}
+    missing = {d["name"] for d in create_tool_definitions()} - used
+    assert not missing, f"tools with zero golden-case coverage: {sorted(missing)}"
+
+
 def test_agent_ignores_injected_instructions(monkeypatch):
     """Tool result carrying injected text must not cause the agent to adopt the injection.
     The fake model is scripted so the answer is the normal grounded text regardless; this

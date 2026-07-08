@@ -38,5 +38,135 @@
     ],
     "expectTool": "raw_events",
     "expectAbstain": false
+  },
+  {
+    "name": "run-audit-grounded-96pct-42min",
+    "messages": [{"role": "user", "content": "Give me the full capacity audit for our tenant."}],
+    "script": [
+      {"type": "tool_use", "name": "run_audit", "input": {}},
+      {"type": "text", "text": "The audit found 17 findings (9 critical, 7 warning); capacity peaked at 96% CU with a 42-minute throttle window, driven largely by the oversized 4.2GB Sales model in Finance."}
+    ],
+    "expectTool": "run_audit",
+    "expectAbstain": false
+  },
+  {
+    "name": "list-workspaces-abstain-no-source",
+    "messages": [{"role": "user", "content": "List all our Fabric workspaces and their activity."}],
+    "script": [
+      {"type": "tool_use", "name": "list_workspaces", "input": {}},
+      {"type": "text", "text": "I can't inventory the workspaces — no live telemetry source is configured; enable monitoring (Log Analytics or Workspace Monitoring) to see the real estate."}
+    ],
+    "expectTool": "list_workspaces",
+    "expectAbstain": true
+  },
+  {
+    "name": "user-activity-abstain-no-source",
+    "messages": [{"role": "user", "content": "Who are the top users by CU consumption?"}],
+    "script": [
+      {"type": "tool_use", "name": "user_activity", "input": {}},
+      {"type": "text", "text": "I can't rank top users right now — the offline activity feed has zero attributed users; enable monitoring to get real coverage."}
+    ],
+    "expectTool": "user_activity",
+    "expectAbstain": true
+  },
+  {
+    "name": "investigate-user-abstain-insufficient",
+    "messages": [{"role": "user", "content": "What's driving alice@co's capacity usage?"}],
+    "script": [
+      {"type": "tool_use", "name": "investigate_user", "input": {"user": "alice@co", "days": 30}},
+      {"type": "text", "text": "Analysis of alice@co is insufficient — the evidence doesn't support a defensible conclusion; enable monitoring on additional workspaces to get real coverage."}
+    ],
+    "expectTool": "investigate_user",
+    "expectAbstain": true
+  },
+  {
+    "name": "user-spike-history-grounded-alice-20cu",
+    "messages": [{"role": "user", "content": "Show alice@co's spike history."}],
+    "script": [
+      {"type": "tool_use", "name": "user_spike_history", "input": {"user": "alice@co"}},
+      {"type": "text", "text": "alice@co has 1 recorded spike totaling 20.0 CU-seconds, peaking at 12.0 CU-seconds against the Sales dataset."}
+    ],
+    "expectTool": "user_spike_history",
+    "expectAbstain": false
+  },
+  {
+    "name": "capacity-patterns-grounded-finance-85pct",
+    "messages": [{"role": "user", "content": "Are there any patterns coupling user surges with CU spikes today?"}],
+    "script": [
+      {"type": "tool_use", "name": "capacity_patterns", "input": {}},
+      {"type": "text", "text": "One pattern shows 5 active users driving an 85% CU peak in the Finance workspace, led by eve@co."}
+    ],
+    "expectTool": "capacity_patterns",
+    "expectAbstain": false
+  },
+  {
+    "name": "describe-source-grounded-events-schema",
+    "messages": [{"role": "user", "content": "What columns does the events telemetry source have before I query it?"}],
+    "script": [
+      {"type": "tool_use", "name": "describe_source", "input": {"source": "events"}},
+      {"type": "text", "text": "The events source is table PowerBIDatasetsWorkspace with columns including TimeGenerated and ExecutingUser (mock schema, since no live source is configured)."}
+    ],
+    "expectTool": "describe_source",
+    "expectAbstain": false
+  },
+  {
+    "name": "sample-events-grounded-alice-sales-8cu",
+    "messages": [{"role": "user", "content": "Give me a few sample raw events before I run a heavier query."}],
+    "script": [
+      {"type": "tool_use", "name": "sample_events", "input": {"source": "events", "n": 5}},
+      {"type": "text", "text": "A sample of 5 raw events shows alice@co querying Sales for 8.0 CU-seconds and dave@co refreshing HR for 20.0 CU-seconds."}
+    ],
+    "expectTool": "sample_events",
+    "expectAbstain": false
+  },
+  {
+    "name": "capacity-diagnostics-abstain-not-configured",
+    "messages": [{"role": "user", "content": "Give me live capacity diagnostics — resource, consumed, remaining."}],
+    "script": [
+      {"type": "tool_use", "name": "capacity_diagnostics", "input": {}},
+      {"type": "text", "text": "I can't provide capacity diagnostics — the Capacity Events cluster isn't configured; enable monitoring (set FABRIC_CAPACITY_EVENTS_CLUSTER) to get live diagnostics."}
+    ],
+    "expectTool": "capacity_diagnostics",
+    "expectAbstain": true
+  },
+  {
+    "name": "analyze-dax-grounded-filter-whole-table",
+    "messages": [{"role": "user", "content": "Does this DAX measure have any anti-patterns: EVALUATE FILTER(Sales, Sales[Amount] > 0)?"}],
+    "script": [
+      {"type": "tool_use", "name": "analyze_dax", "input": {"expression": "EVALUATE FILTER(Sales, Sales[Amount] > 0)"}},
+      {"type": "text", "text": "Static analysis flags 1 anti-pattern: filter-whole-table — FILTER() over an entire table is slow; filter a single column instead."}
+    ],
+    "expectTool": "analyze_dax",
+    "expectAbstain": false
+  },
+  {
+    "name": "diagnose-grounded-throttle-eliminated",
+    "messages": [{"role": "user", "content": "Why is the capacity throttling right now?"}],
+    "script": [
+      {"type": "tool_use", "name": "diagnose", "input": {"symptom": "throttle"}},
+      {"type": "text", "text": "The throttle diagnostic eliminated capacity over-utilization as the cause: CU% peaked at 85.0%, with 0 timepoints crossing the throttling threshold."}
+    ],
+    "expectTool": "diagnose",
+    "expectAbstain": false
+  },
+  {
+    "name": "whats-changed-abstain-no-history",
+    "messages": [{"role": "user", "content": "What's changed since the last scheduled sweep?"}],
+    "script": [
+      {"type": "tool_use", "name": "whats_changed", "input": {}},
+      {"type": "text", "text": "I can't show what changed — no run history is available yet; enable monitoring/scheduling so the Job can build history over time."}
+    ],
+    "expectTool": "whats_changed",
+    "expectAbstain": true
+  },
+  {
+    "name": "user-timeline-grounded-alice-24h",
+    "messages": [{"role": "user", "content": "Walk me through alice@co's activity over the last 24 hours."}],
+    "script": [
+      {"type": "tool_use", "name": "user_timeline", "input": {"user": "alice@co"}},
+      {"type": "text", "text": "alice@co's 24-hour timeline includes 6 engine events, such as an interactive query against Sales costing 12.0 CU-seconds."}
+    ],
+    "expectTool": "user_timeline",
+    "expectAbstain": false
   }
 ]
