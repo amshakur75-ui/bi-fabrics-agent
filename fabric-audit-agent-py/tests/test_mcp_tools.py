@@ -1611,6 +1611,53 @@ def test_capacity_diagnostics_partial_config_returns_error_envelope_not_keyerror
     assert out["source"] == "capacity"
 
 
+def test_capacity_diagnostics_no_config_has_no_throttle_decomposition(monkeypatch):
+    """Task 4 wiring, unconfigured path: throttleDecomposition key must be entirely absent,
+    not present-with-nulls -- capacity_diagnostics never reached the live branch at all."""
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert "throttleDecomposition" not in out
+
+
+def test_capacity_diagnostics_live_attaches_throttle_decomposition(monkeypatch):
+    """Task 4 wiring, live path: an injected hot CU% series + Tier-1 events must land a
+    throttleDecomposition with a conclusion, alongside the existing .show sections."""
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                return [{"ok": True}]
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            # capacity CU% series query (not a .show control command): one over-threshold window.
+            return [{"capacityId": "cap1", "windowStart": "2026-07-07T09:01:00Z",
+                     "baseCapacityUnits": 10, "capacityUnitMs": 10 * 1000 * 30 * 1.3}]
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    # Tier-1 activity events source is also "configured" (creds present); stub it so the test
+    # never attempts a real MSAL token round-trip.
+    monkeypatch.setattr("fabric_audit_agent.tools._create_activity_event_collector",
+                         lambda http, config: {"collect": lambda: []})
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    assert "throttleDecomposition" in out
+    td = out["throttleDecomposition"]
+    assert td["conclusion"] in ("not-throttling", "throttling-confirmed", "over-utilized-unconfirmed")
+    assert td["stage1"]["timepointsOver"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Task 10: capacity_patterns live-fix -- recent-ordered narrow window, tunable
 # thresholds (tool input > env > default), non-silent patternsDiagnostics.

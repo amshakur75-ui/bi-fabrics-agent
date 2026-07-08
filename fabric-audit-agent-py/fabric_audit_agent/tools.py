@@ -20,6 +20,7 @@ from .adapters.reasoner_investigation import create_investigation_reasoner
 from .investigation import events as _events_mod
 from .investigation.baseline import compute_baseline as _compute_baseline
 from .investigation.expensive import top_expensive as _top_expensive, _QUERY_TEXT_MAX_CHARS
+from .investigation.throttle import decompose_throttle as _decompose_throttle
 from .investigation.spike_history import user_spike_history as _user_spike_history, _parse_hour
 from .investigation.patterns import (
     capacity_patterns as _capacity_patterns,
@@ -1056,6 +1057,17 @@ def create_tool_definitions(base_dir=None):
         result = {"sections": sections, "errors": errors, "source": "live"}
         if verify_urls:
             result["verifyUrls"] = verify_urls
+        # Throttle decomposition (Task 4): the capacity series is configured (we're past the
+        # _has_live_capacity_kusto gate above) -- pull the tiered event/series pair and attach
+        # the 3-stage decomposition. Isolated in its own try/except, matching the per-section
+        # isolation above: a failure here (e.g. Tier-1 activity auth unavailable) never kills
+        # the already-collected .show sections.
+        try:
+            events, series, meta = _resolve_event_sources(days=1, order="recent")
+            result["throttleDecomposition"] = _decompose_throttle(
+                series, events, has_real_cost=(meta["tier"] != "operationLevel"))
+        except Exception:
+            pass
         return result
 
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,
