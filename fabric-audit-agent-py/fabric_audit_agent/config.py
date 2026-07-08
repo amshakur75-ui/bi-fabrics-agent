@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "pipeline": {"failRatePct": 10},
     "security": {"unusualRatio": 5, "unusualCritRatio": 10},
     "cost": {"idleCuPct": 5},
+    "refresh": {"retryStormAttempts": 3, "slowDataPhaseMin": 60},
 }
 
 

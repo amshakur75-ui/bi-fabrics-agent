@@ -51,6 +51,15 @@ def test_local_store_append_roundtrip_and_trim(tmp_path):
     assert [r["runAt"] for r in store["history"]()] == ["2", "3"]
 
 
+def test_local_store_append_is_atomic_no_tmp_residue(tmp_path):
+    hist_path = tmp_path / "h" / "hist.json"
+    store = create_local_store(str(hist_path))
+    store["append"]({"runAt": "1"})
+    store["append"]({"runAt": "2"})
+    assert not (tmp_path / "h" / "hist.json.tmp").exists()
+    assert json.loads(hist_path.read_text(encoding="utf-8")) == [{"runAt": "1"}, {"runAt": "2"}]
+
+
 # ---------- lifecycle.store ----------
 def test_lifecycle_store_missing_then_roundtrip(tmp_path):
     lc = create_lifecycle_store(str(tmp_path / "lc.json"))

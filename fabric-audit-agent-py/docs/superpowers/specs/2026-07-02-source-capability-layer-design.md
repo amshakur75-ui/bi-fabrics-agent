@@ -1,7 +1,8 @@
 # Source-Capability Layer — Design Spec
 
 **Date:** 2026-07-02
-**Status:** design approved; awaiting spec review → implementation plan.
+**Status:** design approved; awaiting spec review → implementation plan. **Implemented 2026-07-07**
+(Phase-4 plan, tasks 1-15, branch `feat/phase4-capability-deepening`).
 
 ## Goal
 
@@ -77,6 +78,8 @@ truth for *what sources exist, how to detect + build them, and what they provide
 | `fuam` *(future)* | perItemCU, owner | daily | authoritative | tenant | `FABRIC_FUAM_SQL_HTTP_PATH` (+ warehouse) |
 | `events_la` *(Tier-2)* | eventDepth, userAttribution | live | proxy(CU) | per-workspace | `FABRIC_LA_WORKSPACE_ID` |
 | `workspace_monitoring` *(Tier-2)* | eventDepth, userAttribution | live | proxy(CU) | per-workspace | `FABRIC_KUSTO_CLUSTER` + `_DB` |
+
+(eventDepth withheld from the registry until the event seam consumes WM — 2026-07-07 final review F1)
 
 ### Resolver — `resolve_sources(env) -> { collector, coverage }`
 1. Determine **configured** sources (env gate satisfied).
@@ -188,6 +191,180 @@ production-validated), `KustoFormatter` compact outputs (columnar/header_arrays 
 large results), schema/sample discovery tools (firewall allowlist grounding), `kusto_show_queryplan`
 cost hints (the cost-guardrail seed), `kusto_get_shots` (verified-query-library prior art), and
 query deeplinks ("verify in Fabric" links on quoted figures).
+
+## Phase-4 capacity-diagnostics deepening (research 2026-07-07)
+
+Three read-only additions, confirmed against Microsoft Learn + our own code, that extend the
+capacity verdict without a new data source or permission. All three fold into this spec's existing
+components — none need a separate design doc.
+
+1. **Throttle decomposition** — `capacity_diagnostics` (Task 9) currently exposes the fixed
+   `.show capacity/cluster/workload_groups/diagnostics` suite but stops short of *classifying* a
+   throttle event. Microsoft's own admin troubleshooting runbook is a ready-made 3-stage
+   procedure: **(1)** CU % over time > 100% (a gate we already partially apply); **(2)** which
+   throttling signal actually fired — Interactive Delay / Interactive Rejection / Background
+   Rejection, each its own 100%-referenced series — **this second gate is what our current verdict
+   is missing**: CU% > 100% alone does not prove throttling happened, only that it was possible;
+   **(3)** drill to the offending workspace/item by sorting timepoint operations by `Timepoint CU
+   (s)` / `% of base capacity` descending — the same shape as our existing spike-ranking logic.
+   Also surface the Metrics app's own `minutes to burndown` carryforward estimate verbatim (Kusto
+   fields TBD — confirm whether stage-2/3 signals are present in the Capacity Events Eventhouse we
+   already collect, or require the Capacity Metrics semantic model — see item 3 of the Phase-5
+   sheet below).
+   Source: [capacity-planning-troubleshoot-throttling](https://learn.microsoft.com/en-us/fabric/enterprise/capacity-planning-troubleshoot-throttling), [throttling](https://learn.microsoft.com/en-us/fabric/enterprise/throttling).
+
+2. **Query-plan dry-run (cost estimate)** — already named as a "cost-guardrail seed" above; make
+   it concrete. Adapt `fabric-rti-mcp`'s `kusto_show_queryplan` shape (`.show query <kql> with
+   (ShowPlan='True')`-class read-only plan retrieval — returns `PlanSize`, `RelopSize`, estimated
+   row counts, per-shard scan info, **without executing the query**). Wire this ahead of any future
+   ad-hoc/agent-authored KQL (the Phase-4 firewall's pre-flight check) and, immediately usable
+   today, ahead of `capacity_diagnostics`'/`describe_source`'s own built queries as a defense-in-depth
+   cost cap. Upgrades the existing `| take 0` dry-run (syntax-only) to a real cost estimate.
+   Source: [microsoft/fabric-rti-mcp](https://github.com/microsoft/fabric-rti-mcp) (read-only tool
+   only — the server itself remains excluded per the DO-NOT-PORT list above).
+
+3. **Seasonal-naive / trend time-to-throttle forecast** — evaluated TimesFM (starred by the user)
+   against the CU% series we already collect via `capacity_series`; rejected as over-engineered for
+   this signal (foundation-model value is clearest on noisy multi-domain series with short
+   history — our series is one clean metric with a known hard threshold and strong regular
+   seasonality). Implement instead: a same-day-last-week baseline or robust linear trend on the
+   existing series, projected to the 100% line, reported with an honest confidence range — no new
+   dependency, no model download, fully explainable. Surface the Metrics app's own `minutes to
+   burndown` field (item 1) verbatim where available, rather than re-deriving it independently.
+
+4. **Refresh-failure classification** — `adapters/collector_rest.py` already pulls raw refresh
+   history into `facts["refreshes"]` (via `FABRIC_REFRESHES_URL`), but **no detector reads it** —
+   `detectors/pipeline.py::detect_pipelines` only looks at `facts["pipelines"]`'s pre-aggregated
+   fail-rate. The REST refresh-history payload itself carries real decomposition for free: each
+   `Refresh` has a `refreshAttempts[]` array, and each attempt carries `type` (`Data` vs `Query`),
+   its own `startTime`/`endTime` (duration per phase), `executionMetrics` (AS engine metrics), and
+   `serviceExceptionJson` (a structured error code, e.g. `ModelRefreshFailed_CredentialsNotSpecified`).
+   Add a detector/tool that reads `facts["refreshes"]` and classifies failures by error code,
+   surfaces which phase (data-load vs query/cache-warm) took the time, and flags multi-attempt
+   refreshes (retry storms) — no new data source, no new permission, just reading a field we
+   already collect and throw away. Per-table/partition detail (`ViaEnhancedApi` refreshes only)
+   is a further-out stretch, conditional on the org triggering refreshes via the Enhanced Refresh
+   API — not assumed available.
+   Source: [Get Refresh History](https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/get-refresh-history).
+
+5. **Dead-man's-switch alerting** — `job.py::main()`/`run_job()` currently has **no exception
+   handling at all**. If the sweep crashes outright (expired SP secret — the pasted
+   `FABRIC_CLIENT_SECRET` still needs rotation, a Kusto host timeout, any unhandled error from a
+   collector/reasoner/delivery port), the only signal is whatever Databricks' native job-failure
+   page shows — no Teams alert, nothing distinct from a normal findings card. An agent whose whole
+   premise is "catch problems before someone notices" has no way to report its own silence. Wrap
+   `main()` in a try/except; on any unhandled exception, post a minimal, visually distinct
+   "sweep failed at `<time>`: `<error>`" card through the existing `delivery_teams`
+   adapter (reuse, no new integration) before re-raising (so the Databricks Job still records
+   the failure). Small, isolated, no dependency on anything else in this section.
+
+6. **Eval golden-case coverage gap** — only 3 of the 12 MCP tools currently have any golden-case
+   coverage (`investigate_capacity_spike`, `raw_events`, `spike_events`); the other 9 — including
+   `capacity_diagnostics` and `capacity_patterns`, the two flagship tools built this session —
+   have zero. For a system built around "never fabricate a figure" (Task 12's honesty labels,
+   the grounded-gate in `score_investigations.py`), untested tools are precisely where a
+   fabrication would go unnoticed. Add at least one grounded golden case per currently-uncovered
+   tool to `eval/agent_cases.json` (mirroring the existing `windowed-raw-events-12to13` pattern —
+   real tool input, an answer that cites a token genuinely present in the mock result, verified
+   against both gates before committing). Testing debt, not a feature; sequenced here only so it's
+   tracked and planned, not lost.
+
+7. **Deterministic diagnostic engine (`diagnose` tool) — the capstone.** Today the diagnostic
+   *processes* exist only as prose: `docs/runbooks/*.md` tell the LLM which tools to call in which
+   order, and whether the chain actually runs depends on the model following the doc. Encode the
+   runbooks (plus item 1's Microsoft 3-stage throttle runbook) as **executable decision trees** in
+   `investigation/` — pure functions that call the same handlers/collectors internally, so one
+   `diagnose(symptom, when=?)` tool runs the whole chain itself:
+   - **Hypothesis elimination, not just confirmation** (differential diagnosis): each step is a
+     test that confirms OR rules out a cause, and the output carries both — e.g. *"NOT throttling:
+     CU% never exceeded 100% in the window (stage-1 gate)"* is as valuable as naming the culprit.
+     The Microsoft runbook's explicit decision points (stages 1→2→3) are literally this shape.
+   - **Causal chain output**: `{"chain": [ {step, hypothesis, verdict: confirmed|eliminated,
+     evidence: {…figures from the actual tool result…}} … ], "rootCause": …, "eliminated": […],
+     "confidence": …}` — the reasoner then *narrates* a completed investigation instead of
+     improvising one; every quoted figure traces to a chain hop (extends the existing
+     grounded-gate discipline).
+   - **Auto-chain the orphaned analyzers**: `dax.analyze_dax` exists but is CLI-only — not one of
+     the 12 tools, unreachable by the agent. Expose it as a tool AND auto-run it inside the chain
+     on the `queryText` of top offenders that `spike_events` already returns (spike → item → user
+     → query text → named DAX anti-pattern → specific coaching). Same for
+     `workload.refresh_collisions` (built, used only inside one playbook): the refresh-collision
+     runbook becomes an executed branch, and item 4's refresh-failure classification slots in as
+     another branch (symptom "refresh failed/slow" → error-code class → phase timing → retry
+     storms → collision check).
+   - Deterministic, offline-testable (fixture in → exact chain out), pure orchestration of
+     existing pieces — no ML, no new data source, no new permission. This is the item that moves
+     the agent from *"here's what you should check"* to *"here's what I checked, what I ruled
+     out, and what the root cause is."*
+
+8. **Give the conversational agent memory — expose the run-history brain to the MCP surface.**
+   The longitudinal intelligence already exists and is rich: `run_audit` (pipeline.py) wires
+   `annotate_recurring`, `apply_escalation`, `annotate_accountability`, `assess_sla`,
+   `build_digest`, `forecast_capacity`, `assess_outcomes` ("did our advice work?"), and
+   `detect_anomalies` — but ONLY when a `store` is present. The MCP tool path runs with
+   `store=None` (tools.py:111 — the App container can't *write* to /Volumes), so the
+   conversational agent is a pure snapshot analyst: it cannot answer "what changed since last
+   week?", "is this recurring?", "is this trending worse?", or "did last month's fix hold?" —
+   even though the scheduled Job appends exactly this history on every sweep and the
+   interpretation code already ships. Fix is a read-only seam, not new intelligence:
+   - a **load-only store port** (`{"history": fn}` with no `append`) pointed at the same
+     Volume/Delta path the Job writes — the App can read /Volumes; it just must never write
+     (read-only preserved by construction: the port has no append);
+   - one new tool, `whats_changed` (or `audit_history`): findings diff vs the previous sweep(s) —
+     `new` / `recurring` / `resolved` / `worsening` — plus the trend series, digest, outcomes,
+     and forecast the pipeline already computes, envelope-labeled with the history window and
+     the Job's last-run timestamp (staleness disclosed, never implied-fresh);
+   - gate on an env var (`FABRIC_HISTORY_PATH`); absent → the tool answers honestly that no
+     history is configured (mock path mirrors the other tools).
+   This is the "colleague who remembers" upgrade — highest value-per-line in this section, since
+   every hard part (the history schema, the trend/recurrence/outcome logic) already exists and is
+   tested; only the read seam + tool surface is new.
+
+9. **`user_timeline` tool — "what did John do all day?"** The per-user chronological answer is
+   split across two streams today, one of which is discarded before any tool can see it:
+   - **Engine events** (LA/WM, monitored workspaces): already fully exposed —
+     `raw_events(user=…, hours=24, order="recent")` gives every query/refresh with ts, item,
+     CU-seconds, query text.
+   - **Activity Events** (tenant-wide admin audit log): `collector_activity.py` already pulls and
+     maps ViewReport / RefreshDataset / ExecuteNotebook / RunPipeline / exports etc. with
+     `user`, `operation`, `item`, `workspace`, `time`, interactive-vs-background — then
+     aggregates it into item attribution, discarding the per-event timeline. No tool exposes it.
+   Add ONE tool that merges both streams chronologically for a single user + window:
+   `{"timeline": [ {ts, source: "activity"|"engine", operation, item, workspace,
+   cuSeconds|null, queryText|null} … ]}` — coverage-labeled (activity ops are tenant-wide but
+   carry no CU; engine cost exists only for monitored workspaces), bounded (row cap + window
+   like raw_events), spotlighted query text, camelCase. Reuses `map_activity_event` and the
+   existing event collectors as-is; read-only; the same Tier-1/Tier-2 fusion the graceful-
+   degradation section already prescribes, applied per-user. Note for deployment docs: this is
+   admin audit-log data (the same log tenant admins already have) — per-person day-tracking is
+   an org-policy question for the deployer, not a technical gate; the reasoner's name-sanitizer
+   is unaffected (the tool returns data to the asking admin, not into LLM prompts).
+
+**Checked and explicitly NOT pursued — with reasons, not left open:**
+
+- **DAX Server Timings (storage-engine vs formula-engine split)** — confirmed this requires an
+  active Profiler/trace-session subscription against the model (via DAX Studio/XMLA with elevated
+  rights), not a stateless REST or KQL call. That's a materially different integration shape —
+  a persistent session, not a query — from everything else this agent does. `dax.py::analyze_dax`
+  already documents its own ceiling here (`"profile with Performance Analyzer / DAX Studio..."`).
+  Real capability, but it needs its own design (session lifecycle, read-only trace scoping) before
+  it's a task — not a Phase-4 line item.
+- **Report/visual render time** — checked directly: visual display time is genuinely client-side
+  only (Power BI Desktop/Service UI thread), with no server-side API exposing it — Performance
+  Analyzer has no Service-side equivalent. The *other* leg of "why is this report slow" — DAX query
+  duration — is **already covered**: it's exactly what `CpuTimeMs`/`DurationMs` on `QueryEnd`
+  events (our existing Log Analytics / Workspace Monitoring collectors) capture today. Nothing
+  missing to build here; the client-render leg is a permanent blind spot, not a missed opportunity.
+  Source: [Performance Analyzer](https://learn.microsoft.com/en-us/power-bi/create-reports/performance-analyzer).
+- **SKU cost delta** — explicitly out of scope per user direction (2026-07-07). `investigation/sku.py`
+  knows SKU *names* only, no pricing; the Azure Retail Prices API (Phase-5 sheet item 7, public,
+  no auth) remains the path in if this is ever wanted later.
+- **ML anomaly detection / auto-remediation / streaming watchers** — the "even deeper" directions
+  deliberately NOT taken (2026-07-07, "without overcomplicating"): ML root-causing duplicates what
+  item 7's deterministic trees do explainably; auto-remediation is a write action (forbidden by
+  the read-only absolute); an always-on streaming watcher is an architecture change the scheduled
+  sweep + on-demand MCP already cover. Item 7 is the ceiling of *deduction* reachable without
+  breaking read-only or determinism.
 
 ## Phase 5 — approval-gated adders (the complete sheet)
 

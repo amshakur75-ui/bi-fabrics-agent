@@ -1611,6 +1611,137 @@ def test_capacity_diagnostics_partial_config_returns_error_envelope_not_keyerror
     assert out["source"] == "capacity"
 
 
+def test_capacity_diagnostics_no_config_has_no_throttle_decomposition(monkeypatch):
+    """Task 4 wiring, unconfigured path: throttleDecomposition key must be entirely absent,
+    not present-with-nulls -- capacity_diagnostics never reached the live branch at all."""
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert "throttleDecomposition" not in out
+
+
+def test_capacity_diagnostics_live_attaches_throttle_decomposition(monkeypatch):
+    """Task 4 wiring, live path: an injected hot CU% series + Tier-1 events must land a
+    throttleDecomposition with a conclusion, alongside the existing .show sections."""
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                return [{"ok": True}]
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            # capacity CU% series query (not a .show control command): one over-threshold window.
+            return [{"capacityId": "cap1", "windowStart": "2026-07-07T09:01:00Z",
+                     "baseCapacityUnits": 10, "capacityUnitMs": 10 * 1000 * 30 * 1.3}]
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+
+    # Tier-1 activity events source is also "configured" (creds present); stub it so the test
+    # never attempts a real MSAL token round-trip.
+    monkeypatch.setattr("fabric_audit_agent.tools._create_activity_event_collector",
+                         lambda http, config: {"collect": lambda: []})
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    assert "throttleDecomposition" in out
+    td = out["throttleDecomposition"]
+    assert td["conclusion"] in ("not-throttling", "throttling-confirmed", "over-utilized-unconfirmed")
+    assert td["stage1"]["timepointsOver"] == 1
+
+
+def test_capacity_diagnostics_throttle_decomposition_failure_surfaces_in_errors(monkeypatch):
+    """Task 4 review fix: a throttleDecomposition failure must land in errors["throttleDecomposition"]
+    (matching the per-section .show isolation mechanism), not be silently swallowed -- the
+    already-collected .show sections must still come back."""
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                return [{"ok": True}]
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            return [{"capacityId": "cap1", "windowStart": "2026-07-07T09:01:00Z",
+                     "baseCapacityUnits": 10, "capacityUnitMs": 10 * 1000 * 30 * 1.3}]
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    monkeypatch.setattr("fabric_audit_agent.tools._create_activity_event_collector",
+                         lambda http, config: {"collect": lambda: []})
+    monkeypatch.setattr("fabric_audit_agent.tools._decompose_throttle",
+                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    assert "throttleDecomposition" not in out
+    assert out["errors"]["throttleDecomposition"] == "boom"
+    assert "cluster" in out["sections"]
+
+
+def test_capacity_diagnostics_no_config_has_no_time_to_throttle(monkeypatch):
+    """Task 6 wiring, unconfigured path: timeToThrottle key must be entirely absent, matching
+    throttleDecomposition's absent-not-null contract -- the live branch was never reached."""
+    for v in ("FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB"):
+        monkeypatch.delenv(v, raising=False)
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+    assert out["source"] == "none"
+    assert "timeToThrottle" not in out
+
+
+def test_capacity_diagnostics_live_attaches_time_to_throttle(monkeypatch):
+    """Task 6 wiring, live path: an injected rising CU% series must land a numeric
+    timeToThrottle.minutesToThreshold, alongside throttleDecomposition and the .show sections."""
+    _set_capacity_kusto_env(monkeypatch)
+
+    base_cu = 10
+    rising_rows = [
+        {"capacityId": "cap1", "windowStart": f"2026-07-07T09:0{i}:00Z",
+         "baseCapacityUnits": base_cu, "capacityUnitMs": (50 + 2 * i) * base_cu * 300}
+        for i in range(8)
+    ]
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                return [{"ok": True}]
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            # capacity CU% series query (not a .show control command): 8 rising points.
+            return rising_rows
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    monkeypatch.setattr("fabric_audit_agent.tools._create_activity_event_collector",
+                         lambda http, config: {"collect": lambda: []})
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    assert "timeToThrottle" in out
+    ttt = out["timeToThrottle"]
+    assert ttt["method"] == "robust-trend"
+    assert isinstance(ttt["minutesToThreshold"], float)
+
+
 # ---------------------------------------------------------------------------
 # Task 10: capacity_patterns live-fix -- recent-ordered narrow window, tunable
 # thresholds (tool input > env > default), non-silent patternsDiagnostics.
@@ -1933,3 +2064,397 @@ def test_capacity_diagnostics_no_config_has_no_verify_urls(monkeypatch):
     out = h()
     assert out["source"] == "none"
     assert "verifyUrls" not in out
+
+
+# --- Task 3 (Phase 4): tiered event resolution -------------------------------------------
+# NOTE: test_mcp_tools.py has NO handler-fetch helper today (every existing test inlines
+# `next(d for d in create_tool_definitions() if d["name"] == X)["handler"]`). ADD this helper
+# here once; Tasks 5/9/11/12/13/14's new tests reuse it (existing tests stay untouched):
+def _handler(name):
+    from fabric_audit_agent.tools import create_tool_definitions
+    return next(d for d in create_tool_definitions() if d["name"] == name)["handler"]
+
+_T1_ENV = {"FABRIC_CLIENT_ID": "cid", "FABRIC_TENANT_ID": "t", "FABRIC_CLIENT_SECRET": "s"}
+
+def _clear_live(monkeypatch):
+    for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
+              "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID",
+              "FABRIC_TENANT_ID", "FABRIC_CLIENT_SECRET"):
+        monkeypatch.delenv(v, raising=False)
+
+def test_spike_events_mock_path_labeled_mock_tier(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("spike_events")({})
+    assert out["tier"] == "mock"
+    assert "coverageNote" not in out          # None → key omitted (no noise on healthy paths)
+
+def test_spike_events_tier1_uses_activity_events_and_labels(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake_events = [{"ts": "2026-07-07T09:00:00Z", "user": "john@co", "item": "Sales",
+                    "workspace": "Fin", "kind": "interactive", "cuSeconds": None,
+                    "queryText": None, "operation": "ViewReport"}]
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake_events})
+    out = _handler("spike_events")({"days": 1})
+    assert out["tier"] == "operationLevel"
+    assert "per-query cost unavailable" in out["coverageNote"]
+
+def test_tier2_env_stays_per_query(monkeypatch):
+    # LA configured → Tier-2 path untouched; pin only the new labels. Stub the LA client the
+    # way the EXISTING live tests in this file do (e.g. around lines 381/461/564):
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query",
+                        lambda *a, **kw: (lambda kql: []))
+    out = _handler("spike_events")({})
+    assert out["tier"] == "perQuery" and out.get("coverageNote") is None
+
+def test_tier1_series_is_real_or_empty_never_mock(monkeypatch):
+    # THE honesty regression guard for the extracted _capacity_series_only helper: with Tier-1
+    # env + NO capacity cluster, the series must be [] — never _MOCK_CAPACITY_SERIES values.
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: []})
+    out = _handler("capacity_patterns")({"days": 1})
+    diag = out["patternsDiagnostics"]
+    assert diag["maxCuPeakPct"] in (None, 0, 0.0)   # no fabricated 85.0 from the mock series
+
+_WM_ONLY_ENV = {"FABRIC_KUSTO_CLUSTER": "c", "FABRIC_KUSTO_DB": "db",
+                "FABRIC_CLIENT_ID": "cid", "FABRIC_TENANT_ID": "t", "FABRIC_CLIENT_SECRET": "s"}
+
+def test_wm_only_env_stays_operation_level_never_mislabeled_per_query(monkeypatch):
+    # Final review F1 (load-bearing regression guard): WM's descriptor no longer claims
+    # eventDepth (sources.py), and the Tier-2 branch in _resolve_event_sources additionally
+    # requires _has_live_event_source (LA) before trusting a descriptor's eventDepth claim.
+    # WM-only env (Kusto cluster/db + the 3 cred vars, NO Log Analytics workspace) must fall
+    # through to Tier-1 (operationLevel via activity), NOT be mislabeled "perQuery" over the
+    # mock/fixture events -- and capacity_patterns must never surface the fabricated 85.0 mock
+    # series value as if it were real.
+    _clear_live(monkeypatch)
+    for k, v in _WM_ONLY_ENV.items():
+        monkeypatch.setenv(k, v)
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: []})
+    out = _handler("spike_events")({"days": 1})
+    assert out["tier"] == "operationLevel"
+    assert out["tier"] != "perQuery"
+
+    diag = _handler("capacity_patterns")({"days": 1})["patternsDiagnostics"]
+    assert diag["maxCuPeakPct"] in (None, 0, 0.0)   # no fabricated 85.0 from the mock series
+
+def test_tier1_spike_events_ranked_by_operation_frequency(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake = [{"ts": f"2026-07-07T09:0{i}:00Z", "user": "john@co", "item": "Sales",
+             "workspace": "F", "kind": "interactive", "cuSeconds": None,
+             "queryText": None, "operation": "ViewReport"} for i in range(3)]
+    fake.append({"ts": "2026-07-07T09:05:00Z", "user": "amy@co", "item": "HR", "workspace": "P",
+                 "kind": "interactive", "cuSeconds": None, "queryText": None, "operation": "ViewReport"})
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake})
+    out = _handler("spike_events")({"days": 1})
+    assert out["rankedBy"] == "operationFrequency"
+    assert out["events"][0]["item"] == "Sales"      # 3 ops beats 1 op — frequency, not None-cost
+
+def test_tier1_entra_http_client_is_memoized_across_calls(monkeypatch):
+    """The Tier-1 activity-events http client must be built once and reused via _memo_client --
+    a fresh _LazyEntraHttp per call re-triggers the MSAL ConfidentialClientApplication rebuild
+    that _memo_client exists to prevent (see the LA/Kusto memo tests above)."""
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    import fabric_audit_agent.tools as tools_mod
+    tools_mod._CLIENT_CACHE.clear()
+    builds = {"n": 0}
+    seen = []
+
+    class CountingLazyEntraHttp:
+        def __init__(self, *a, **kw):
+            builds["n"] += 1
+
+    monkeypatch.setattr(tools_mod, "_LazyEntraHttp", CountingLazyEntraHttp)
+
+    def fake_collector(http, cfg):
+        seen.append(http)
+        return {"collect": lambda: []}
+
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector", fake_collector)
+    _handler("spike_events")({"days": 1})
+    _handler("spike_events")({"days": 7})
+    assert builds["n"] == 1
+    assert seen[0] is seen[1]
+
+
+# --- Task 5 (Phase 4): read-only queryplan cost estimate (pre-flight primitive) ----------
+def test_queryplan_estimate_sends_show_queryplan_prefixed_command():
+    from fabric_audit_agent.tools import _queryplan_estimate
+    sent = {}
+    def fake_query(cmd):
+        sent["cmd"] = cmd
+        return [{"PlanSize": 12, "RelopSize": 3}]
+    out = _queryplan_estimate("CapacityEvents | take 5; .drop table x", query=fake_query)
+    assert sent["cmd"].startswith(".show queryplan")
+    assert ".drop" not in sent["cmd"]                 # first_statement guard applied to the kql
+    assert out == {"available": True, "plan": [{"PlanSize": 12, "RelopSize": 3}], "error": None}
+
+def test_queryplan_estimate_unavailable_on_error_never_raises():
+    def boom(cmd):
+        raise RuntimeError("cluster rejected")
+    from fabric_audit_agent.tools import _queryplan_estimate
+    out = _queryplan_estimate("T | take 1", query=boom)
+    assert out == {"available": False, "plan": None, "error": "cluster rejected"}
+
+def test_describe_source_estimate_kql_attaches_plan(monkeypatch):
+    # spec ADD 2 "immediately usable today": describe_source gains optional estimateKql.
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "https://x.kusto.fabric.microsoft.com")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    # describe_source's capacity branch still fetches the live cslschema BEFORE the plan-estimate
+    # wiring runs, so the kusto client builder needs a fake (same pattern as the existing
+    # describe_source capacity-live tests above) -- otherwise it tries a real 'azure' import.
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **kw: (lambda kql: [{"Schema": "ts:datetime"}]))
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_queryplan_estimate",
+                        lambda kql, **kw: {"available": True, "plan": [{"PlanSize": 1}], "error": None})
+    out = _handler("describe_source")({"source": "capacity", "estimateKql": "CapacityEvents | take 5"})
+    assert out["planEstimate"]["available"] is True
+
+
+# --- Task 9 (Phase 4): analyze_dax exposed as a tool -------------------------------------
+
+def test_analyze_dax_tool_flags_filter_whole_table():
+    out = _handler("analyze_dax")({"expression": "CALCULATE(SUM(S[x]), FILTER(Sales, Sales[y]>0))"})
+    assert any(s["pattern"] == "filter-whole-table" for s in out["suggestions"])
+    assert out["patternCount"] >= 1 and out["source"] == "static-rules"
+
+
+def test_analyze_dax_tool_threads_duration_stats():
+    out = _handler("analyze_dax")({"expression": "1+1", "durationMs": 9000})
+    assert any(s["pattern"] == "slow-no-obvious-cause" for s in out["suggestions"])
+
+
+def test_analyze_dax_tool_missing_expression_error_envelope():
+    out = _handler("analyze_dax")({})
+    assert "error" in out
+
+
+# --- Task 11 (Phase 4): diagnose tool -- executed causal chains (14th tool) --------------
+
+def test_diagnose_mock_path_throttle_chain_shape(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("diagnose")({"symptom": "throttle"})
+    assert out["symptom"] == "throttle"
+    assert out["tier"] == "mock"
+    assert out["chain"]
+    for step in out["chain"]:
+        assert set(["step", "hypothesis", "verdict", "evidence"]) <= set(step.keys())
+
+
+def test_diagnose_invalid_symptom_returns_error_envelope_never_raises(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("diagnose")({"symptom": "bogus"})
+    assert "error" in out
+
+
+def test_diagnose_tier1_env_has_coverage_note_and_unconfirmed_driver(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    # Also configure the capacity-events cluster so the series is real (>100% CU%) --
+    # otherwise _capacity_series_only returns [] and stage1 eliminates before reaching the
+    # "who drove" step at all. Events stay Tier-1 (operationLevel) since eventDepth/
+    # userAttribution capability config is unrelated to the capacity-cluster env vars.
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+    fake_events = [{"ts": "2026-07-07T09:00:00Z", "user": "john@co", "item": "Sales",
+                    "workspace": "Fin", "kind": "interactive", "cuSeconds": None,
+                    "queryText": None, "operation": "ViewReport"}]
+    ce_rows = [
+        {"capacityId": "cap1", "windowStartTime": "2026-07-07T09:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 2000000},   # ~104%
+    ]
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake_events})
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **kw: (lambda kql: ce_rows))
+    out = _handler("diagnose")({"symptom": "throttle", "days": 1})
+    assert out.get("coverageNote")
+    driver_step = next(s for s in out["chain"] if s["step"] == "who drove the over-window?")
+    assert driver_step["verdict"] == "unconfirmed"
+
+
+def test_diagnose_refresh_symptom_on_mock_runs_and_eliminates(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("diagnose")({"symptom": "refresh"})
+    assert out["symptom"] == "refresh"
+    assert out["eliminated"] == ["refresh failure"]
+
+
+# --- Task 12 (Phase 4): whats_changed -- run-history diff (agent memory) ------------------
+_HIST = [
+    {"runAt": "2026-07-06T06:00:00Z", "metrics": {"peakCuPct": 88.0}, "findings": [
+        {"key": "cap.hot", "level": "warn", "where": "F64", "what": "hot", "suppressed": False},
+        {"key": "model.big", "level": "info", "where": "W/S", "what": "big", "suppressed": False}]},
+    {"runAt": "2026-07-07T06:00:00Z", "metrics": {"peakCuPct": 96.0}, "findings": [
+        {"key": "cap.hot", "level": "warn", "where": "F64", "what": "hot", "suppressed": False},
+        {"key": "refresh.storm", "level": "warn", "where": "W/S", "what": "storm", "suppressed": False},
+        {"key": "sec.x", "level": "info", "where": "W", "what": "x", "suppressed": True}]},
+]
+
+def _hist_env(tmp_path, monkeypatch, hist=_HIST):
+    import json as _json
+    p = tmp_path / "history.json"
+    p.write_text(_json.dumps(hist), encoding="utf-8")
+    monkeypatch.setenv("FABRIC_HISTORY_PATH", str(p))
+
+def test_whats_changed_diffs_new_recurring_resolved(tmp_path, monkeypatch):
+    _hist_env(tmp_path, monkeypatch)
+    out = _handler("whats_changed")({})
+    assert [f["key"] for f in out["new"]] == ["refresh.storm"]
+    assert [f["key"] for f in out["recurring"]] == ["cap.hot"]
+    assert [f["key"] for f in out["resolved"]] == ["model.big"]
+    assert all(f["key"] != "sec.x" for f in out["new"])          # suppressed excluded
+    assert out["peakCuTrend"][-1] == {"runAt": "2026-07-07T06:00:00Z", "peakCuPct": 96.0}
+    assert out["lastRunAt"] == "2026-07-07T06:00:00Z"
+
+def test_whats_changed_unconfigured_is_honest(monkeypatch):
+    monkeypatch.delenv("FABRIC_HISTORY_PATH", raising=False)
+    out = _handler("whats_changed")({})
+    assert out["source"] == "none" and "FABRIC_HISTORY_PATH" in out["note"]
+
+def test_whats_changed_single_run_history(tmp_path, monkeypatch):
+    _hist_env(tmp_path, monkeypatch, hist=_HIST[-1:])
+    out = _handler("whats_changed")({})
+    assert out["new"] == [] and out["resolved"] == []
+    assert "only one run" in out["note"]
+
+def test_whats_changed_never_writes(tmp_path, monkeypatch):
+    _hist_env(tmp_path, monkeypatch)
+    before = (tmp_path / "history.json").read_text(encoding="utf-8")
+    _handler("whats_changed")({})
+    assert (tmp_path / "history.json").read_text(encoding="utf-8") == before
+
+def test_whats_changed_malformed_history_is_error_not_empty(tmp_path, monkeypatch):
+    p = tmp_path / "history.json"
+    p.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setenv("FABRIC_HISTORY_PATH", str(p))
+    out = _handler("whats_changed")({})
+    assert "error" in out
+    assert "new" not in out
+
+def test_whats_changed_run_missing_metrics_does_not_crash_and_is_skipped_in_trend(tmp_path, monkeypatch):
+    # M2 (final review): a history entry missing "metrics" (e.g. an older/partial run record)
+    # must not raise KeyError out of the handler -- it's tolerated and simply excluded from
+    # peakCuTrend, while the rest of the diff still runs normally.
+    hist = [
+        {"runAt": "2026-07-05T06:00:00Z", "findings": []},   # malformed: no "metrics" key
+        _HIST[0],
+        _HIST[1],
+    ]
+    _hist_env(tmp_path, monkeypatch, hist=hist)
+    out = _handler("whats_changed")({"runs": 30})
+    assert "error" not in out
+    assert all(t["runAt"] != "2026-07-05T06:00:00Z" for t in out["peakCuTrend"])
+    assert [t["peakCuPct"] for t in out["peakCuTrend"]] == [88.0, 96.0]
+
+
+# --- Task 13 (Phase 4): user_timeline -- merged per-user activity+engine timeline (16th tool) ---
+
+def test_user_timeline_mock_path_merged_shape_sorted_by_ts(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({"user": "alice@co"})
+    assert out["tier"] == "mock"
+    assert out["timeline"] == sorted(out["timeline"], key=lambda e: e["ts"])
+    for e in out["timeline"]:
+        assert set(["ts", "source", "operation", "item", "workspace", "kind",
+                     "cuSeconds", "queryText"]) <= set(e.keys())
+        assert e["source"] in ("activity", "engine")
+    assert out["counts"]["engine"] + out["counts"]["activity"] == len(out["timeline"])
+
+
+def test_user_timeline_tier1_all_activity_source_no_cost(monkeypatch):
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake_events = [
+        {"ts": "2026-07-07T09:00:00Z", "user": "john@co", "item": "Sales", "workspace": "Fin",
+         "kind": "interactive", "cuSeconds": None, "queryText": None, "operation": "ViewReport"},
+        {"ts": "2026-07-07T08:00:00Z", "user": "john@co", "item": "HR", "workspace": "P",
+         "kind": "refresh", "cuSeconds": None, "queryText": None, "operation": "RefreshEnd"},
+    ]
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: fake_events})
+    out = _handler("user_timeline")({"user": "JOHN@co", "days": 1})
+    assert all(e["source"] == "activity" for e in out["timeline"])
+    assert all(e["cuSeconds"] is None for e in out["timeline"])
+    assert out["coverageNote"]
+    assert out["counts"] == {"activity": 2, "engine": 0}
+    # sorted by ts ascending despite the fake collector returning newest-first
+    assert [e["ts"] for e in out["timeline"]] == ["2026-07-07T08:00:00Z", "2026-07-07T09:00:00Z"]
+
+
+def test_user_timeline_missing_user_is_error_envelope(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({})
+    assert out == {"error": "user is required", "source": "mock"}
+
+
+def test_user_timeline_counts_match_entry_sources(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({"user": "alice@co"})
+    engine_n = sum(1 for e in out["timeline"] if e["source"] == "engine")
+    activity_n = sum(1 for e in out["timeline"] if e["source"] == "activity")
+    assert out["counts"] == {"engine": engine_n, "activity": activity_n}
+
+
+def test_user_timeline_default_window_is_24h(monkeypatch):
+    _clear_live(monkeypatch)
+    out = _handler("user_timeline")({"user": "alice@co"})
+    assert out["windowLabel"] == "last 24h"
+
+
+def test_user_timeline_tier2_activity_stream_failure_is_resilient(monkeypatch):
+    # THE load-bearing test: eventDepth (Tier-2) AND userAttribution both configured, so the
+    # handler fetches the engine stream (succeeds) AND the separate activity stream (raises).
+    # The engine entries must still come back, counts["activity"] must be 0, and streamNotes
+    # must explain the failure -- never a crash, never a silent hole.
+    _clear_live(monkeypatch)
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws")
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    fake_engine_events = [
+        {"TimeGenerated": "2026-07-07T09:00:00Z", "ExecutingUser": "john@co",
+         "ArtifactName": "Sales", "PowerBIWorkspaceName": "Fin", "OperationName": "QueryEnd",
+         "CpuTimeMs": 4000, "EventText": "EVALUATE Sales"},
+    ]
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query",
+                        lambda *a, **kw: (lambda kql: fake_engine_events))
+    import fabric_audit_agent.tools as tools_mod
+
+    def boom(http, cfg):
+        raise RuntimeError("activity collector unavailable")
+
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector", boom)
+    out = _handler("user_timeline")({"user": "john@co"})
+    assert out["tier"] == "perQuery"
+    assert out["counts"]["activity"] == 0
+    assert out["counts"]["engine"] >= 1
+    assert any(e["source"] == "engine" for e in out["timeline"])
+    assert out["streamNotes"]
+    assert "activity" in out["streamNotes"][0]

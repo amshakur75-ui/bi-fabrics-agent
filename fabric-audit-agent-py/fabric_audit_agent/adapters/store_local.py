@@ -20,8 +20,13 @@ def create_local_store(file_path, keep=180):
         all_runs.append(run)
         trimmed = all_runs[-keep:]
         os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as fh:
+        # Atomic write: a concurrent reader (e.g. the MCP whats_changed tool) must never see a
+        # torn/partial file mid-write. Write to a sibling temp file, then os.replace -- atomic
+        # on the same filesystem -- so readers always see either the old file or the new one.
+        tmp_path = file_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(trimmed, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, file_path)
         return len(trimmed)
 
     return {"history": history, "append": append}
