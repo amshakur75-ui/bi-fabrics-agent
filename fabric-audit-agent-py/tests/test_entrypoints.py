@@ -120,7 +120,8 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
     assert set(tools) == {"run_audit", "list_workspaces", "user_activity", "investigate_user",
                           "investigate_capacity_spike", "user_spike_history", "spike_events",
                           "raw_events", "capacity_patterns", "describe_source", "sample_events",
-                          "capacity_diagnostics"}
+                          "capacity_diagnostics", "analyze_dax", "diagnose", "whats_changed",
+                          "user_timeline"}
 
     # user_spike_history: user REQUIRED; window props + item optional -- no phantom topN/when
     ush = tools["user_spike_history"]
@@ -143,8 +144,8 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
     # investigate_capacity_spike: when + days + windowMinutes
     assert set(tools["investigate_capacity_spike"]["properties"]) == {"when", "days", "windowMinutes"}
 
-    # grounding tools
-    assert set(tools["describe_source"]["properties"]) == {"source", "table"}
+    # grounding tools (describe_source also carries the estimateKql pre-flight cost primitive)
+    assert set(tools["describe_source"]["properties"]) == {"source", "table", "estimateKql"}
     assert set(tools["sample_events"]["properties"]) == {"source", "table", "n"}
     assert not tools["capacity_diagnostics"].get("properties")
 
