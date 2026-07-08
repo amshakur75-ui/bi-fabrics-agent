@@ -143,3 +143,27 @@ def test_double_quote_verbatim_marker_rejected():
 
 def test_single_quote_verbatim_marker_rejected():
     assert _reject("T | where m == @'plain verbatim' | take 1").stage == "verbatim-string"
+
+
+# --- multiline (triple-backtick) string bypass (final-review C-1b) -----------------------------
+# KQL triple-backtick multiline string literals (```...```) are the SAME unmodeled-literal bypass
+# class as verbatim strings: the '/" quote-parity state machines in kql_guard don't track backtick
+# at all, so a stray '/" inside a backtick block desyncs their parity counter and a following
+# denied call gets silently blanked before the deny-list ever sees it. Proven PoC (hand-traced):
+# CapacityEvents | where Msg == ```it's fine``` | union database('SecretDB').SecretTable
+# -- the "'" in "it's" desyncs parity, blanking "| union database(" so the deny-list never fires.
+
+def test_multiline_string_bypass_cross_database_read_rejected():
+    kql = ("CapacityEvents | where Msg == ```it's fine``` | union "
+           "database('SecretDB').SecretTable")
+    assert _reject(kql).stage == "multiline-string"
+
+
+def test_multiline_string_bare_triple_backtick_block_rejected():
+    kql = 'T | where m == ```abc``` | take 1'
+    assert _reject(kql).stage == "multiline-string"
+
+
+def test_multiline_string_single_stray_backtick_rejected():
+    kql = 'T | where m == `x | take 1'
+    assert _reject(kql).stage == "multiline-string"
