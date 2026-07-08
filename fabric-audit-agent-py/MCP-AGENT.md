@@ -49,7 +49,8 @@ which re-enters the full firewall on any edit.
 **Audit-log deployment note:** every `run_kql` attempt — allowed or rejected, at any stage — writes
 one structured `[adhoc-kql]` JSON line to stdout (captured by Databricks App logging), carrying the
 engine, verdict, rejection stage/reason where applicable, row count, and the **query text itself**
-(secrets redacted via `query/redact.py`, not the query withheld). This is both the security trail
+(credentials redacted on a best-effort basis — an allowlist of known credential forms; a bare
+secret embedded as a literal may not be masked — via `query/redact.py`). This is both the security trail
 for what ad-hoc KQL ran against production telemetry and, longer-term, the mining signal for which
 ad-hoc queries are common enough to promote into `query_library` — an org-policy parallel to
 `user_timeline`'s admin-audit-log read: the tool enforces no extra access control beyond existing

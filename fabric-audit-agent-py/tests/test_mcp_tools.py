@@ -2557,7 +2557,9 @@ def test_run_kql_rejects_denied_operator_before_touching_engine(monkeypatch):
     import fabric_audit_agent.tools as t
     called = {"n": 0}
     monkeypatch.setattr(t, "_capacity_kusto_query", lambda env: (lambda kql: called.__setitem__("n", called["n"] + 1) or []))
-    out = _handler("run_kql")({"kql": "externaldata(x:string)[@'https://evil/x']", "engine": "capacity"})
+    # regular (non-verbatim) string literal here so this exercises the denied-operator stage,
+    # not the earlier verbatim-string stage (see test_firewall.py for the verbatim-string case).
+    out = _handler("run_kql")({"kql": "externaldata(x:string)['https://evil/x']", "engine": "capacity"})
     assert out["error"] and out["rejectionStage"] == "denied-operator"
     assert called["n"] == 0                       # firewall ran BEFORE any engine call
 

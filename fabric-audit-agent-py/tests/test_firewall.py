@@ -51,7 +51,8 @@ def test_tautology_rejected():
 
 
 @pytest.mark.parametrize("kql", [
-    "externaldata(x:string)[@'https://evil/x.csv']",
+    # NOTE: no @'...' / @"..." here — externaldata(...)[@'url'] is covered separately below;
+    # a verbatim-string literal now rejects at the earlier "verbatim-string" stage, not this one.
     "CapacityEvents | join (cluster('other').database('d').T) on cap",
     "CapacityEvents | join (database('other').T) on cap",
     "union workspace('other').PowerBIDatasetsWorkspace | take 1",
@@ -60,6 +61,13 @@ def test_tautology_rejected():
 ])
 def test_denied_operators_rejected(kql):
     assert _reject(kql).stage == "denied-operator"
+
+
+def test_externaldata_with_verbatim_url_rejected_at_verbatim_stage():
+    # The classic externaldata() bypass uses a verbatim-string URL literal (@'...'); that now
+    # trips the earlier verbatim-string stage rather than reaching the denied-operator stage —
+    # still rejected, just caught sooner (and for a broader reason).
+    assert _reject("externaldata(x:string)[@'https://evil/x.csv']").stage == "verbatim-string"
 
 
 def test_denied_keyword_inside_string_literal_passes():
@@ -91,3 +99,47 @@ def test_legitimate_multiline_analytical_query_passes():
            "| summarize total = sum(CpuTimeMs) by ExecutingUser\n"
            "| top 10 by total desc")
     assert validate_adhoc_kql(kql) == kql
+
+
+# --- verbatim-string bypass (final-review C-1) -----------------------------------------------
+# KQL verbatim strings (@"..."/@'...') are NOT modeled by the regular-string state machines in
+# kql_guard (first_statement / _strip_string_literals): '\' is literal in a verbatim string and
+# the string closes at the very next quote, but the state machine still thinks it's escaping.
+# A verbatim string ending in a literal '\"' therefore makes the state machine believe the string
+# never closes, so everything after it is treated as "inside a string" and skipped by every later
+# stage -- while the real Kusto/LA engine closes the string right there and executes the trailing
+# text. These four are proven bypasses that must now be rejected at the "verbatim-string" stage.
+
+def test_verbatim_string_bypass_cross_database_read_rejected():
+    kql = 'CapacityEvents | where Msg == @"x\\" | union database(\'SecretDB\').SecretTable'
+    assert _reject(kql).stage == "verbatim-string"
+
+
+def test_verbatim_string_bypass_cross_cluster_read_rejected():
+    kql = ("T | where m == @\"a\\\" | where cluster('other.kusto.windows.net')"
+           ".database('d').X")
+    assert _reject(kql).stage == "verbatim-string"
+
+
+def test_verbatim_string_bypass_multi_statement_control_command_rejected():
+    kql = 'T | where m == @"a\\" ; .drop table Foo'
+    assert _reject(kql).stage == "verbatim-string"
+
+
+def test_verbatim_string_bypass_single_quote_variant_rejected():
+    kql = "T | where m == @'a\\' | union database('D').T"
+    assert _reject(kql).stage == "verbatim-string"
+
+
+def test_normal_regular_string_query_still_passes():
+    # Guard: the verbatim-string stage must not false-reject ordinary quoted strings.
+    kql = 'CapacityEvents | where note == "a normal string" | take 1'
+    assert validate_adhoc_kql(kql) == kql
+
+
+def test_double_quote_verbatim_marker_rejected():
+    assert _reject('T | where m == @"plain verbatim" | take 1').stage == "verbatim-string"
+
+
+def test_single_quote_verbatim_marker_rejected():
+    assert _reject("T | where m == @'plain verbatim' | take 1").stage == "verbatim-string"
