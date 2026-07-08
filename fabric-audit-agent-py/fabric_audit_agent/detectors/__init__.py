@@ -12,10 +12,12 @@ from .pipeline import detect_pipelines
 from .blast_radius import detect_blast_radius
 from .security import detect_security
 from .cost import detect_cost
+from .refresh import detect_refreshes
 
 _DETECTORS = [
     detect_capacity, detect_concentration, detect_user_concentration, detect_models,
     detect_reports, detect_pipelines, detect_blast_radius, detect_security, detect_cost,
+    detect_refreshes,
 ]
 
 
