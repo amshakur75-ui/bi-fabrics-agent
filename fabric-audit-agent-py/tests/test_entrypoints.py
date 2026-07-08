@@ -488,3 +488,59 @@ def test_mine_queries_min_count_override_takes_effect(tmp_path):
     # --min-count 2 lowers the bar -> the shape is now promotable
     out = run_mine_queries_cli([str(logfile), "--min-count", "2"], library_path=str(lib_path))
     assert "adhoc-capacity-" in out
+
+
+def test_mine_queries_write_refuses_to_clobber_present_but_malformed_library(tmp_path):
+    # DATA-LOSS GUARD (opus final-review finding): a present-but-unparseable library must NOT be
+    # silently overwritten with just the mined entries. --write must abort and leave it untouched.
+    lib_path = tmp_path / "query_library.json"
+    lib_path.write_text(
+        '[{"name": "human-a", "category": "capacity", "engine": "capacity", '
+        '"description": "d", "kql": "CapacityEvents | take 1", "groundedIn": "human"}] OOPS',
+        encoding="utf-8",
+    )  # valid list + trailing garbage -> malformed JSON
+    before = lib_path.read_bytes()
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    out = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+
+    assert "refusing to --write" in out
+    assert lib_path.read_bytes() == before          # NOT clobbered
+    assert b"human-a" in lib_path.read_bytes()       # the curated content survives
+
+
+def test_mine_queries_write_creates_absent_library(tmp_path):
+    # Absent file is the OK case: --write creates a new library with the mined entries.
+    lib_path = tmp_path / "absent_library.json"
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    out = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+
+    assert "Wrote 1 new quer" in out
+    created = json.loads(lib_path.read_text(encoding="utf-8"))
+    assert isinstance(created, list) and len(created) == 1
+    assert created[0]["name"].startswith("adhoc-capacity-")
+    assert created[0]["category"] == "adhoc-mined"
+
+
+def test_mine_queries_write_preserves_crlf_newlines(tmp_path):
+    # NEWLINE GUARD (opus final-review finding): a CRLF library must stay CRLF after --write, so a
+    # rewrite doesn't flip every line to LF and bury the one intended addition in the PR diff.
+    lib_path = tmp_path / "query_library.json"
+    entries = _write_small_library(lib_path)   # returns the entry list...
+    with open(lib_path, "w", encoding="utf-8", newline="\r\n") as fh:   # ...rewrite it as CRLF
+        json.dump(entries, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    out = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+    assert "Wrote 1 new quer" in out
+
+    raw = lib_path.read_bytes()
+    assert b"\r\n" in raw                                  # CRLF preserved
+    assert b"\n" not in raw.replace(b"\r\n", b"")          # no bare LF introduced

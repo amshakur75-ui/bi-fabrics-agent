@@ -210,13 +210,47 @@ def _resolve_library_path(base_dir=None, library_path=None):
 
 def _read_query_library_from(path):
     """Load templates from *path*. A missing or malformed file degrades to ``[]`` (same
-    tolerance as ``tools._load_query_library``) rather than raising."""
+    tolerance as ``tools._load_query_library``) rather than raising. Used for the dedup/preview
+    READ, where tolerance is correct; the ``--write`` path uses ``_library_write_base`` instead."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return []
     return data if isinstance(data, list) else []
+
+
+def _library_write_base(path):
+    """The existing entries to preserve on ``--write``, or ``(None, error_string)`` if the file is
+    present but unreadable / not a JSON list. A truly ABSENT file is fine -> ``([], None)`` (create a
+    new library). This is deliberately STRICTER than ``_read_query_library_from``: silently treating
+    a present-but-malformed library as ``[]`` here would OVERWRITE a curated library with just the
+    mined entries — turning a recoverable parse error into unrecoverable data loss. A malformed file
+    is recoverable; a clobbered one is not, so we refuse before opening for write."""
+    if not os.path.exists(path):
+        return [], None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, (f"mine-queries: refusing to --write — the library at {path} exists but is "
+                      f"unreadable ({exc}); fix or remove it first (no changes made)")
+    if not isinstance(data, list):
+        return None, (f"mine-queries: refusing to --write — the library at {path} is not a JSON "
+                      f"list; fix it first (no changes made)")
+    return data, None
+
+
+def _detect_newline(path):
+    """The library file's existing newline style, so a ``--write`` rewrite doesn't flip every
+    line's ending (CRLF<->LF churn that would bury the intended additions in the PR diff). An
+    absent/unreadable file -> ``"\\n"`` (repo-friendly LF default)."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return "\n"
+    return "\r\n" if b"\r\n" in raw else "\n"
 
 
 def _mine_one_line_kql(kql, limit=_MINE_KQL_PREVIEW_MAX):
@@ -294,8 +328,16 @@ def run_mine_queries_cli(rest, base_dir=None, library_path=None) -> str:
     if not args.write:
         return _mine_format_preview(entries, args.logfile)
 
-    updated = list(existing) + entries
-    with open(lib_path, "w", encoding="utf-8") as fh:
+    # --write: never clobber a present-but-unreadable curated library. A parse error must abort
+    # BEFORE we open for write (a malformed file is recoverable; a wiped one is not). An absent
+    # file is fine -> create a new library. This strict re-read is separate from `existing` above,
+    # which is intentionally tolerant for dedup/preview.
+    base_entries, err = _library_write_base(lib_path)
+    if err is not None:
+        return err
+
+    updated = list(base_entries) + entries
+    with open(lib_path, "w", encoding="utf-8", newline=_detect_newline(lib_path)) as fh:
         json.dump(updated, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
 
