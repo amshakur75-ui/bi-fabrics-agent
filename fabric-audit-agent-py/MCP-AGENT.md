@@ -36,8 +36,9 @@ click-to-rerun-in-Fabric deeplink.
 
 **Tiered coverage.** Event-backed tools (`spike_events`, `raw_events`, `capacity_patterns`,
 `user_spike_history`, `diagnose`, `user_timeline`) run in one of two tiers depending on what's
-configured: **Tier-2** (Log Analytics or Workspace Monitoring Eventhouse wired) returns real
-per-query events — exact DAX/query text and `cuSeconds`; **Tier-1** (only Activity Events /
+configured: **Tier-2** (Log Analytics wired — the only source the event tools currently consume;
+Workspace Monitoring feeds the aggregate audit's item attribution, not this seam, until wired)
+returns real per-query events — exact DAX/query text and `cuSeconds`; **Tier-1** (only Activity Events /
 `userAttribution` configured, no per-workspace depth) synthesizes operation-level events from the
 tenant-wide audit log — no CU figure, coarser granularity. Every result carries a `tier` field and,
 on Tier-1, a `coverageNote` explaining the gap, so an answer can honestly state what it can and

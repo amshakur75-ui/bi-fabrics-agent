@@ -630,7 +630,12 @@ def create_tool_definitions(base_dir=None):
         eventDepth is configured; Tier-1 (operation-level, cuSeconds=None) from Activity Events
         when only attribution is configured; else the offline mock."""
         cov = _resolve_sources_registry(os.environ)["coverage"]
-        if cov["byCapability"]["eventDepth"] is not None:
+        # Defense-in-depth (final review F1): a descriptor claiming eventDepth is not enough --
+        # this seam only actually HAS a live per-query source when _has_live_event_source (LA)
+        # is true. If a future/misconfigured descriptor claims eventDepth without the seam being
+        # able to serve it, fall through to Tier-1/mock below with CORRECT tier labels instead of
+        # mislabeling mock data as "perQuery"/hasRealCost=True.
+        if cov["byCapability"]["eventDepth"] is not None and _has_live_event_source(os.environ):
             events, series, meta = _events_or_mock(days=days, hours=hours, start=start, end=end,
                                                     user=user, item=item, cap=cap, order=order)
             return events, series, {**meta, "tier": "perQuery", "coverageNote": None,
@@ -1145,7 +1150,7 @@ def create_tool_definitions(base_dir=None):
         inp = _input or {}
         expression = inp.get("expression")
         if not expression:
-            return {"error": "expression is required"}
+            return {"error": "expression is required", "source": "static-rules"}
         duration_ms = inp.get("durationMs")
         stats = {"durationMs": duration_ms} if duration_ms is not None else None
         suggestions = _analyze_dax(expression, stats=stats)
@@ -1196,9 +1201,29 @@ def create_tool_definitions(base_dir=None):
         has no append path, so this tool cannot mutate the history file it reads (load-only by
         construction). Deterministic: staleness is a plain string built from the latest run's
         ``runAt``, no wall-clock math here -- the LLM compares that timestamp to 'now'."""
+        def _peak_trend(runs):
+            # M2 (final review): history entries come from a file on disk -- tolerate malformed
+            # ones (non-dict entries, or a dict missing/mistyped "metrics") by skipping them
+            # rather than raising KeyError/TypeError out to the host.
+            trend = []
+            for r in runs:
+                if not isinstance(r, dict):
+                    continue
+                metrics = r.get("metrics")
+                if not isinstance(metrics, dict):
+                    continue
+                trend.append({"runAt": r.get("runAt"), "peakCuPct": metrics.get("peakCuPct")})
+            return trend
+
         inp = _input or {}
         runs_n = inp.get("runs")
-        runs_n = 2 if runs_n is None else runs_n
+        try:
+            # nullish, not falsy: runs=0 is a real (if useless) value, not "unset" -- but a
+            # non-numeric value (bad config/malformed input) must fall back to the default
+            # rather than raise TypeError/ValueError out of max/min below.
+            runs_n = 2 if runs_n is None else int(runs_n)
+        except (TypeError, ValueError):
+            runs_n = 2
         runs_n = max(2, min(30, runs_n))
         try:
             history = _load_history(os.environ)
@@ -1214,7 +1239,7 @@ def create_tool_definitions(base_dir=None):
             }
         if len(history) < 2:
             last_run_at = history[-1]["runAt"] if history else None
-            trend = [{"runAt": r["runAt"], "peakCuPct": r["metrics"]["peakCuPct"]} for r in history]
+            trend = _peak_trend(history)
             return {
                 "comparedRuns": {"latest": last_run_at, "previous": None},
                 "new": [], "recurring": [], "resolved": [],
@@ -1244,9 +1269,7 @@ def create_tool_definitions(base_dir=None):
             for k in latest_active if k in previous_active
         ]
         trend_runs = history[-runs_n:]
-        peak_cu_trend = [
-            {"runAt": r["runAt"], "peakCuPct": r["metrics"]["peakCuPct"]} for r in trend_runs
-        ]
+        peak_cu_trend = _peak_trend(trend_runs)
         return {
             "comparedRuns": {"latest": latest_run["runAt"], "previous": previous_run["runAt"]},
             "new": new,
@@ -1280,9 +1303,10 @@ def create_tool_definitions(base_dir=None):
         silent hole in the other, healthy stream.
         """
         inp = _input or {}
+        source = "live" if _has_live_event_source(os.environ) else "mock"
         user = inp.get("user") or ""
         if not user:
-            return {"error": "user is required"}
+            return {"error": "user is required", "source": source}
         user = user.lower()
         days = inp.get("days")
         hours = inp.get("hours")
@@ -1291,7 +1315,6 @@ def create_tool_definitions(base_dir=None):
         if days is None and hours is None and start is None and end is None:
             hours = 24   # "what did John do all day?" -- default to the last 24h, not 30d
 
-        source = "live" if _has_live_event_source(os.environ) else "mock"
         stream_notes = []
         timeline = []
         engine_count = 0

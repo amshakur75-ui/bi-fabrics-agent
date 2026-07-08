@@ -2127,6 +2127,30 @@ def test_tier1_series_is_real_or_empty_never_mock(monkeypatch):
     diag = out["patternsDiagnostics"]
     assert diag["maxCuPeakPct"] in (None, 0, 0.0)   # no fabricated 85.0 from the mock series
 
+_WM_ONLY_ENV = {"FABRIC_KUSTO_CLUSTER": "c", "FABRIC_KUSTO_DB": "db",
+                "FABRIC_CLIENT_ID": "cid", "FABRIC_TENANT_ID": "t", "FABRIC_CLIENT_SECRET": "s"}
+
+def test_wm_only_env_stays_operation_level_never_mislabeled_per_query(monkeypatch):
+    # Final review F1 (load-bearing regression guard): WM's descriptor no longer claims
+    # eventDepth (sources.py), and the Tier-2 branch in _resolve_event_sources additionally
+    # requires _has_live_event_source (LA) before trusting a descriptor's eventDepth claim.
+    # WM-only env (Kusto cluster/db + the 3 cred vars, NO Log Analytics workspace) must fall
+    # through to Tier-1 (operationLevel via activity), NOT be mislabeled "perQuery" over the
+    # mock/fixture events -- and capacity_patterns must never surface the fabricated 85.0 mock
+    # series value as if it were real.
+    _clear_live(monkeypatch)
+    for k, v in _WM_ONLY_ENV.items():
+        monkeypatch.setenv(k, v)
+    import fabric_audit_agent.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector",
+                        lambda http, cfg: {"collect": lambda: []})
+    out = _handler("spike_events")({"days": 1})
+    assert out["tier"] == "operationLevel"
+    assert out["tier"] != "perQuery"
+
+    diag = _handler("capacity_patterns")({"days": 1})["patternsDiagnostics"]
+    assert diag["maxCuPeakPct"] in (None, 0, 0.0)   # no fabricated 85.0 from the mock series
+
 def test_tier1_spike_events_ranked_by_operation_frequency(monkeypatch):
     _clear_live(monkeypatch)
     for k, v in _T1_ENV.items():
@@ -2333,6 +2357,21 @@ def test_whats_changed_malformed_history_is_error_not_empty(tmp_path, monkeypatc
     assert "error" in out
     assert "new" not in out
 
+def test_whats_changed_run_missing_metrics_does_not_crash_and_is_skipped_in_trend(tmp_path, monkeypatch):
+    # M2 (final review): a history entry missing "metrics" (e.g. an older/partial run record)
+    # must not raise KeyError out of the handler -- it's tolerated and simply excluded from
+    # peakCuTrend, while the rest of the diff still runs normally.
+    hist = [
+        {"runAt": "2026-07-05T06:00:00Z", "findings": []},   # malformed: no "metrics" key
+        _HIST[0],
+        _HIST[1],
+    ]
+    _hist_env(tmp_path, monkeypatch, hist=hist)
+    out = _handler("whats_changed")({"runs": 30})
+    assert "error" not in out
+    assert all(t["runAt"] != "2026-07-05T06:00:00Z" for t in out["peakCuTrend"])
+    assert [t["peakCuPct"] for t in out["peakCuTrend"]] == [88.0, 96.0]
+
 
 # --- Task 13 (Phase 4): user_timeline -- merged per-user activity+engine timeline (16th tool) ---
 
@@ -2373,7 +2412,7 @@ def test_user_timeline_tier1_all_activity_source_no_cost(monkeypatch):
 def test_user_timeline_missing_user_is_error_envelope(monkeypatch):
     _clear_live(monkeypatch)
     out = _handler("user_timeline")({})
-    assert out == {"error": "user is required"}
+    assert out == {"error": "user is required", "source": "mock"}
 
 
 def test_user_timeline_counts_match_entry_sources(monkeypatch):

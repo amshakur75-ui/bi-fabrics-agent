@@ -23,13 +23,20 @@ def test_full_tier2_env_gives_eventdepth_from_la():
     # degraded now flags this consciously (Task-1 follow-up: proxy-perItemCU is noted, not just csv).
     assert any("per-item CU is a proxy or estimate" in n for n in cov["degraded"])
 
-def test_workspace_monitoring_only_env_covers_per_item_cu_as_proxy():
+def test_workspace_monitoring_only_env_does_not_cover_event_depth_or_per_item_cu():
+    # Final review F1: WM's descriptor no longer claims eventDepth/perItemCU -- the event seam
+    # (tools.py::_resolve_event_sources) doesn't consume WM yet, so claiming those capabilities
+    # would let mock/fixture data get labeled "perQuery"/hasRealCost. WM-only env now leaves
+    # eventDepth and perItemCU blind; only userAttribution is covered (proxy, from WM).
     env = {"FABRIC_KUSTO_CLUSTER": "c", "FABRIC_KUSTO_DB": "db", "FABRIC_CLIENT_ID": "cid"}
     cov = resolve_sources(env)["coverage"]
-    assert cov["byCapability"]["perItemCU"] == {
+    assert cov["byCapability"]["eventDepth"] is None
+    assert cov["byCapability"]["perItemCU"] is None
+    assert cov["byCapability"]["userAttribution"] == {
         "source": "workspace_monitoring", "liveness": "live", "authority": "proxy",
     }
-    assert any("per-item CU is a proxy or estimate" in n for n in cov["degraded"])
+    assert "eventDepth" in cov["blind"]
+    assert "perItemCU" in cov["blind"]
 
 def test_tier1_only_env_degrades_eventdepth_not_blind_on_attribution():
     env = {"FABRIC_CLIENT_ID": "cid", "FABRIC_TENANT_ID": "t", "FABRIC_CLIENT_SECRET": "s"}

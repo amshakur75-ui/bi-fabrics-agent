@@ -47,7 +47,14 @@ SOURCES = {
         "configured": _gate("FABRIC_LA_WORKSPACE_ID", "FABRIC_CLIENT_ID"),
     },
     "workspace_monitoring": {
-        "descriptor": {"provides": ("eventDepth", "userAttribution", "perItemCU"), "liveness": "live",
+        # eventDepth/perItemCU deliberately WITHHELD: the collector is real (adapters/
+        # collector_workspace_monitoring.py) but only job.py's aggregate audit collector
+        # consumes it -- the event seam (tools.py::_resolve_event_sources /
+        # _has_live_event_source) is LA-only, same not-yet-wired precedent as ``fuam`` above.
+        # Claiming eventDepth here would let the Tier-2 branch fire on WM-only env and label
+        # fixture/mock events "perQuery" with hasRealCost=True (final review F1, 2026-07-07).
+        # userAttribution stays: run_audit's item attribution genuinely uses WM.
+        "descriptor": {"provides": ("userAttribution",), "liveness": "live",
                         "authority": "proxy", "scope": "per-workspace"},
         "configured": _gate("FABRIC_KUSTO_CLUSTER", "FABRIC_KUSTO_DB", "FABRIC_CLIENT_ID"),
     },

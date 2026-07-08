@@ -79,6 +79,8 @@ truth for *what sources exist, how to detect + build them, and what they provide
 | `events_la` *(Tier-2)* | eventDepth, userAttribution | live | proxy(CU) | per-workspace | `FABRIC_LA_WORKSPACE_ID` |
 | `workspace_monitoring` *(Tier-2)* | eventDepth, userAttribution | live | proxy(CU) | per-workspace | `FABRIC_KUSTO_CLUSTER` + `_DB` |
 
+(eventDepth withheld from the registry until the event seam consumes WM — 2026-07-07 final review F1)
+
 ### Resolver — `resolve_sources(env) -> { collector, coverage }`
 1. Determine **configured** sources (env gate satisfied).
 2. Build them **authority-first**; compose with the existing `create_merged_collector`.
