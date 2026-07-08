@@ -1066,8 +1066,8 @@ def create_tool_definitions(base_dir=None):
             events, series, meta = _resolve_event_sources(days=1, order="recent")
             result["throttleDecomposition"] = _decompose_throttle(
                 series, events, has_real_cost=(meta["tier"] != "operationLevel"))
-        except Exception:
-            pass
+        except Exception as exc:
+            errors["throttleDecomposition"] = str(exc)
         return result
 
     # Shared sub-day / absolute time-window properties for the 3 event tools (user_spike_history,

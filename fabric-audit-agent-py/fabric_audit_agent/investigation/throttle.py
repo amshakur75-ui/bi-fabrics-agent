@@ -4,6 +4,8 @@
 concludes "throttling" — only a fired signal (interactive delay/rejection, background rejection)
 does; when the signal series isn't collected, the conclusion is explicitly "unconfirmed".
 Pure + deterministic; series/events injected."""
+import math
+
 from .expensive import top_expensive
 
 _SIGNALS = (("interactiveDelay", "interactiveDelayPct"),
@@ -11,27 +13,35 @@ _SIGNALS = (("interactiveDelay", "interactiveDelayPct"),
             ("backgroundRejection", "backgroundRejectionPct"))
 
 
+def _num(v):
+    # mirrors JS Number.isFinite: rejects bool, NaN, and Infinity
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def _over_windows(series, threshold):
+    """Every contiguous over-threshold run, UNCAPPED -- callers that need the display-only
+    max-10 cap slice it themselves (stage1["overWindows"]); stage-3 driver ranking must see
+    every run so events in windows 11+ don't silently vanish from "who caused it"."""
     runs, start, last = [], None, None
     for p in series:
         cu = p.get("cuPct")
-        if isinstance(cu, (int, float)) and cu > threshold:
+        if _num(cu) and cu > threshold:
             start = start if start is not None else p.get("ts")
             last = p.get("ts")
         elif start is not None:
             runs.append([start, last]); start = None
     if start is not None:
         runs.append([start, last])
-    return runs[:10]
+    return runs
 
 
 def decompose_throttle(capacity_series, events, *, threshold=100.0, top_n=5, has_real_cost=True):
     series = capacity_series or []
     over = [p for p in series
-            if isinstance(p.get("cuPct"), (int, float)) and p["cuPct"] > threshold]
-    max_cu = max((p["cuPct"] for p in series if isinstance(p.get("cuPct"), (int, float))), default=None)
+            if _num(p.get("cuPct")) and p["cuPct"] > threshold]
+    max_cu = max((p["cuPct"] for p in series if _num(p.get("cuPct"))), default=None)
     windows = _over_windows(series, threshold)
-    stage1 = {"maxCuPct": max_cu, "timepointsOver": len(over), "overWindows": windows}
+    stage1 = {"maxCuPct": max_cu, "timepointsOver": len(over), "overWindows": windows[:10]}
 
     if not over:
         return {"stage1": stage1,
@@ -42,7 +52,7 @@ def decompose_throttle(capacity_series, events, *, threshold=100.0, top_n=5, has
 
     stage2, any_signal_present, fired = {}, False, False
     for name, field in _SIGNALS:
-        vals = [p[field] for p in series if isinstance(p.get(field), (int, float))]
+        vals = [p[field] for p in series if _num(p.get(field))]
         if vals:
             any_signal_present = True
             sig_fired = max(vals) > 100.0
@@ -72,7 +82,7 @@ def decompose_throttle(capacity_series, events, *, threshold=100.0, top_n=5, has
            "conclusion": conclusion, "thresholds": {"cuPct": threshold}}
     # Burndown passthrough — the Metrics app's OWN figure, verbatim, never re-derived.
     burndown = [p["minutesToBurndown"] for p in series
-                if isinstance(p.get("minutesToBurndown"), (int, float))]
+                if _num(p.get("minutesToBurndown"))]
     if burndown:
         out["minutesToBurndown"] = burndown[-1]
     return out

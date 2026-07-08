@@ -49,3 +49,50 @@ def test_has_real_cost_false_ranks_stage3_as_arbitrary():
     out = decompose_throttle(_SERIES_HOT, _EVENTS, has_real_cost=False)
     assert out["stage3"]["rankedBy"] == "arbitrary"
     assert "note" in out["stage3"]
+
+
+def _series_with_n_over_runs(n):
+    """n contiguous single-point over-threshold runs, each separated by a calm point, so
+    each run becomes its own window: [over, calm, over, calm, ...]."""
+    series = []
+    for i in range(n):
+        series.append({"ts": f"2026-07-07T09:{2 * i:02d}:00Z", "cuPct": 130.0})
+        series.append({"ts": f"2026-07-07T09:{2 * i + 1:02d}:00Z", "cuPct": 60.0})
+    return series
+
+
+def test_stage3_uses_full_uncapped_windows_beyond_display_cap_of_10():
+    # 11 over-threshold runs -> stage1["overWindows"] is capped at 10 (display-only), but
+    # an event inside run #11 must still be counted for stage-3 driver ranking.
+    series = _series_with_n_over_runs(11)
+    run11_ts = series[20]["ts"]   # the 11th over-threshold point (index 2*10)
+    assert series[20]["cuPct"] == 130.0
+    events = [{"ts": run11_ts, "user": "late@co", "item": "Late Item",
+               "kind": "interactive", "cuSeconds": 10.0}]
+    out = decompose_throttle(series, events, top_n=20)
+    assert len(out["stage1"]["overWindows"]) == 10
+    users = [t["user"] for t in out["stage3"]["topOperations"]]
+    assert "late@co" in users
+
+
+def test_bool_cu_pct_point_skipped_not_treated_as_one():
+    series = [{"ts": "2026-07-07T09:00:00Z", "cuPct": True},
+              {"ts": "2026-07-07T09:01:00Z", "cuPct": 60.0}]
+    out = decompose_throttle(series, [])
+    assert out["stage1"]["timepointsOver"] == 0
+    assert out["stage1"]["maxCuPct"] == 60.0
+    assert out["conclusion"] == "not-throttling"
+
+
+def test_nan_cu_pct_point_skipped():
+    series = [{"ts": "2026-07-07T09:00:00Z", "cuPct": float("nan")},
+              {"ts": "2026-07-07T09:01:00Z", "cuPct": 60.0}]
+    out = decompose_throttle(series, [])
+    assert out["stage1"]["timepointsOver"] == 0
+    assert out["stage1"]["maxCuPct"] == 60.0
+
+
+def test_bool_minutes_to_burndown_not_surfaced():
+    series = [{**p, "minutesToBurndown": True} for p in _SERIES_HOT]
+    out = decompose_throttle(series, _EVENTS)
+    assert "minutesToBurndown" not in out

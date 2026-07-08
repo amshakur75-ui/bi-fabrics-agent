@@ -1658,6 +1658,40 @@ def test_capacity_diagnostics_live_attaches_throttle_decomposition(monkeypatch):
     assert td["stage1"]["timepointsOver"] == 1
 
 
+def test_capacity_diagnostics_throttle_decomposition_failure_surfaces_in_errors(monkeypatch):
+    """Task 4 review fix: a throttleDecomposition failure must land in errors["throttleDecomposition"]
+    (matching the per-section .show isolation mechanism), not be silently swallowed -- the
+    already-collected .show sections must still come back."""
+    _set_capacity_kusto_env(monkeypatch)
+
+    def fake_kusto_builder(cluster_uri, database, tenant_id, client_id, client_secret):
+        def query(kql):
+            if kql.startswith(".show cluster"):
+                return [{"ok": True}]
+            if kql.startswith(".show capacity"):
+                return [{"Resource": "CPU", "Total": 100, "Consumed": 42, "Remaining": 58}]
+            if kql.startswith(".show workload_groups"):
+                return [{"Name": "default"}]
+            if kql.startswith(".show diagnostics"):
+                return [{"Status": "ok"}]
+            return [{"capacityId": "cap1", "windowStart": "2026-07-07T09:01:00Z",
+                     "baseCapacityUnits": 10, "capacityUnitMs": 10 * 1000 * 30 * 1.3}]
+        return query
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query", fake_kusto_builder)
+    monkeypatch.setattr("fabric_audit_agent.tools._create_activity_event_collector",
+                         lambda http, config: {"collect": lambda: []})
+    monkeypatch.setattr("fabric_audit_agent.tools._decompose_throttle",
+                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "capacity_diagnostics")["handler"]
+    out = h()
+
+    assert out["source"] == "live"
+    assert "throttleDecomposition" not in out
+    assert out["errors"]["throttleDecomposition"] == "boom"
+    assert "cluster" in out["sections"]
+
+
 # ---------------------------------------------------------------------------
 # Task 10: capacity_patterns live-fix -- recent-ordered narrow window, tunable
 # thresholds (tool input > env > default), non-silent patternsDiagnostics.
