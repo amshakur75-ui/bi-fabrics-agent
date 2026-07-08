@@ -121,7 +121,7 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
                           "investigate_capacity_spike", "user_spike_history", "spike_events",
                           "raw_events", "capacity_patterns", "describe_source", "sample_events",
                           "capacity_diagnostics", "analyze_dax", "diagnose", "whats_changed",
-                          "user_timeline"}
+                          "user_timeline", "run_kql", "query_library"}
 
     # user_spike_history: user REQUIRED; window props + item optional -- no phantom topN/when
     ush = tools["user_spike_history"]
@@ -148,6 +148,12 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
     assert set(tools["describe_source"]["properties"]) == {"source", "table", "estimateKql"}
     assert set(tools["sample_events"]["properties"]) == {"source", "table", "n"}
     assert not tools["capacity_diagnostics"].get("properties")
+
+    # query firewall tools (PR #11): run_kql requires kql + engine; query_library takes optional name
+    rk = tools["run_kql"]
+    assert set(rk["properties"]) == {"kql", "engine", "maxRows", "format"}
+    assert set(rk.get("required", [])) == {"kql", "engine"}
+    assert set(tools["query_library"]["properties"]) == {"name"}
 
     # no-arg tools advertise no properties
     assert not tools["run_audit"].get("properties")
