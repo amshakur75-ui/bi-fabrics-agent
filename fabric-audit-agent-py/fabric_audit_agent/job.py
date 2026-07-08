@@ -155,8 +155,36 @@ def run_csv_job(csv_paths=None, out_dir=None, env=None, reasoner=None, delivery=
     return envelope
 
 
+def _build_failure_delivery(env):
+    from .adapters.clients import PlainJsonHttp
+    from .adapters.delivery_teams import create_teams_delivery
+    return create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
+
+
+def _alert_failure(exc, env, now_iso=None):
+    """Post a minimal failure card so a crashed sweep is never silent. Never raises; never
+    masks the original error (caller re-raises regardless of the return value)."""
+    if not env.get("TEAMS_WEBHOOK_URL"):
+        return False
+    try:
+        from datetime import datetime, timezone
+        at = now_iso if now_iso is not None else datetime.now(timezone.utc).isoformat()
+        delivery = _build_failure_delivery(env)
+        # build_teams_card reads ONLY envelope["summary"]/["data"] — the error text MUST be
+        # inside summary, or the production card silently drops the diagnostic payload.
+        delivery["deliver"]({"summary": (f"⚠️ fabric-audit sweep FAILED at {at}: "
+                                          f"{type(exc).__name__}: {exc}")})
+        return True
+    except Exception:
+        return False
+
+
 def main():
-    envelope = run_job()
+    try:
+        envelope = run_job()
+    except Exception as exc:
+        _alert_failure(exc, os.environ)
+        raise
     print(envelope["summary"])
     return envelope
 
@@ -293,7 +321,12 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
 
 
 def job_main():
-    envelope = run_unified_job()
+    """The deployed Databricks wheel-task entry (pyproject: fabric-audit-job)."""
+    try:
+        envelope = run_unified_job()
+    except Exception as exc:
+        _alert_failure(exc, os.environ)
+        raise
     print(envelope["summary"])
     return envelope
 
