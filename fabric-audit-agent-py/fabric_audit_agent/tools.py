@@ -224,7 +224,18 @@ def _run_real_or_mock(base, env):
         collector = create_mock_collector(os.path.join(base, "fixtures", "estate.json"))
         reasoner = create_stub_reasoner(config)
 
-    return run_audit(collector, reasoner, {"deliver": lambda e: None}, store=None,
+    # Interim history writer (until the scheduled Job exists): when FABRIC_HISTORY_PATH is set,
+    # each interactive run_audit appends its run record there — activating whats_changed's diff
+    # AND run_audit's own history enrichment (escalation/recurring/digest/forecast). The App
+    # can't write /Volumes, so this is a LOCAL container path: history survives between calls
+    # but resets on redeploy/restart, and is honestly ephemeral until the Job takes over as
+    # the durable writer (same store contract, same file shape).
+    store = None
+    if env.get("FABRIC_HISTORY_PATH"):
+        from .adapters.store_local import create_local_store
+        store = create_local_store(env["FABRIC_HISTORY_PATH"])
+
+    return run_audit(collector, reasoner, {"deliver": lambda e: None}, store=store,
                      config=config, agent_id="fabric-audit-agent")
 
 
@@ -1180,6 +1191,28 @@ def create_tool_definitions(base_dir=None):
             if meta["error"]:
                 # Live event query failed: return an honest error payload, not zeros dressed as data.
                 return {"error": meta["error"], "source": source}
+            if symptom == "throttle" and meta["tier"] == "perQuery":
+                # Stage-3 ("who drove the over-window?") intersects events with the CU%>100
+                # windows from the SERIES — but the default recency-capped pull only covers the
+                # newest slice of a busy day, so over-windows from earlier hours had no events
+                # and stage-3 came back "unconfirmed" despite drivers existing (observed live).
+                # Refetch bounded to the over-window span itself (±5m pad), cost-ordered —
+                # "who drove it" wants the most expensive events inside those exact windows.
+                from .investigation.throttle import _over_windows
+                from .timefmt import parse_iso_utc as _p
+                from datetime import timedelta as _td
+                windows = _over_windows(series, 100.0)
+                if windows:
+                    lo, hi = _p(windows[0][0]), _p(windows[-1][1])
+                    if lo is not None and hi is not None:
+                        pad = _td(minutes=5)
+                        w_events, _ws, w_meta = _resolve_event_sources(
+                            start=(lo - pad).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            end=(hi + pad).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            order="cost")
+                        if not w_meta["error"] and w_events:
+                            events = w_events
+                            meta["truncated"] = w_meta["truncated"]
             refreshes = None
             if symptom == "refresh":
                 refreshes = _collector_or_mock()["collect"]().get("refreshes")

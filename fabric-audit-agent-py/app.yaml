@@ -46,11 +46,20 @@ env:
   - name: FABRIC_CAPACITY_EVENTS_KQL
     value: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
 
-  # Optional: restrict event tools to top-level operations (drops VertiPaq SE sub-query events
-  # that double-count cost). Enable ONLY after verifying live OperationName values — note our
-  # tenant's biggest real spikes are DiscoverEnd ops, which this allowlist would exclude.
-  # - name: FABRIC_EVENT_OPERATIONS
-  #   value: "QueryEnd,CommandEnd,ProgressReportEnd"
+  # Top-level operations allowlist (drops VertiPaqSE* sub-query children that double-count cost
+  # and pollute timelines). Live-verified op names on this tenant (2026-07-08): QueryEnd /
+  # CommandEnd / DiscoverEnd all carry genuine top-level cost — DiscoverEnd is deliberately
+  # INCLUDED (our biggest real spikes are expensive metadata discovers on large models; the
+  # recommended trio alone would hide them).
+  - name: FABRIC_EVENT_OPERATIONS
+    value: "QueryEnd,CommandEnd,ProgressReportEnd,DiscoverEnd"
+
+  # Interim history seam: each interactive run_audit appends its run record here, activating
+  # whats_changed + history enrichment. LOCAL container path (the App can't write /Volumes) —
+  # resets on redeploy; the scheduled Job (AUDIT_HISTORY_PATH, same contract) is the durable
+  # writer when it lands.
+  - name: FABRIC_HISTORY_PATH
+    value: "/tmp/fabric-audit/history.json"
 
   # Workspace Monitoring Eventhouse (per-user SemanticModelLogs) — cluster/db via resources
   - name: FABRIC_KUSTO_CLUSTER

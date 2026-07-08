@@ -599,6 +599,84 @@ def test_investigate_spike_window_truncation_threads_from_fetch_meta(monkeypatch
     assert "cap hit" in window["summary"]
 
 
+def test_run_audit_appends_history_and_whats_changed_diffs_it(monkeypatch, tmp_path):
+    """FABRIC_HISTORY_PATH activation: each interactive run_audit appends its run record
+    (store_local contract), and whats_changed diffs the accumulated runs -- no Job needed."""
+    _no_live(monkeypatch)
+    hist = tmp_path / "history.json"
+    monkeypatch.setenv("FABRIC_HISTORY_PATH", str(hist))
+    defs = {d["name"]: d for d in create_tool_definitions()}
+
+    defs["run_audit"]["handler"]()
+    first = defs["whats_changed"]["handler"]()
+    assert first["comparedRuns"]["previous"] is None      # one run: nothing to diff yet
+    assert len(first["peakCuTrend"]) == 1
+
+    defs["run_audit"]["handler"]()
+    second = defs["whats_changed"]["handler"]({"runs": 5})
+    assert second["comparedRuns"]["latest"] is not None
+    assert second["comparedRuns"]["previous"] is not None
+    assert len(second["peakCuTrend"]) == 2
+    # identical mock estate twice -> same findings recur, nothing new/resolved
+    assert second["new"] == [] and second["resolved"] == []
+    assert len(second["recurring"]) >= 1
+
+
+def test_run_audit_without_history_path_writes_nothing(monkeypatch, tmp_path):
+    _no_live(monkeypatch)
+    monkeypatch.delenv("FABRIC_HISTORY_PATH", raising=False)
+    defs = {d["name"]: d for d in create_tool_definitions()}
+    defs["run_audit"]["handler"]()
+    assert not list(tmp_path.iterdir())                    # write-free without the env
+    out = defs["whats_changed"]["handler"]()
+    assert out["source"] == "none"
+
+
+def test_diagnose_stage3_refetches_events_bounded_to_over_windows(monkeypatch):
+    """Observed live: the default recency-capped pull missed the over-window slice on a busy
+    day, so stage-3 said 'no events in over-window' despite drivers existing. When the series
+    shows CU%>100 windows, diagnose must refetch events bounded to that span (cost-ordered)."""
+    _set_la_env(monkeypatch)
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_CLUSTER", "cluster-uri")
+    monkeypatch.setenv("FABRIC_CAPACITY_EVENTS_DB", "db")
+
+    kqls = []
+    driver_row = {"TimeGenerated": "2026-07-07T10:03:00Z", "ExecutingUser": "driver@co",
+                  "ArtifactName": "HotModel", "OperationName": "QueryEnd", "CpuTimeMs": 90000}
+    off_window_row = {"TimeGenerated": "2026-07-07T18:00:00Z", "ExecutingUser": "later@co",
+                      "ArtifactName": "Other", "OperationName": "QueryEnd", "CpuTimeMs": 1000}
+
+    def la_builder(*a, **kw):
+        def query(kql, timespan=None):
+            kqls.append(kql)
+            # The bounded refetch (between-clause) sees the over-window driver; the initial
+            # recency pull only sees a later, unrelated event -- reproducing the live miss.
+            return [driver_row] if "between" in kql else [off_window_row]
+        return query
+
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_log_analytics_query", la_builder)
+    ce_rows = [
+        {"capacityId": "c", "windowStartTime": "2026-07-07T10:00:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 2304000},   # 120% -- over
+        {"capacityId": "c", "windowStartTime": "2026-07-07T10:05:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 2304000},   # 120% -- still over
+        {"capacityId": "c", "windowStartTime": "2026-07-07T10:10:00Z",
+         "baseCapacityUnits": 64, "capacityUnitMs": 960000},    # 50% -- closes the window
+    ]
+    monkeypatch.setattr("fabric_audit_agent.adapters.clients.build_kusto_query",
+                        lambda *a, **k: (lambda kql: ce_rows))
+
+    h = next(d for d in create_tool_definitions() if d["name"] == "diagnose")["handler"]
+    out = h({"symptom": "throttle", "days": 1})
+
+    # the bounded refetch happened, padded ±5m around the [10:00, 10:05] over-window
+    assert any(("TimeGenerated between (datetime(2026-07-07T09:55:00Z) .. "
+                "datetime(2026-07-07T10:10:00Z))") in k for k in kqls)
+    step3 = next(s for s in out["chain"] if s["step"] == "who drove the over-window?")
+    assert step3["verdict"] == "confirmed"
+    assert "driver@co" in str(step3["evidence"])           # names the actual over-window driver
+
+
 def test_raw_events_rejects_invalid_order(monkeypatch):
     """The MCP wrapper can't enforce the enum -- a typo'd order must error honestly, not
     silently become cost-ordered."""
