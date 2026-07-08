@@ -561,8 +561,12 @@ def create_tool_definitions(base_dir=None):
             # Deferred: msal (imported inside build_entra_token_provider) is an optional 'prod'
             # dependency, and a real token round-trip is only needed if the collector actually
             # calls http.get_json -- e.g. never, when a caller injects its own collector (tests).
-            http = _LazyEntraHttp(env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"],
-                                   env["FABRIC_CLIENT_SECRET"])
+            http = _memo_client(
+                ("entra-activity", env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"],
+                 env["FABRIC_CLIENT_SECRET"]),
+                lambda: _LazyEntraHttp(env["FABRIC_TENANT_ID"], env["FABRIC_CLIENT_ID"],
+                                       env["FABRIC_CLIENT_SECRET"]),
+            )
             collector = _create_activity_event_collector(http, {"start": a_start, "end": a_end,
                                                                   "user": user, "item": item})
             events = collector["collect"]()

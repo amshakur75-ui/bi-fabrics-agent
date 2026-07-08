@@ -2011,3 +2011,31 @@ def test_tier1_spike_events_ranked_by_operation_frequency(monkeypatch):
     out = _handler("spike_events")({"days": 1})
     assert out["rankedBy"] == "operationFrequency"
     assert out["events"][0]["item"] == "Sales"      # 3 ops beats 1 op — frequency, not None-cost
+
+def test_tier1_entra_http_client_is_memoized_across_calls(monkeypatch):
+    """The Tier-1 activity-events http client must be built once and reused via _memo_client --
+    a fresh _LazyEntraHttp per call re-triggers the MSAL ConfidentialClientApplication rebuild
+    that _memo_client exists to prevent (see the LA/Kusto memo tests above)."""
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    import fabric_audit_agent.tools as tools_mod
+    tools_mod._CLIENT_CACHE.clear()
+    builds = {"n": 0}
+    seen = []
+
+    class CountingLazyEntraHttp:
+        def __init__(self, *a, **kw):
+            builds["n"] += 1
+
+    monkeypatch.setattr(tools_mod, "_LazyEntraHttp", CountingLazyEntraHttp)
+
+    def fake_collector(http, cfg):
+        seen.append(http)
+        return {"collect": lambda: []}
+
+    monkeypatch.setattr(tools_mod, "_create_activity_event_collector", fake_collector)
+    _handler("spike_events")({"days": 1})
+    _handler("spike_events")({"days": 7})
+    assert builds["n"] == 1
+    assert seen[0] is seen[1]
