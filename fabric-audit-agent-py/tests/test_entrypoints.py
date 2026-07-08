@@ -439,3 +439,52 @@ def test_main_dispatch_mine_queries_preview_does_not_touch_real_library(tmp_path
     assert "Re-run with --write" in out or "No promotable query shapes found" in out
     after = open(_REAL_LIBRARY, "rb").read()
     assert after == before   # dispatch with no --write must never mutate the real package file
+
+
+def test_mine_queries_bad_args_return_clean_strings_never_exit(tmp_path):
+    # The load-bearing "never kill the process" property: argparse errors must come back as a
+    # string, not a SystemExit/traceback that would take down `python -m fabric_audit_agent`.
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    for rest in (
+        [],                                              # missing required positional logfile
+        [str(logfile), "--min-count", "notanumber"],     # non-int value
+        [str(logfile), "--nope"],                        # unknown flag
+    ):
+        out = run_mine_queries_cli(rest, library_path=str(lib_path))
+        assert isinstance(out, str) and out.startswith("mine-queries:")
+
+
+def test_mine_queries_missing_or_malformed_library_degrades_to_empty(tmp_path):
+    # A missing or unreadable library must be treated as an empty catalog (existing=[]), not crash.
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    # (a) library file absent
+    missing = tmp_path / "absent.json"
+    out = run_mine_queries_cli([str(logfile)], library_path=str(missing))
+    assert "adhoc-capacity-" in out          # candidate found against an empty existing set
+    assert not missing.exists()              # preview created nothing
+
+    # (b) library file malformed JSON
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not valid json", encoding="utf-8")
+    out2 = run_mine_queries_cli([str(logfile)], library_path=str(malformed))
+    assert "adhoc-capacity-" in out2
+
+
+def test_mine_queries_min_count_override_takes_effect(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(n=2), encoding="utf-8")   # only 2 hits
+
+    # default min_count=3 -> below threshold -> nothing
+    assert "No promotable query shapes found" in run_mine_queries_cli(
+        [str(logfile)], library_path=str(lib_path))
+    # --min-count 2 lowers the bar -> the shape is now promotable
+    out = run_mine_queries_cli([str(logfile), "--min-count", "2"], library_path=str(lib_path))
+    assert "adhoc-capacity-" in out
