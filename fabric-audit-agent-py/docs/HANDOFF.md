@@ -162,3 +162,118 @@ Do these **in order**, each as its own brainstorm → spec → plan → subagent
 - [ ] Final whole-branch review (opus) → fix wave → merge (push, PR, CI green on 3.10+3.12, merge, sync, verify 18 tools on main).
 - [ ] Then Part 3 item A/B; hold C–H until their gates open (ask the user).
 - [ ] Never break read-only. Never label mock/proxy as live. Never loosen the grounding bar.
+
+---
+
+## Part 4 — HOW to work like the previous Claude (methods, not just outcomes)
+
+Everything above says *what*. This part says *how* — the actual working methods that produced clean, review-gated PRs. Follow these; they are why the defect-catch rate was high and the merges were clean.
+
+### 4.0 The mental model / the goal
+
+You are not "an AI that writes code." You are the **controller of a small engineering team**. You decompose, delegate to fresh subagents with precisely-scoped context, gate their work through independent review, and keep your own context clean for coordination. The goal is **maximally correct, honest, read-only capability** — token cost is not the constraint, *correctness and honesty* are. When you find yourself about to write a big chunk of implementation yourself, stop: that's a subagent's job. Your job is the brief, the review, and the judgment calls.
+
+**The prime directive, restated so you feel it:** this agent tells humans the truth about their capacity. A wrong number, a mock labeled live, a proxy presented as authoritative — these are worse than a crash, because a human acts on them. Every design choice, every review, every subagent prompt should be pressure-testing "is this honest?" as hard as "does this work?"
+
+### 4.1 The full lifecycle of a feature (the loop you repeat)
+
+```
+brainstorming skill  →  spec (docs/superpowers/specs/)  →  user reviews spec
+   →  writing-plans skill  →  plan (docs/superpowers/plans/)  →  3 verification subagents on the PLAN
+   →  subagent-driven-development skill:
+        for each task:  task-brief → implementer subagent → review-package → reviewer subagent
+                        → (fix subagent if findings) → (re-review if correctness-critical) → ledger
+   →  final whole-branch review (opus) + minor-rollup  →  fix wave  →  re-review
+   →  push → gh pr create → CI (3.10+3.12) → gh pr merge → sync main → verify on main
+```
+
+Never skip the spec. Never skip per-task review. Never skip the final whole-branch review. Each gate has caught real defects — including two would-be production bugs the tests wouldn't have caught, because the tests were written around a flawed assumption.
+
+### 4.2 Brainstorming → spec (how the design gets made)
+
+- **Invoke `superpowers:brainstorming` BEFORE any design or code.** It forces: explore context → ask ONE question at a time → propose 2–3 approaches with a recommendation → present the design in sections → get approval → write the spec → self-review → user reviews spec.
+- **Ask one question at a time, prefer multiple-choice.** The firewall spec was built from ~6 single questions (which engines? table-scope strictness? library? …). Each answer narrowed the next. Do NOT dump a wall of questions.
+- **Always propose 2–3 approaches and recommend one with reasoning.** For the firewall it was A (parse-and-allowlist) / B (engine-validated via take-0 rehearsal) / C (homemade AST parser). Recommend, explain the trade-off, let the user choose. When the user pushed back ("why exclude these?", "why bring up a homemade parser?"), the right move was to *answer honestly and in depth*, not defend — that dialogue is where the real design hardens.
+- **When the user asks "is there more we can do?" — actually go look.** The Phase-4 scope grew from 3 ADDs to 9 because each "anything else?" triggered a real audit of the codebase (grep the detectors, read the investigation engine, check what's collected-but-unread). The find that `facts["refreshes"]` was collected but no detector read it came from *reading collector_rest.py*, not from guessing. Ground every "we could add X" in a file you actually opened.
+- **Write the spec with an explicit "Explicitly NOT pursued — with reasons" section.** This is a signature of this project. Every excluded option gets a one-line reason (gated / superseded / YAGNI), so the next reviewer doesn't reopen it assuming you missed it. The homemade-parser rejection is *in the spec* precisely so nobody re-litigates it.
+- Spec self-review checklist: placeholder scan, internal consistency, scope (one plan?), ambiguity (pick one interpretation, make it explicit). Fix inline. The firewall self-review caught a real gap — the deny-list was Kusto-only, missing LA's `workspace(`/`app(` cross-resource escapes.
+
+### 4.3 How the research was actually done
+
+Research fed the specs (especially Phase 4). Methods, in order of preference:
+
+1. **The deep-research skill / workflow** for broad multi-source questions. It fans out web searches across angles, fetches sources, and **adversarially verifies** each claim with a 2-or-3-vote panel before accepting it. Phase 4's throttling-internals came back as *17 claims verified 3-0/2-1 against Microsoft Learn*. Caveat learned: it is token- and rate-limit-heavy — it hit a session limit mid-run once, so **pull the partial results** (the workflow writes an output file with `confirmed`/`unverified`/`sources`), then finish the unverified axes yourself with targeted `WebFetch`.
+2. **`WebFetch` + `WebSearch`** for targeted verification. Fetch the actual Microsoft Learn page and ask a specific question of it; don't answer capacity/throttling questions from memory — Microsoft's mechanics are exact (the 10-min/60-min/24-hr throttling stages, smoothing windows, carryforward/burndown) and must be quoted from the source.
+3. **`gh api "user/starred?..."`** to read the user's recent GitHub stars (with `PYTHONIOENCODING=utf-8` on Windows, and `-H "Accept: application/vnd.github.star+json"` to get starred-at timestamps). This is how "look at my starred repos" was answered — but the honest finding was that none were domain-specific, so they were evaluated on merit and mostly SKIP'd. Don't force a starred repo into the design because it was starred.
+4. **Read our own code first.** Half the best Phase-4 finds came from `grep`/`Read` on the repo, not the web — the unread `facts["refreshes"]`, the orphaned CLI-only `analyze_dax`, the automation brain (`whats_changed`) that existed but wasn't exposed. Before proposing a new capability, check whether the capability already exists and is merely unreached.
+5. **Every finding gets a verdict: ADD / SKIP / GATED**, each with a one-line why and a rough effort. Default to SKIP for anything speculative; default to GATED (not ADD) for anything needing org approval or a data-source unlock. When you present research, a decision-ready ranked shortlist beats a prose dump. (An Artifact HTML page was used once to present the Phase-4 research shortlist — good for a scannable decision matrix, optional.)
+6. **Security audit any external code before absorbing it.** The MCP harvest did line-by-line reads of each source MCP and ported ONLY read-side patterns, never write tools. When a CVE surfaced in research (a table-name f-string injection in a sibling MCP), the move was to *check our own equivalent code against it* (`describe_source`/`sample_events`) and confirm `escape_entity` already defended it — research findings become audits of our own code, not just notes.
+
+### 4.4 Plan → three verification subagents (before ANY implementation)
+
+After `writing-plans` produces the plan, and before executing it, the previous Claude dispatched **three independent reviewer subagents in parallel against the plan itself**:
+- one for **coverage** (does every spec item map to a task? anything silently dropped?),
+- one for **technical accuracy** (do the cited interfaces/signatures actually exist in the code? — this caught the dead-man's-switch wired to the wrong entrypoint, and a test helper referenced but never defined),
+- one for **improvability** (is any task mis-sized, any design bug latent? — this caught the mock-series-leak honesty bug *in the plan*, before a line was written).
+
+They found 14 planning defects including two would-be production bugs. **Do this.** Dispatch them with `run_in_background` and wait; apply all findings in one plan-revision pass. It is far cheaper to fix a plan than a merged bug.
+
+### 4.5 Subagent dispatch — the exact mechanics
+
+**Tool:** `Agent`. **Types used:** `general-purpose` for essentially everything (implementers, reviewers, fixers, research). **Model selection is deliberate and explicit — never omit it:**
+- **Implementers:** `model: sonnet`. Most tasks are well-specified transcription+testing; sonnet is the right floor.
+- **Reviewers (per-task):** `model: sonnet`, scaled to the diff.
+- **Final whole-branch review:** `model: opus` — the one place to spend the top model, because cross-task honesty defects (like F1) only show at the whole-branch level.
+- **Fix subagents:** `model: sonnet`.
+
+**The implementer prompt template (copy this shape):**
+1. One line: where this task fits in the project.
+2. "READ THIS FIRST — your requirements, with exact values verbatim: `<task-N-brief.md path>`."
+3. Interfaces from earlier tasks the brief can't know (exact signatures).
+4. Your resolution of any ambiguity you spotted (decisions made FOR them — e.g. "use `has_real_cost=(meta['tier'] != 'operationLevel')`, NOT `meta['hasRealCost']`").
+5. The report-file path + report contract (return only STATUS / commit / one-line test summary / concerns).
+6. **Always include: "Do the work YOURSELF with Edit/Write/Bash — do NOT dispatch or delegate to another agent."** (A subagent once spawned its own nested agent and left partial work; this guard prevents it.)
+7. Global constraints block (read-only, camelCase/snake_case, nullish, error envelope, offline tests, exact baseline test count).
+
+**Dispatch in the background** (`run_in_background: true`, the default) and continue coordinating; you get a completion notification. **Do not read the subagent's raw output file via the shell** — it's the full JSONL transcript and will overflow your context. The returned final message is your result.
+
+**Handle the four implementer statuses:** DONE → review it; DONE_WITH_CONCERNS → read the concerns first; NEEDS_CONTEXT → provide it, re-dispatch; BLOCKED → change something (more context, a stronger model, or split the task) — never re-dispatch unchanged.
+
+**Recovery pattern (this happened several times):** an implementer stalls (watchdog), drops (API connection), or spawns a nested agent that dies mid-write. When that happens: check `git status`, run pytest, and if the work is complete and green, **commit it yourself** with the intended message and move on. The ledger + `git log` are truth, not the subagent's memory.
+
+### 4.6 The scripts (exact invocations)
+
+From the SDD skill dir `C:/Users/shaku/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/`:
+
+- **Extract a task brief:** `bash .../scripts/task-brief <PLAN_FILE> <N>` → writes `<repo>/.superpowers/sdd/task-N-brief.md` and prints the path. Hand THAT path to the implementer — never paste the plan into the prompt.
+- **Build a review package:** `bash .../scripts/review-package <BASE> <HEAD>` → writes `<repo>/.superpowers/sdd/review-<base7>..<head7>.diff` (commit list + stat + full `-U10` diff in one file) and prints the path. **BASE is the commit you recorded before dispatching the implementer — NEVER `HEAD~1`** (that silently drops all but the last commit of a multi-commit task).
+- Everything moves as **files**, never pasted text — pasted diffs/reports stay resident in your context on every later turn and blow it out.
+
+### 4.7 The reviewer prompt (per-task gate)
+
+Give the reviewer three files: the **brief**, the implementer's **report**, and the **review-package diff**. Then the binding **global-constraints block copied verbatim from the plan** (exact values — it's the reviewer's attention lens). Ask for TWO verdicts: **Spec ✅/❌** (every requirement met, nothing extra) and **Quality Approved/Changes-needed** (findings by severity, each with `file:line`). Rules that keep reviews honest:
+- **Never pre-judge** — don't tell a reviewer "don't flag X" or "this is at most Minor." If you think a finding would be a false positive, let them raise it and adjudicate in the loop.
+- When the implementer disclosed a deviation, **ask the reviewer to adjudicate it explicitly** (acceptable / flag) rather than assuming.
+- **Fix Critical/Important with ONE fix subagent carrying all findings;** log Minor findings in the ledger for the final review; re-review after a correctness-critical fix.
+
+### 4.8 The ledger (survives compaction — this is your memory)
+
+At `C:/Users/shaku/corporate/.superpowers/sdd/progress.md`. It lists every task with its commit range and review status, plus a "Minor findings (for final review)" section. **Update it in the same turn you finish a task.** After a context compaction, trust the ledger + `git log` over your own recollection — the single most expensive failure mode is re-dispatching already-complete work because memory lost it. The ledger prevents that.
+
+### 4.9 The final whole-branch review + merge
+
+- After the last task, run `review-package <MERGE_BASE> <HEAD>` (MERGE_BASE = where the branch started, e.g. the commit before task 1), copy the ledger's Minor-rollup to a file, and dispatch **one opus reviewer** with: read-only verdict, honesty-architecture verdict, branch verdict, findings, and a triage of every rolled-up Minor (must-fix vs acceptable). This is where cross-task defects surface — Phase 4's F1 (WM mock-labeled-live) was caught HERE, at the last gate, and fixed at three layers before merge.
+- **Merge flow:** `git push -u origin <branch>` → `gh pr create --base main --title ... --body ...` → poll `gh pr view N --json mergeable,statusCheckRollup` until CI (test 3.10 + test 3.12) is SUCCESS → `gh pr merge N --merge --delete-branch` → `git checkout main && git pull --ff-only` → verify on main (`pytest -q`, tool count, evals). Do NOT merge on red or pending CI.
+- **Merging to a PUBLIC repo is outward-facing** — the user authorizes it explicitly (they said "push, open PR, wait for CI, land it"). Don't merge without that go.
+
+### 4.10 Communicating with the user (how to report)
+
+- Lead every turn's final message with the outcome (what happened / what you found), then supporting detail. The user reads the last message; put everything load-bearing there.
+- Between subagent dispatches, one short status line ("Task N building… / review dispatched") — the ledger and tool results carry the record, don't narrate every step.
+- Surface judgment calls for veto rather than burying them (e.g. "I trimmed WM from the registry — that deviates from the spec table; here's why; flag if you disagree").
+- When the user is *asking* (not requesting a change) — "is there more we can do?", "why did you exclude these?" — the deliverable is your honest assessment, not immediate code. Answer, then ask if they want it built.
+
+### 4.11 The rhythm, condensed
+
+`task-brief → implementer (sonnet, background) → notification → review-package → reviewer (sonnet) → fix if needed → ledger line → next task`. Repeat until the plan is done. Then opus final review → fix wave → merge. Keep your own hands off the code except for recovery (committing a stalled subagent's green work) and tiny controller-level fixes. Your value is the briefs, the reviews, and never letting an honesty defect through.
+
