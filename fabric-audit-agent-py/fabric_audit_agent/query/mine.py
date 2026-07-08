@@ -238,7 +238,10 @@ def _dominant_operator(kql: str) -> str:
     """
     counts = Counter()
     first_seen_order = []
-    for match in _PIPE_TOKEN_RE.finditer(str(kql)):
+    # Blank string-literal content first so a '|' inside a string (e.g. `has "a | b"`) can't be
+    # miscounted as a pipe operator and flip the chosen label.
+    scanned = kql_guard._strip_string_literals(str(kql))
+    for match in _PIPE_TOKEN_RE.finditer(scanned):
         token = _sanitize_name_part(match.group(1))
         if token not in _KNOWN_OPERATORS:
             continue
@@ -293,11 +296,15 @@ def to_library_entries(ranked, existing_templates) -> list[dict]:
         op = _dominant_operator(kql)
         digest = hashlib.sha1(str(shape).encode("utf-8")).hexdigest()
 
-        name = f"adhoc-{engine}-{op}-{digest[:6]}"
+        # Sanitize engine into the NAME (defense-in-depth: the name must stay kebab even if a
+        # caller ever bypasses parse_audit_lines' engine allowlist). The entry's own `engine`
+        # field below is left raw -- it must stay "capacity"/"la" for the enum + run_kql.
+        safe_engine = _sanitize_name_part(str(engine))
+        name = f"adhoc-{safe_engine}-{op}-{digest[:6]}"
         length = 6
         while name in used_names and length < len(digest):
             length += 1
-            name = f"adhoc-{engine}-{op}-{digest[:length]}"
+            name = f"adhoc-{safe_engine}-{op}-{digest[:length]}"
         used_names.add(name)
 
         entries.append({

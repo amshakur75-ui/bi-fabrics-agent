@@ -565,3 +565,22 @@ def test_to_library_entries_integration_with_rank_candidates():
         "name", "category", "engine", "description", "kql", "groundedIn", "hitCount",
     ]
     validate_adhoc_kql(entry["kql"])
+
+
+def test_to_library_entries_tolerates_malformed_existing_templates():
+    # Defensive (mirrors the Task-2 malformed-records test): non-dict entries, a dict missing
+    # 'name', and name=None must not crash name-uniqueness seeding.
+    ranked = [{"engine": "capacity", "shapeKey": "x", "kql": _SHAPE_A_BASE, "hitCount": 3}]
+    existing = [None, "not-a-dict", {"engine": "capacity"}, {"name": None}]
+    entries = to_library_entries(ranked, existing)
+    assert len(entries) == 1
+    assert entries[0]["name"].startswith("adhoc-capacity-")
+
+
+def test_to_library_entries_string_embedded_pipe_does_not_flip_operator_label():
+    # A '|' inside a string literal must not be counted as a pipe operator (name/description are
+    # cosmetic, but should stay accurate). Real operator here is a single 'where'.
+    kql = 'CapacityEvents | where Message has "a | project b | summarize c"'
+    ranked = [{"engine": "capacity", "shapeKey": "s", "kql": kql, "hitCount": 3}]
+    entries = to_library_entries(ranked, [])
+    assert entries[0]["name"] == "adhoc-capacity-where-" + hashlib.sha1(b"s").hexdigest()[:6]
