@@ -15,7 +15,7 @@ _MAX_ADHOC_LEN = 10_000
 # (ADX/Eventhouse and Log Analytics), scanned AFTER blanking string literals so a literal can't
 # false-reject. Word-boundary anchored so 'app(' can't match inside 'myapp('.
 _DENIED_CALL = re.compile(r"\b(cluster|database|workspace|app)\s*\(", re.IGNORECASE)   # cross-resource
-_DENIED_WORD = re.compile(r"\b(externaldata|evaluate)\b", re.IGNORECASE)               # ext-read / plugins
+_DENIED_WORD = re.compile(r"\b(externaldata|external_table|evaluate)\b", re.IGNORECASE)  # ext-read / plugins
 
 
 class FirewallRejection(Exception):

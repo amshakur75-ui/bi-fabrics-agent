@@ -70,8 +70,18 @@ def test_denied_keyword_inside_string_literal_passes():
 
 def test_word_boundary_no_false_positive_on_appname():
     # 'app(' must not match inside an identifier like 'myapp(' — word boundary required.
-    kql = "MyTable | extend v = myapp_metric | take 1"
+    # The identifier is immediately followed by '(' so a NAIVE substring check for 'app('
+    # WOULD false-reject here; only the \b-anchored regex passes it. This discriminates.
+    kql = "MyTable | extend v = myapp(col) | take 1"
     assert validate_adhoc_kql(kql) == kql
+
+
+def test_external_table_denied():
+    # external_table('T') references a pre-registered external table — an external-read escape
+    # sibling to externaldata; denied.
+    with pytest.raises(FirewallRejection) as ei:
+        validate_adhoc_kql("external_table('T') | take 1")
+    assert ei.value.stage == "denied-operator"
 
 
 def test_legitimate_multiline_analytical_query_passes():
