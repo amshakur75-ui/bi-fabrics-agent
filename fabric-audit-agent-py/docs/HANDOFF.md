@@ -1,7 +1,7 @@
 # Fabric Audit Agent — Build Handoff
 
 **Written:** 2026-07-08 · **For:** the next Claude picking up this project cold.
-**Read this top-to-bottom once, then start at Part 2 (the current build).**
+**Read this top-to-bottom once. The firewall (Part 2) has SHIPPED — start your work at Part 3-A.**
 
 ---
 
@@ -19,14 +19,14 @@ A **read-only** Microsoft Fabric / Power BI capacity & performance **audit agent
 
 ## Part 1 — Everything done so far
 
-### 1a. Where the code is RIGHT NOW
+### 1a. Where the code is RIGHT NOW  (updated 2026-07-08 post-firewall-merge)
 
-- **`main` @ `bddbdb8`** — Phase 4 merged (PR #10) plus 4 follow-ups: a loop.py forced-answer fix, a version bump, a schema-mirror test fix, and **`whats_changed` code-side activation** (`FABRIC_HISTORY_PATH` set → `run_audit` appends history + the diff works; the durable Job path is the only piece left) + a diagnose stage-3 over-window refetch. This branch (`feat/query-firewall`) is rebased onto `bddbdb8`.
-- **Current working branch: `feat/query-firewall`** (2 commits ahead of main: the firewall **spec** `4f78a60` and **plan** `2c07c62` — docs only, no code yet).
-- **Test baseline: `809 passed, 3 skipped`** (`cd fabric-audit-agent-py && python -m pytest -q`, measured on this rebased branch). Evals: `python -m fabric_audit_agent eval-agent` → 17/17; `eval-investigations` → 2/2.
-- **16 read-only tools** live on `main` (`python -c "from fabric_audit_agent.tools import create_tool_definitions as f; print(len(f()))"` → 16).
+- **`main` @ `9b70657`** — the **query firewall shipped** (PR #11, 2026-07-08): `run_kql` (17th tool, agent-authored read-only ad-hoc KQL) + `query_library` (18th tool, 21 grounded templates). Before that: Phase 4 (PR #10) + follow-ups (`bddbdb8`: `whats_changed` code-side activation — `FABRIC_HISTORY_PATH` set → `run_audit` appends history + the diff works, durable Job path still pending; a diagnose stage-3 over-window refetch; a loop.py forced-answer fix; a version bump).
+- **No open feature branch** — `feat/query-firewall` was merged + deleted. Cut a fresh branch for the next item (Part 3-A).
+- **Test baseline: `856 passed, 3 skipped`** on `main` (`cd fabric-audit-agent-py && python -m pytest -q`). Evals: `python -m fabric_audit_agent eval-agent` → **19/19**; `eval-investigations` → 2/2.
+- **18 read-only tools** live on `main` (`python -c "from fabric_audit_agent.tools import create_tool_definitions as f; print(len(f()))"` → 18).
 
-### 1b. The tools that exist (16)
+### 1b. The tools that exist (18)
 
 | Group | Tools |
 |---|---|
@@ -38,6 +38,7 @@ A **read-only** Microsoft Fabric / Power BI capacity & performance **audit agent
 | Deduction | `diagnose`, `analyze_dax` |
 | Memory | `whats_changed` |
 | Per-user | `user_timeline` |
+| Ad-hoc + library | `run_kql`, `query_library` |
 
 ### 1c. Merged history (what each PR delivered)
 
@@ -48,14 +49,15 @@ A **read-only** Microsoft Fabric / Power BI capacity & performance **audit agent
 - **PR #6/#7** — Phase 3 hygiene; deterministic event sampling + consistent `cuSeconds` units.
 - **PR #8** — Phase-4 spec + Phase-5 approval sheet + MCP harvest inventory (`research/23-*`, `research/24-*`).
 - **PR #9 (MCP Harvest Upgrade)** — 13 tasks: absorbed read-side patterns from 4 MS/OSS MCPs (fabric-rti-mcp, azure-mcp, johnib/kusto-mcp, mcp-kql-server). Delivered the KQL guard (`query/kql_guard.py`), client hardening (`request_readonly_hardline`), result envelopes + char-budget limiter (`query/envelope.py`), columnar + per-query cost metadata, time windows (`query/windows.py`, py3.10 Z-safe), `raw_events`, `describe_source`, `sample_events`, `capacity_diagnostics`, verify-in-Fabric deeplinks (`query/deeplinks.py`), honesty labels (`cuUnit`), log redaction (`query/redact.py`). 12 tools.
-- **PR #10 (Phase 4)** — source-capability layer + 9 deepening ADDs, 15 tasks. Delivered `sources.py` (capability registry + coverage resolver), Tier-1 activity→event adapter, the `_resolve_event_sources` tiered seam (Tier-2 per-query → Tier-1 operation-level → mock, with `tier`/`coverageNote`/`hasRealCost` labels), throttle decomposition (`investigation/throttle.py`, honest 3-stage gate), time-to-throttle forecast (`investigation/forecast_throttle.py`), refresh-failure detector (`detectors/refresh.py`), dead-man's-switch (`job.py`), `analyze_dax` tool, the `diagnose` decision-tree engine (`investigation/diagnose.py`) + tool, `whats_changed` (agent memory + atomic store write), `user_timeline`, eval golden cases for all 16 tools + a permanent coverage invariant. 12 → 16 tools.
+- **PR #10 (Phase 4)** — source-capability layer + 9 deepening ADDs, 15 tasks. Delivered `sources.py` (capability registry + coverage resolver), Tier-1 activity→event adapter, the `_resolve_event_sources` tiered seam (Tier-2 per-query → Tier-1 operation-level → mock, with `tier`/`coverageNote`/`hasRealCost` labels), throttle decomposition (`investigation/throttle.py`, honest 3-stage gate), time-to-throttle forecast (`investigation/forecast_throttle.py`), refresh-failure detector (`detectors/refresh.py`), dead-man's-switch (`job.py`), `analyze_dax` tool, the `diagnose` decision-tree engine (`investigation/diagnose.py`) + tool, `whats_changed` (agent memory + atomic store write), `user_timeline`, eval golden cases for all 16 tools + a permanent coverage invariant. 12 → 16 tools. The final whole-branch review here caught **F1** (Workspace Monitoring declared as an event source the seam couldn't serve → mock mislabeled as live), fixed at three layers before merge — the reason WM is gated (Part 1f).
+- **PR #11 (Query Firewall)** — `run_kql` + `query_library`, 4 tasks. `query/firewall.py::validate_adhoc_kql` (pure static gate) → take-0 rehearsal (engine binder = live-schema check) → bounded execute; 21 grounded templates, every one firewall-passing (test-enforced). 16 → 18 tools. **The adversarial final review found a proven Critical *bypass class*** — see Part 4.12; it's the sharpest lesson on this branch.
 
 ### 1d. Architecture you must respect
 
 - **Functional core + swappable dict-ports.** Core is pure; all I/O is dependency-injected as dict-style ports (`{"collect": fn}`, `{"reason": fn}`, `{"deliver": fn}`, `{"history","append"}`, `{"load","save"}`). Same logic runs offline (mock adapters) or in prod (real adapters). Nothing in the core knows about HTTP/files.
 - **Tools live in `tools.py::create_tool_definitions`.** Each tool is `{name, description, input_schema, handler}`. `mcp_server._make_tool_fn(handler, input_schema)` derives the FastMCP signature from the schema — a new tool needs only a complete `input_schema`, no registration edits beyond the docstring tool list.
 - **The tiered event seam** `_resolve_event_sources(...)` returns `(events, series, meta)` with `meta` carrying `tier` (`perQuery`/`operationLevel`/`mock`), `coverageNote`, `hasRealCost`. It's the honesty spine — study it before touching any event tool.
-- **The query building blocks** (all in `query/`, all reused by the firewall you're about to build): `kql_guard.assert_read_only_kql`, `first_statement`, `_strip_string_literals`, `assert_kusto_host`; `envelope.finish`/`cap_rows`/`to_columnar`; `deeplinks.kusto_deeplink`; `redact.redact_secrets`. In `tools.py`: `dry_run` (take-0 rehearsal), `_capacity_kusto_query`, `_queryplan_estimate`, `_memo_client`.
+- **The query building blocks** (all in `query/`): `kql_guard.assert_read_only_kql`, `first_statement`, `_strip_string_literals`, `assert_kusto_host`; `envelope.finish`/`cap_rows`/`to_columnar`; `deeplinks.kusto_deeplink`; `redact.redact_secrets`; and now `firewall.validate_adhoc_kql` (the shipped ad-hoc gate). In `tools.py`: `dry_run` (take-0 rehearsal), `_capacity_kusto_query`, `_queryplan_estimate`, `_memo_client`, `_load_query_library`.
 
 ### 1e. Non-negotiable conventions (violating these = a review rejection)
 
@@ -93,43 +95,25 @@ This project uses **superpowers subagent-driven-development**. The pattern that 
 
 ---
 
-## Part 2 — What you are building RIGHT NOW: the Query Firewall
+## Part 2 — The Query Firewall (SHIPPED — reference + its security lesson)
 
-**Goal:** let the agent run **read-only, agent-authored ad-hoc KQL** it composes on demand (turning the fixed 16-tool menu into open-ended investigation), plus a **grounded query-library** of proven templates. 16 → 18 tools.
+> The firewall was the "current build" when this handoff was first written; it **merged on 2026-07-08 (PR #11)**. This section is now REFERENCE: what it is, how it works, and the hard security lesson it taught. Your actual next task is in Part 3-A.
 
-**The two documents that define it (READ BOTH FIRST):**
-- **Spec:** `docs/superpowers/specs/2026-07-08-query-firewall-design.md`
-- **Plan:** `docs/superpowers/plans/2026-07-08-query-firewall.md` — **4 tasks, complete code in every step.**
+**What it does:** lets the agent run **read-only, agent-authored ad-hoc KQL** it composes on demand (open-ended investigation beyond the fixed tool menu), plus a **grounded query-library** of 21 proven templates. Spec: `docs/superpowers/specs/2026-07-08-query-firewall-design.md`; plan: `docs/superpowers/plans/2026-07-08-query-firewall.md`.
 
-**The design in one paragraph:** A pure `query/firewall.py::validate_adhoc_kql` does static rejection (length → multi-statement → read-only gate via the existing `assert_read_only_kql` → a dangerous-operator deny-list covering `cluster(`/`database(`/`workspace(`/`app(`/`externaldata`/`evaluate` in both KQL flavors). Then the `run_kql` handler runs a **take-0 rehearsal** against the target engine's own binder (that IS the live-schema check — no schema cache, no homemade parser), then bounded execution + honest envelope + a redacted stdout audit line. Two engines: `capacity` (Eventhouse) + `la` (Log Analytics). `query_library` is an inert catalog of grounded plain-KQL templates that run through `run_kql` with **no privileged bypass** — a test enforces that every template passes the firewall (the "grounding bar").
+**How it works:** `query/firewall.py::validate_adhoc_kql` (pure) does static rejection — length → **verbatim-string** → **multiline-string** → **comment** → multi-statement → control-command → **denied-operator** deny-list (`cluster(`/`database(`/`workspace(`/`app(`/`externaldata`/`external_table`/`evaluate`, both KQL flavors, word-boundary anchored, scanned after blanking regular string literals). Then `run_kql` runs a **take-0 rehearsal** against the engine's own binder (the live-schema check — no schema cache, no homemade parser), then bounded execute (`| take maxRows` appended AFTER validation, hard-cap 1000) + honest envelope + a redacted `[adhoc-kql]` stdout audit line. Engines: `capacity` (Eventhouse) + `la` (Log Analytics). `query_library` is an inert catalog; templates run through `run_kql` with **no bypass** — a test enforces every template passes the firewall (the "grounding bar").
 
-**Why it's small (4 tasks):** it rides on Phase 4. The firewall is mostly *wiring the `assert_read_only_kql` validator that already exists but was never called*; the only genuinely new security surface is the ~10-line deny-list.
+**Firewall exclusions (decided; don't reopen without cause):** FUAM/SQL leg (gated), WM engine (withheld until wired), parameterization machinery (2nd injection surface), usage-tracking storage (App is write-free; the stdout audit log replaces it), schema cache (rehearsal IS the live check), homemade KQL parser (rejected — the engine's binder is the real parser). All in the spec's "explicitly NOT pursued" section.
 
-### Your execution directions (do this)
-
-1. **You are already on `feat/query-firewall`** (branch exists, spec + plan committed). Confirm: `cd C:/Users/shaku/corporate && git branch --show-current` → `feat/query-firewall`; `cd fabric-audit-agent-py && python -m pytest -q` → `809 passed, 3 skipped`.
-2. **Invoke the `superpowers:subagent-driven-development` skill** and execute `docs/superpowers/plans/2026-07-08-query-firewall.md` task-by-task, per Part 1g above. Create the ledger section for these 4 tasks first.
-3. **Task order (from the plan):** T1 firewall (pure) → T2 `run_kql` + audit log → T3 `query_library.json` + tool + grounding-bar test → T4 eval golden cases + docs (16→18) + final sweep.
-4. **Watch these load-bearing points** (they're in the plan, but they're where a defect would hide):
-   - The deny-list scans **after** blanking string literals (reuse `_strip_string_literals`) and is **word-boundary anchored** (`app(` must not match inside `myapp(`) — both are tested.
-   - `run_kql` must run the firewall **before** any engine call (a test asserts zero engine calls on a denied query).
-   - The `| take maxRows` bound is appended **after** validation (can't reintroduce a rejected construct); `maxRows` hard-cap 1000.
-   - **The grounding bar is load-bearing:** every library template must pass `validate_adhoc_kql`. If a template fails, FIX or DROP the template — NEVER loosen the bar. Author templates only against confirmed-live schema (`CapacityEvents` nested-`data` envelope; `PowerBIDatasetsWorkspace` confirmed columns — both listed in the plan). Ship what grounds (~15–25 expected); no padding.
-   - The mock/unconfigured paths return an **honest** "no live query engine configured" note — that's the eval case, not a bug.
-5. **Final whole-branch review** on opus, then merge per Part 1g. Expected end state: ~830+ passed, 3 skipped; 18 tools; eval-agent 19/19.
-6. **Docs to update in T4:** `mcp_server.py` docstring tool list → 18; `MCP-AGENT.md` (add run_kql/query_library + a firewall paragraph + the audit-log deployment note: full query text is logged to the App log, which may contain user emails — org-policy parallel to `user_timeline`); `CLAUDE.md`/`STATUS.md` counts 16 → 18.
-
-### Firewall exclusions (already decided — do NOT expand scope)
-
-FUAM/SQL leg (gated), Workspace Monitoring engine (withheld until wired), parameterization machinery (2nd injection surface), usage-tracking storage (App is write-free; the stdout audit log replaces it), schema cache (rehearsal IS the live check), homemade KQL parser (rejected — the engine's binder is the real parser). Each reason is in the spec's "explicitly NOT pursued" section.
+**Fail-closed restriction the agent must know (disclosed in MCP-AGENT.md):** ad-hoc `run_kql` queries **cannot contain** `@"`/`@'` verbatim strings, backticks, or `//` comments — including a `//` inside a URL string literal. This is deliberate (see Part 4.12); the agent rephrases.
 
 ---
 
-## Part 3 — Everything after the firewall (the forward roadmap, to the last phase)
+## Part 3 — The forward roadmap (to the last phase)
 
 Do these **in order**, each as its own brainstorm → spec → plan → subagent-driven execution → review → merge cycle. Do NOT batch them; each is a separate PR. Several are **gated** — do not start a gated item until the user confirms the gate opened.
 
-### Next up (build when the firewall merges)
+### Next up (the firewall is merged — start here)
 
 **A. Verified-query library growth loop (small, ungated).** The firewall ships with the stdout audit log as the learning signal. Once real ad-hoc queries flow, mine the App logs for the most-repeated *allowed* query shapes and promote them into `query_library.json` (each still must pass the grounding bar). This is a recurring ~10-minute PR, not a one-time build. It's the payoff for logging — do a first pass after the agent has real usage.
 
@@ -155,12 +139,12 @@ Do these **in order**, each as its own brainstorm → spec → plan → subagent
 
 ## Quick-start checklist for the next Claude
 
-- [ ] `cd C:/Users/shaku/corporate` — confirm branch `feat/query-firewall`, `git log --oneline main..HEAD` shows the spec + plan commits.
-- [ ] `cd fabric-audit-agent-py && python -m pytest -q` → `809 passed, 3 skipped`.
-- [ ] Read `docs/superpowers/specs/2026-07-08-query-firewall-design.md` then `docs/superpowers/plans/2026-07-08-query-firewall.md`.
-- [ ] Invoke `superpowers:subagent-driven-development`; create the ledger; execute the 4 tasks with per-task review.
-- [ ] Final whole-branch review (opus) → fix wave → merge (push, PR, CI green on 3.10+3.12, merge, sync, verify 18 tools on main).
-- [ ] Then Part 3 item A/B; hold C–H until their gates open (ask the user).
+- [ ] `cd C:/Users/shaku/corporate` — on `main`; `git pull --ff-only origin main`; confirm `main` at/after `9b70657`.
+- [ ] `cd fabric-audit-agent-py && python -m pytest -q` → `856 passed, 3 skipped`; `python -c "from fabric_audit_agent.tools import create_tool_definitions as f; print(len(f()))"` → `18`.
+- [ ] The firewall (Part 2) is SHIPPED — read it as reference. Your next task is **Part 3-A** (query-library growth loop) or **3-B** (deploy activation) — both ungated.
+- [ ] For a build task: `superpowers:brainstorming` (if design needed) → `writing-plans` → 3 plan-reviewers → cut a fresh branch → `subagent-driven-development` with per-task review → opus final review → merge. (Part 4 is the full method.)
+- [ ] Actively reach for any useful skill as you go (TDD, systematic-debugging, verification-before-completion, brainstorming, subagent-driven-development) — not just a curated list.
+- [ ] Hold gated items C–H until the user confirms the gate opened.
 - [ ] Never break read-only. Never label mock/proxy as live. Never loosen the grounding bar.
 
 ---
@@ -276,4 +260,21 @@ At `C:/Users/shaku/corporate/.superpowers/sdd/progress.md`. It lists every task 
 ### 4.11 The rhythm, condensed
 
 `task-brief → implementer (sonnet, background) → notification → review-package → reviewer (sonnet) → fix if needed → ledger line → next task`. Repeat until the plan is done. Then opus final review → fix wave → merge. Keep your own hands off the code except for recovery (committing a stalled subagent's green work) and tiny controller-level fixes. Your value is the briefs, the reviews, and never letting an honesty defect through.
+
+### 4.12 The firewall security-review lesson (why the final review is non-negotiable, esp. for a security boundary)
+
+The query firewall (PR #11) is the sharpest proof that the process catches what tests don't. Every per-task review passed; the suite was green at 841; the docstring *claimed* the bypass class was closed. Then the **adversarial final whole-branch review (opus)** — told to "attack the firewall as a security boundary" — found a **proven Critical bypass**, and it took **three successive rounds** to fully close, because it was a *class*, not a single bug:
+
+1. **Round 1 — verbatim strings.** KQL `@"..."`/`@'...'` verbatim strings aren't modeled by the `'`/`"` state machine (`_strip_string_literals`/`first_statement`); a verbatim string ending in `\"` fools it into thinking the string never closes, so `@"x\" | union database('SecretDB').SecretTable` slipped a cross-database read (and stacked `.drop`) past ALL THREE gates. The take-0 rehearsal doesn't save it — a sibling DB the SP can reach binds cleanly.
+2. **Round 2 — triple-backtick multiline strings.** Same class, different unmodeled form. The re-review that verified round 1 hunted for siblings and found it.
+3. **Round 3 — `//` line comments.** Same class again. The re-review after round 2 did a *complete grammar enumeration* of KQL literal/comment forms and found `//` was the last one.
+
+**The lessons, in order of importance:**
+- **The final whole-branch review must be adversarial and run on the top model, especially for anything security-shaped.** Tell it to *attack*, to hunt bypasses, to enumerate the complete grammar — not just "check the diff." It found what 4 clean per-task reviews and a green suite did not.
+- **Fix the CLASS, not the instance.** After round 1 we asked "is this the whole class?" — that framing is what surfaced rounds 2 and 3. When a bug has a root cause ("any unmodeled construct desyncs the parser"), enumerate the complete set and close all of it; don't whack one mole and declare victory. The final docstring carries the grammar-complete enumeration as an *auditable closure argument*, not a claim.
+- **Re-review every security fix, and have the re-review look for siblings.** Each round's re-review found the next hole precisely because it was told to look beyond the reported instance.
+- **Fail-closed is the right default at a security boundary.** The fix rejects `@"`, backticks, and `//` outright (even a `//` inside a URL) rather than trying to parse around them — because "parse around it" is exactly the fragility being exploited. Over-rejection is a disclosed usability cost (the agent rephrases); a bypass is a breach. Disclose the restriction honestly (it's in MCP-AGENT.md) — an honest limitation beats a clever gate that's wrong.
+- **Don't trust a docstring that says "closed."** Round 1's fix docstring claimed class closure and was wrong (it conflated "string literal" with "any construct whose content the parser scans"). Make closure claims *provable* (enumerate) or don't make them.
+
+If you build another validator/guard/firewall (e.g. a SQL leg for FUAM, Part 3-C): assume the same class exists in that grammar, enumerate its literal/comment/quoting forms up front, and have the adversarial review attack it before merge.
 
