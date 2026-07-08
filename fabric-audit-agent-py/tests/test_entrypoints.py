@@ -1,5 +1,7 @@
-"""Entry-point tests — cluster 9. CLIs (audit/eval/whatif/triggers/lifecycle/dax), the MCP
-tool/manifest, and the Databricks job wiring (injected fake ports, no real SDK/network)."""
+"""Entry-point tests — cluster 9. CLIs (audit/eval/whatif/triggers/lifecycle/dax/mine-queries),
+the MCP tool/manifest, and the Databricks job wiring (injected fake ports, no real SDK/network)."""
+import io
+import json
 import os
 import shutil
 
@@ -7,14 +9,17 @@ import pytest
 
 from fabric_audit_agent.entrypoints import (
     run_audit_cli, run_eval_cli, run_whatif_cli, run_triggers_cli, run_lifecycle_cli, run_dax_cli,
+    run_mine_queries_cli,
 )
 from fabric_audit_agent.tools import create_tool_definitions
 from fabric_audit_agent.mcp_server import manifest
 from fabric_audit_agent.job import run_job, build_rest_config
 from fabric_audit_agent.adapters import create_stub_reasoner
 from fabric_audit_agent.config import DEFAULT_CONFIG
+from fabric_audit_agent.query.firewall import validate_adhoc_kql
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REAL_LIBRARY = os.path.join(_REPO, "fabric_audit_agent", "query_library.json")
 
 
 def _temp_base(tmp_path):
@@ -234,3 +239,203 @@ def test_main_dispatch_no_args_prints_usage(capsys):
     from fabric_audit_agent.__main__ import main
     main([])
     assert capsys.readouterr().out.strip()
+
+
+# ---- mine-queries (query-library growth loop, Task 4) ----
+
+def _adhoc_line(kql, engine="capacity", verdict="allowed", **extra):
+    """Reproduce the real `[adhoc-kql] ` audit-log line format (tools.py:114-131)."""
+    rec = {"tag": "adhoc-kql", "engine": engine, "verdict": verdict, "kql": kql}
+    rec.update(extra)
+    return "[adhoc-kql] " + json.dumps(rec, ensure_ascii=False, separators=(",", ": "))
+
+
+_NEW_SHAPE_KQL = (
+    "CapacityEvents\n| where ingestion_time() > ago(1d)\n"
+    "| where Foo == 1\n| project Foo\n| take 50"
+)
+
+
+def _new_shape_log_text(n=3, kql=_NEW_SHAPE_KQL):
+    return "\n".join(_adhoc_line(kql) for _ in range(n))
+
+
+def _write_small_library(path, entries=None):
+    """A tiny, schema-valid, firewall-passing library file used as a temp `library_path` so a
+    test never risks mutating the real package `query_library.json`."""
+    if entries is None:
+        entries = [
+            {
+                "name": "capacity-peak-windows-24h",
+                "category": "capacity",
+                "engine": "capacity",
+                "description": "Per-30s-window CU% over the last 24h, highest first.",
+                "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| take 50",
+                "groundedIn": "test fixture",
+            },
+        ]
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(entries, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    return entries
+
+
+def test_mine_queries_preview_writes_nothing_and_lists_candidate(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+    before = lib_path.read_bytes()
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    out = run_mine_queries_cli([str(logfile)], library_path=str(lib_path))
+
+    assert lib_path.read_bytes() == before   # preview writes NOTHING
+    assert "adhoc-capacity-" in out
+    assert "hitCount" in out or "3" in out
+    assert "Re-run with --write" in out
+
+
+def test_mine_queries_preview_zero_candidates_message(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+    before = lib_path.read_bytes()
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(n=2), encoding="utf-8")   # below default min_count=3
+
+    out = run_mine_queries_cli([str(logfile)], library_path=str(lib_path))
+
+    assert lib_path.read_bytes() == before
+    assert "No promotable query shapes found" in out
+
+
+def test_mine_queries_write_appends_preserves_existing_and_is_schema_valid(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    existing = _write_small_library(lib_path)
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    out = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+
+    assert "Wrote 1 new query" in out
+    updated = json.loads(lib_path.read_text(encoding="utf-8"))
+    assert len(updated) == len(existing) + 1
+    # existing entries preserved, in order, byte-for-byte as dicts
+    assert updated[: len(existing)] == existing
+
+    new_entry = updated[-1]
+    assert new_entry["category"] == "adhoc-mined"
+    assert new_entry["groundedIn"] == "mined from adhoc audit log"
+    assert new_entry["engine"] == "capacity"
+    assert new_entry["description"].strip()
+    validate_adhoc_kql(new_entry["kql"])
+
+    # same assertions test_query_library.py makes, applied to the mutated file
+    names = [x["name"] for x in updated]
+    assert len(names) == len(set(names))
+    assert all(n == n.lower() and " " not in n for n in names)
+    for x in updated:
+        assert set(x) >= {"name", "category", "engine", "description", "kql", "groundedIn"}
+        assert x["engine"] in ("capacity", "la")
+        assert x["description"].strip() and x["groundedIn"].strip()
+        validate_adhoc_kql(x["kql"])
+
+
+def test_mine_queries_write_is_idempotent_byte_identical_on_rerun(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+    after_first = lib_path.read_bytes()
+
+    out2 = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+    after_second = lib_path.read_bytes()
+
+    assert after_first == after_second   # re-run dedups vs the now-updated library -> no dupes
+    assert "No promotable query shapes found" in out2
+
+
+def test_mine_queries_write_zero_candidates_leaves_file_byte_identical(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+    before = lib_path.read_bytes()
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text("", encoding="utf-8")   # empty log -> zero candidates
+
+    out = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+
+    assert lib_path.read_bytes() == before
+    assert "No promotable query shapes found" in out
+
+
+def test_mine_queries_dedup_against_existing_same_resolved_path(tmp_path):
+    """Proves the dedup-existing read and the --write target are the SAME resolved path: a
+    candidate already present in the temp library (same shape once trailing take/limit is
+    stripped) must NOT be re-added, even though the mined kql text differs cosmetically."""
+    lib_path = tmp_path / "query_library.json"
+    already_present = [
+        {
+            "name": "existing-foo-shape",
+            "category": "adhoc-mined",
+            "engine": "capacity",
+            "description": "Pre-existing entry covering the same shape.",
+            "kql": (
+                "CapacityEvents\n| where ingestion_time() > ago(7d)\n"
+                "| where Foo == 999\n| project Foo\n| take 999"
+            ),
+            "groundedIn": "mined from adhoc audit log",
+        },
+    ]
+    _write_small_library(lib_path, entries=already_present)
+    before = lib_path.read_bytes()
+
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")   # same shape, different literals
+
+    out = run_mine_queries_cli([str(logfile), "--write"], library_path=str(lib_path))
+
+    assert lib_path.read_bytes() == before
+    assert "No promotable query shapes found" in out
+
+
+def test_mine_queries_reads_stdin(monkeypatch, tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_new_shape_log_text()))
+
+    out = run_mine_queries_cli(["-"], library_path=str(lib_path))
+
+    assert lib_path.read_bytes()   # unchanged / still valid, no exception
+    assert "adhoc-capacity-" in out
+
+
+def test_mine_queries_missing_logfile_returns_clean_error(tmp_path):
+    lib_path = tmp_path / "query_library.json"
+    _write_small_library(lib_path)
+
+    out = run_mine_queries_cli([str(tmp_path / "does-not-exist.log")], library_path=str(lib_path))
+
+    assert isinstance(out, str)
+    assert "mine-queries" in out
+    assert "does-not-exist.log" in out
+
+
+def test_main_dispatch_mine_queries_preview_does_not_touch_real_library(tmp_path, capsys):
+    from fabric_audit_agent.__main__ import main
+
+    before = open(_REAL_LIBRARY, "rb").read()
+    logfile = tmp_path / "audit.log"
+    logfile.write_text(_new_shape_log_text(), encoding="utf-8")
+
+    main(["mine-queries", str(logfile)])
+
+    out = capsys.readouterr().out
+    assert "Re-run with --write" in out or "No promotable query shapes found" in out
+    after = open(_REAL_LIBRARY, "rb").read()
+    assert after == before   # dispatch with no --write must never mutate the real package file

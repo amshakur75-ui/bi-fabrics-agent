@@ -8,6 +8,8 @@
   triggers                        evaluate immediate triggers
   lifecycle <action> <key> [...]  set a finding's lifecycle state (snoozed needs an ISO date)
   dax "<measure>"                 DAX anti-pattern analysis
+  mine-queries <file|-> [opts]    grow query_library.json from the [adhoc-kql] audit log
+                                  (preview by default; opts: --min-count N --top N --write)
   import <file> [...]             import CSV/.vpax exports + diagnose
   inspect <file.csv>              safe per-column stats
   mytest                          re-diagnose my-estate.json
@@ -61,6 +63,8 @@ def main(argv=None):
         print(ep.run_lifecycle_cli(action, key, snooze_until=snooze_until, note=note, now=now))
     elif cmd == "dax":
         print(ep.run_dax_cli(" ".join(rest)))
+    elif cmd == "mine-queries":
+        print(ep.run_mine_queries_cli(rest))
     elif cmd == "import":
         print(run_import(rest))
     elif cmd == "inspect":
