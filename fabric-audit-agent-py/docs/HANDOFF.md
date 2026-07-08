@@ -278,3 +278,44 @@ The query firewall (PR #11) is the sharpest proof that the process catches what 
 
 If you build another validator/guard/firewall (e.g. a SQL leg for FUAM, Part 3-C): assume the same class exists in that grammar, enumerate its literal/comment/quoting forms up front, and have the adversarial review attack it before merge.
 
+---
+
+## Part 3 — The forward roadmap (restructured 2026-07-08)
+
+*Addendum appended 2026-07-08 — this restructured Phases 4–9 view SUPERSEDES the original Part 3 "A–H" list above, which is retained there as sub-aliases (`3-A`…`3-H`).*
+
+Phases run in order; each is its own brainstorm → spec → plan → 3 reviewers → SDD → adversarial final review → merge cycle (one PR per item, never batched). Gated items wait for the user to confirm the gate opened. Guardrails above every phase: read-only absolute · never label proxy/mock as live · never loosen the grounding bar · any new egress (alerts/UI/external-memory) is anti-exfil-reviewed before it ships.
+
+### Phase 4 — Ship it live (foundation; in flight, ungated)
+- **3-A** verified-query-library growth loop (in progress — Task 2 of 4).
+- **3-B** deploy activation: redeploy the wheel so the 18 tools + firewall reach prod; point FABRIC_HISTORY_PATH at a durable path.
+- Why first: everything downstream is data-starved until the current build is live and logging. Needs the user's go (shared-resource approval) + B0 secret rotation.
+
+### Phase 5 — Interaction, Personality & Trust (combines old Interaction + Trust; do early)
+- **Personality / UX** (deferred backlog `fabric-agent-ux-personality-backlog`): no tool names to users, act-don't-ask, right-size answers, humanized progress.
+- **Response shaping:** lead with the verdict/answer, evidence on demand, honesty labels in plain language. Risk: low. Value: high perceived — a pure interaction layer over capability that already exists, and it makes every later phase land better.
+- **Anti-exfil hardening:** egress control, output redaction, row/PII caps — proving alerts/UI/external-memory can't leak. (Gates Phases 6 & 9.)
+- **Eval flywheel:** grow the golden eval suite from real conversations — the 3-A pattern applied to quality. Grows from logs/interim store now; gains the durable backend in Phase 8.
+- **Agent identity & scope (plumbing — read-only-safe, INERT until the Phase-7 grants land):** an identity-aware token-provider port (own Entra Agent Identity `fmi_path` → requesting-user OBO → today's shared-SP fallback; labels *which* identity served each call); an outbound-action allowlist framework (typed registry — `teams_notify`, `ado_create_ticket` — non-data-mutating, off by default); a versioned least-privilege scope manifest derived from `PERMISSIONS.md`; and the **invariant refinement**: read-only on data/capacity stays ABSOLUTE, plus a bounded, allowlisted, audited *outbound* set (never a data/capacity write). Design + rationale: [[agent-reach-identity-design]] (approach B — own-identity + OBO hybrid — now; approach A, the Entra-OIDC user-sign-in bridge, documented as a later increment).
+
+### Phase 6 — Proactivity & Alerting (read-only autonomy; needs Phase 5 anti-exfil)
+- **Watchdog Job:** harden the scheduled sweep into an always-on monitor (dead-man's-switch already exists).
+- **Autonomy:** self-triggered observe → investigate → deduce → surface, without a human prompt. Hard line: never auto-act; remediation stays forbidden.
+- **Activator / Teams alerts:** delivery adapter (Fabric Data Activator / Teams webhook). Publishing → explicit auth + anti-exfil redaction + derived only from read-only data. Alert de-dup/state uses 3-B's interim store until Phase 8's durable memory upgrades it.
+
+### Phase 7 — Authoritative Data + Authorizations (gated — org / data unlocks + admin grants; parallelizable as gates open)
+- **FUAM collector** (3-C) — authoritative per-item CU + owner.
+- **Workspace Monitoring as a live engine** (3-D) — re-add only with a real-data proof (the F1 regression must not return).
+- **Authoritative CU unlock** (3-E) — the north star: verdict flips from indicative → authoritative.
+- **semantic-link-labs spike** (3-F) — VertiPaq/BPA model-bloat analyzer; spike → ADD or SKIP.
+- **ADO ticketing + change-correlation** (3-G) — "what deployed right before the spike."
+- **Identity & permission activations (light up the Phase-5 plumbing):** provision the Entra Agent Identity (Blueprint → BlueprintPrincipal → Agent Identity, tenant-admin) + least-privilege role grants; enable the Databricks **"User authorization for Apps"** toggle (per-user OBO on the Databricks plane); the approach-A Entra OIDC sign-in bridge + Entra-OBO-to-Fabric delegated consent; the ADO outbound grant. Each is a separate admin gate — ask before starting.
+
+### Phase 8 — Durable Memory (after authoritative data, deliberately)
+- **Delta / Lakebase backend** for whats_changed history, investigation state, learned patterns. 3-B is the interim; this is the durable store. Placed after Phase 7 so it stores AUTHORITATIVE history, not proxy history — and it retro-upgrades Phase 6's alert de-dup/state.
+
+### Phase 9 — UI, Operate & Harden (terminal — combines UI + 3-H; needs Phase 5 anti-exfil)
+- **UI & scopes:** dashboards + scoped views per capacity / workspace / user; drill-downs over audit output. Pulls in the design/dataviz skills.
+- **Operate & harden** (3-H): threshold tuning from real data, library/eval prune-and-grow from real logs, honesty labels kept accurate as sources change. Live usage drives "what next."
+- Non-goals stay non-goals: ML anomaly detection (deterministic trees do it explainably), auto-remediation (a write — forbidden), always-on streaming beyond the sweep.
+
