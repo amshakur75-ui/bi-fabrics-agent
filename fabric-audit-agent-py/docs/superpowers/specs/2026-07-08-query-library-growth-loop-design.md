@@ -25,7 +25,13 @@ firewall is deployed and used (Part 3-B); this builds the tooling now so the fir
 3. **Never loosen the grounding bar.** Every candidate is re-validated through
    `firewall.validate_adhoc_kql` before it can be proposed *or* written; a candidate that does not pass
    is dropped. The existing per-template firewall test on `query_library.json` remains the permanent
-   CI enforcement.
+   CI enforcement. **Honest scope of the offline re-check:** the shipped firewall is *static gate
+   (`validate_adhoc_kql`) + take-0 engine rehearsal*. Offline mining can only re-run the **static
+   half** — the engine binder is not available to the CLI. That is not a loosening: it is exactly the
+   bar `query_library.json` is already held to in CI (the per-template test is static-only), so mined
+   templates clear the same gate as hand-authored ones. The live-rehearsal grounding rests on the fact
+   that each mined query was `verdict=="allowed"` at capture time (it bound and ran then), and on the
+   agent re-rehearsing it live every time `run_kql` executes a template thereafter.
 
 ## Autonomy boundary (decided)
 
@@ -37,10 +43,26 @@ action — never something the live agent does to itself.
 
 ## Data source
 
-The `[adhoc-kql]` stdout audit line (`tools._adhoc_audit_log`), one JSON object per line:
-`{"tag":"adhoc-kql","engine":...,"verdict":"allowed"|"rejected","stage":...,"reason":...,"kql":...,"rowCount":...,"durationMs":...}`.
-Input is a **log file path** (or `-` for stdin) that a human has captured from the App's stdout.
+The `[adhoc-kql]` stdout audit line (`tools._adhoc_audit_log`), one JSON object per line, prefix
+exactly `[adhoc-kql] `. On an **allowed** line the keys are `tag`, `engine`, `verdict:"allowed"`,
+`rowCount`, `kql` (camelCase). On a **rejected** line: `tag`, `engine`, `verdict:"rejected"`, `stage`,
+`reason` (no `kql`). `durationMs` is defined by the emitter but **not passed** on the `run_kql` path,
+so do not depend on it. Input is a **log file path** (or `-` for stdin) captured from the App's stdout.
 Fetching prod logs over the network is a separate ops step, not part of this tool.
+
+**Two facts about the logged `kql` that the mining logic must handle (verified against `tools.py`):**
+
+1. **It is the *bounded* query, not the agent's original.** The allowed path logs
+   `f"{kql}\n| take {maxRows}"` — the hard-cap `| take N` is already appended. Both `shape_key` and the
+   chosen representative must **strip a trailing `| take <int>`** so (a) the mined shape matches an
+   existing hand-authored template that has no such bound, and (b) a promoted template doesn't carry a
+   redundant `| take` that would double up when `run_kql` re-bounds it.
+2. **It is *redaction-processed* (`redact.redact_secrets`).** If a query contained a secret-shaped
+   `key=`/`token=`/`sig=` fragment, that span is masked to a sentinel (`=***`, ` ***`, `:***@`). A
+   masked query is not the query that ran and is often invalid KQL that would still slip past the
+   *static* gate. **Fail-closed:** any candidate whose representative text contains a redaction sentinel
+   is **dropped** (it did not run in that form — promoting it would violate both the honesty and
+   grounding invariants).
 
 ## Architecture
 
@@ -49,21 +71,31 @@ New pure/stdlib module **`fabric_audit_agent/query/mine.py`**:
 - `parse_audit_lines(lines) -> list[dict]` — scan text for `[adhoc-kql] ` prefixed lines, parse the
   trailing JSON, tolerate non-matching / malformed lines (skip, never raise), return the records with
   `verdict == "allowed"` (rejected queries are never promotion material).
-- `shape_key(kql) -> str` — canonicalize a query into a grouping key: blank string literals (reuse
-  `firewall`/`kql_guard` literal-stripping so it matches the firewall's own view), replace numeric
-  literals and time args (`ago(...)`, `datetime(...)`) with placeholders, collapse whitespace,
-  lowercase KQL operators. Deterministic and pure.
+- `shape_key(kql) -> str` — canonicalize a query into a grouping key. Steps, in order: (1) **strip a
+  trailing `| take <int>`** (the logged bound — see Data source); (2) blank string-literal *contents*
+  via `kql_guard._strip_string_literals` (note: it replaces content with spaces but **keeps the quotes
+  and length**, matching the firewall's own view — good enough as a grouping key); (3) replace
+  `ago(...)`/`datetime(...)` time-window arguments and bare numeric **threshold** literals with
+  placeholders; (4) collapse whitespace; (5) lowercase KQL operators. **Deliberately NOT normalized:**
+  timespan-granularity literals such as the `1h`/`1d`/`7d` inside `bin(win, 1h)` are left intact, so an
+  hourly aggregation and a daily one stay **distinct shapes** (collapsing them would promote one
+  misleading representative for two different queries — a false-merge). Deterministic and pure; covered
+  by an explicit test fixture (`bin(...,1h)` vs `bin(...,1d)` → different keys).
 - `rank_candidates(records, existing_templates, *, min_count=3, top_n=10) -> list[dict]` —
   group allowed records by `(engine, shape_key)`; **drop shapes already covered** by an existing
-  library template (same normalization applied to `query_library.json` entries); keep groups with
-  `count >= min_count`; sort by `(count desc, shape_key)` for deterministic order; for each group pick
-  a **concrete representative** query — the **most frequent exact kql** within the shape group, ties
-  broken lexicographically (deterministic; audit records carry no reliable timestamp, so "most
-  recent" is unavailable — most-frequent-exact is the stable canonical instance). It is a real,
-  runnable query, so what gets promoted is genuine, not a placeholder-ized form the engine couldn't run;
-  **re-validate that representative through `firewall.validate_adhoc_kql`** and drop it if it fails;
-  return the top `top_n` as candidate dicts:
-  `{name, engine, category:"adhoc-mined", description, groundedIn, kql, hitCount}`.
+  library template — applying the **same `shape_key`** to `query_library.json` entries (which, because
+  step 1 strips the trailing `| take`, now normalizes symmetrically so a mined query identical to an
+  existing template is correctly deduped); keep groups with `count >= min_count`; sort by
+  `(count desc, shape_key)` for deterministic order; for each group pick a **concrete representative** —
+  the **most frequent exact kql** within the group (with its trailing `| take` stripped), ties broken
+  lexicographically (deterministic; audit records carry no reliable timestamp, so "most recent" is
+  unavailable). Then apply, in order, three **fail-closed drops**: (a) drop if the representative
+  contains any redaction sentinel (`=***`/` ***`/`:***@`) — it never ran in that form; (b) re-validate
+  through `firewall.validate_adhoc_kql` and drop on `FirewallRejection`; (c) it must be a real, runnable
+  query — never a placeholder-ized form. Return the top `top_n` survivors as candidate dicts:
+  `{name, engine, category:"adhoc-mined", description, groundedIn, kql, hitCount}` (`hitCount` is an
+  extra key; verified it breaks neither the per-template firewall test nor `query_library_handler`,
+  both of which key off `kql`/fixed fields).
   - `name` — deterministic, derived from engine + dominant operator(s) + a short shape hash (e.g.
     `adhoc-capacity-summarize-a1b2c3`); collision-safe; a human renames on review.
   - `description` — factual, generated from the shape (e.g. `"Auto-mined: capacity query summarizing
@@ -81,14 +113,19 @@ CLI **`mine-queries`** wired in `entrypoints.py` + `__main__.py` dispatch:
 
 ## Testing (TDD, offline, deterministic)
 
-Synthetic `[adhoc-kql]` log fixtures — never a live endpoint:
+Synthetic `[adhoc-kql]` log fixtures — never a live endpoint. Fixtures use the **real** logged shape
+(bounded `| take N` appended; a redaction-sentinel case):
 - `parse_audit_lines`: extracts allowed records; skips rejected, non-`[adhoc-kql]`, and malformed-JSON
   lines without raising.
 - `shape_key`: two queries differing only by date/threshold/whitespace/operator-case collapse to one
-  key; genuinely different queries do not.
-- `rank_candidates`: min-count and top-N honored; dedup vs existing library works; only
-  firewall-passing representatives emitted (include a fixture whose representative would fail → dropped
-  even though it was logged "allowed", proving the re-check); deterministic ordering.
+  key; a trailing `| take 100` vs `| take 500` does not change the key (both stripped); genuinely
+  different queries do not collapse; **`bin(win, 1h)` vs `bin(win, 1d)` produce different keys**
+  (granularity not normalized).
+- `rank_candidates`: min-count and top-N honored; dedup vs existing library works **including** a mined
+  query that equals an existing template once the trailing `| take` is stripped (must be deduped);
+  fail-closed drops proven — (a) a representative containing a redaction sentinel is dropped even though
+  logged "allowed"; (b) a representative that fails `validate_adhoc_kql` is dropped; deterministic
+  ordering.
 - `--write`: appends valid entries, is idempotent on re-run, preserves existing entries, output stays
   schema-valid (each new entry still passes the existing per-template firewall test).
 - CLI: preview writes nothing; `--write` mutates only the library file.
