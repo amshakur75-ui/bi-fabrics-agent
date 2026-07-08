@@ -369,3 +369,20 @@ def test_rank_every_returned_kql_passes_the_real_firewall():
     for candidate in out:
         # Must not raise.
         assert validate_adhoc_kql(candidate["kql"]) == candidate["kql"]
+
+
+def test_rank_legit_literal_triple_asterisk_is_a_documented_false_drop():
+    # A legitimate, firewall-valid query that happens to contain a literal "***" is
+    # INDISTINGUISHABLE from a redacted member and is dropped (accepted fail-closed trade-off,
+    # documented on _REDACTED_MARKER). Guards against anyone "fixing" this into a false-promote.
+    legit = 'CapacityEvents | where Name == "***" | project win'
+    assert validate_adhoc_kql(legit) == legit          # it WOULD pass the firewall
+    records = [_rec("capacity", legit + "\n| take 50")] * 3
+    assert rank_candidates(records, [], min_count=3) == []   # ...but is dropped as if redacted
+
+
+def test_rank_tolerates_malformed_records_and_none_existing():
+    # Defensive: non-dict records, records missing engine/kql, and existing_templates=None must
+    # never raise -- a malformed captured log degrades to "no candidates", not a crash.
+    records = [{"kql": "x"}, None, {"engine": "capacity"}, "not-a-dict"]
+    assert rank_candidates(records, None, min_count=1) == []

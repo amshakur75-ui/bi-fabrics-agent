@@ -118,7 +118,13 @@ def shape_key(kql: str) -> str:
     return s
 
 
-# Redaction sentinel emitted by every redact.redact_secrets substitution (redact.py:29-31).
+# Redaction sentinel emitted by every redact.redact_secrets substitution (redact.py:29-31). A
+# member containing this is treated as "not the real query that ran" and excluded from
+# representative selection (a group with only such members is dropped). ACCEPTED FALSE-DROP: a
+# legitimate query that happens to contain a literal "***" (e.g. a string constant, or an
+# `| extend sig=value` that redact masks to `sig=***`) is indistinguishable from a redacted one and
+# is dropped too. This fails closed (never promotes a non-running query) and is preferred over a
+# fragile attempt to tell real redaction from a coincidental "***".
 _REDACTED_MARKER = "***"
 
 
