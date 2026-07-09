@@ -66,7 +66,8 @@ def resolve_identity(env, *, user_token=None, scope=None, sp_provider_factory=No
     tenant_id = _require(env, "FABRIC_TENANT_ID")
     client_id = _require(env, "FABRIC_CLIENT_ID")
     client_secret = _require(env, "FABRIC_CLIENT_SECRET")
-    provider = factory(tenant_id, client_id, client_secret, scope or clients.POWERBI_SCOPE)
+    provider = factory(tenant_id, client_id, client_secret,
+                       scope if scope is not None else clients.POWERBI_SCOPE)
     return {
         "provider": provider,
         "identity": "servicePrincipal",
