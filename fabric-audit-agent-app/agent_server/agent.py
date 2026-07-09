@@ -376,9 +376,64 @@ async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentRespon
     )
 
 
+# Plain-phrase progress map (Phase 5.1, Task 2). Presentation-only: keys are the 18 tool names
+# from tools.py::create_tool_definitions; values are the user-finalized plain-English wording.
+# Never surface a raw tool name or JSON to the user -- see `_progress_text` below.
+_PROGRESS_PHRASES = {
+    "run_audit": "running the capacity audit",
+    "list_workspaces": "listing the workspaces",
+    "user_activity": "looking into that user's activity",
+    "investigate_user": "looking into that user's activity",
+    "user_timeline": "looking into that user's activity",
+    "user_spike_history": "looking into that user's activity",
+    "investigate_capacity_spike": "checking events with unusual spikes",
+    "spike_events": "checking events with unusual spikes",
+    "raw_events": "pulling the raw event stream",
+    "capacity_patterns": "analyzing capacity patterns",
+    "capacity_diagnostics": "analyzing capacity patterns",
+    "describe_source": "checking what the data source contains",
+    "sample_events": "checking what the data source contains",
+    "diagnose": "working through the diagnosis",
+    "analyze_dax": "reviewing the DAX",
+    "whats_changed": "comparing against the last run",
+    "run_kql": "running a read-only query",
+    "query_library": "checking the query library",
+}
+_PROGRESS_DEFAULT = "working on it…"
+
+# Scope-hint whitelist, in a fixed evaluation order (deterministic when multiple keys are
+# present). Any key not listed here is ignored -- never rendered.
+_SCOPE_HINT_FORMATS = (
+    ("user", " for {}"),
+    ("item", " for {}"),
+    ("topN", " (top {})"),
+    ("days", " (last {}d)"),
+)
+_SCOPE_HINT_MAX_LEN = 60
+
+
+def _scope_hint(inp):
+    if not isinstance(inp, dict):
+        return ""
+    for key, fmt in _SCOPE_HINT_FORMATS:
+        value = inp.get(key)
+        if value is None:
+            continue
+        value = str(value)
+        # FORMAT guard, not a PII control: braces would leak JSON-shaped text into the plain
+        # progress line; newlines/over-length values would break the single-line format.
+        if "{" in value or "}" in value or "\n" in value or len(value) > _SCOPE_HINT_MAX_LEN:
+            continue
+        return fmt.format(value)
+    return ""
+
+
 def _progress_text(name, inp):
-    args = json.dumps(inp, ensure_ascii=False) if inp else ""
-    return f"🔎 Checking {name}({args}) …"
+    # The `user`/`item` hint echoes an identifier straight back to the requester by design --
+    # acceptable only while the app viewer == the requester (see the OBO note on
+    # get_user_workspace_client above); TODO revisit once OBO / per-user auth lands.
+    phrase = _PROGRESS_PHRASES.get(name, _PROGRESS_DEFAULT)
+    return f"🔎 {phrase}{_scope_hint(inp)}"
 
 
 @stream()

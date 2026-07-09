@@ -526,7 +526,10 @@ class TestStreamingProgress(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(events), 2)   # 1 progress + 1 final
         texts = [c.kwargs.get("text", "") for c in _agent.create_text_output_item.call_args_list]
-        self.assertTrue(any("run_audit" in t for t in texts[:-1]))   # progress names the tool
+        # Phase 5.1 Task 2: progress is humanized -- plain-English action, never the raw tool
+        # name or JSON (see test_progress_text.py for the full phrase-map coverage).
+        self.assertTrue(any("running the capacity audit" in t for t in texts[:-1]))
+        self.assertFalse(any("run_audit" in t for t in texts[:-1]))
         self.assertEqual(texts[-1], "Audit done.")                   # final answer last
 
     async def test_stream_failure_ends_with_honest_message_not_broken_stream(self):
