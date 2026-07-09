@@ -7,7 +7,9 @@ needed). Claude endpoint bridged via the §B1-alt adapter (OpenAI chat-completio
 import asyncio
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 
 from databricks.sdk import WorkspaceClient
 from mlflow.genai.agent_server import invoke, stream
@@ -354,16 +356,101 @@ def _messages_from_request(request):
 
 
 # ---------------------------------------------------------------------------
+# Conversation-logging seam (Phase 5.4a, Task 1) — observability-only.
+#
+# Emits one `[conversation]` audit line per `_run` turn capturing the mineable eval signals
+# (question, tools called, abstain hint, answer length) for a LATER logs -> candidate-eval-case
+# miner (not built yet). Self-contained: the agent app does not import fabric_audit_agent, so the
+# scrub below is inlined -- and deliberately MORE aggressive than query/redact.py because it runs
+# over a free-text user question rather than KQL/URLs (redact.py's tight allowlist exists so a
+# blanket mask doesn't corrupt a KQL predicate like `where Status=200`; that constraint doesn't
+# apply here).
+# ---------------------------------------------------------------------------
+
+# scheme://user:pass@host -- mask both the user and the password, keep the host.
+_URL_CREDENTIALS_RE = re.compile(r'(://)[^/\s:@]+:[^/\s@]+@')
+
+# "bearer <token>" (case-insensitive) -- mask the token, preserve the word "bearer".
+_BEARER_TOKEN_RE = re.compile(r'(?i)(bearer)\s+\S+')
+
+# key=value where key is a known secret-like name (case-insensitive) -- mask the VALUE only.
+# Restricted to an allowlist so a benign "key=value" (e.g. `foo=bar`, a KQL predicate) is untouched.
+_SECRET_KV_RE = re.compile(
+    r'(?i)\b(password|pwd|secret|token|apikey|api_key|key|client_secret|sig|access_token)=[^&\s]+'
+)
+
+# JWT shape (three base64url segments) -- catches a bare token pasted into free text, which the
+# key=value allowlist above would miss entirely.
+_JWT_RE = re.compile(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b')
+
+# Connection-string secrets (Azure/Fabric style, e.g. `AccountKey=...`/`SharedAccessKey=...`):
+# `\bkey=` above only matches the whole-word key name "key", so it MISSES "AccountKey=" --
+# the highest-realism leak when a user pastes a connection string.
+_CONN_STRING_RE = re.compile(r'(?i)\b(accountkey|sharedaccesskey|password)\s*=[^;&\s]+')
+
+_QUESTION_MAX_CHARS = 500
+
+# Coarse abstain-phrasing heuristic on the ANSWER text -- an author-guessed approximation of the
+# system prompt's ABSTAIN wording (the model answers in free prose, not the prompt's literal
+# vocabulary), so this is a HINT for a future human/miner to refine into `expectAbstain`, never a
+# verdict.
+_ABSTAIN_HINT_RE = re.compile(
+    r"(?i)\b(insufficient|cannot|can'?t|couldn'?t|don'?t have|not able|unable|no data)\b"
+)
+
+
+def _scrub_secrets(text):
+    """Mask credentials in *text* before it is logged. Never raises -- non-``str`` input is
+    coerced via ``str(text)`` first. Returns the (possibly unchanged) string."""
+    out = str(text)
+    out = _URL_CREDENTIALS_RE.sub(r'\1***:***@', out)
+    out = _BEARER_TOKEN_RE.sub(r'\1 ***', out)
+    out = _CONN_STRING_RE.sub(r'\1=***', out)
+    out = _SECRET_KV_RE.sub(r'\1=***', out)
+    out = _JWT_RE.sub('***', out)
+    return out
+
+
+def _conversation_audit_log(question, trajectory, text):
+    """Print one `[conversation]` audit line for the eval-flywheel miner (built later). NEVER
+    include tool `input`/args (a trajectory entry is `{"tool","input"}` -- only the name is
+    extracted) or the full answer (only its length) -- see the anti-exfil discipline in the
+    Phase-5.4a spec/plan."""
+    scrubbed_question = _scrub_secrets(question)[:_QUESTION_MAX_CHARS]
+    tools_called = [t["tool"] for t in trajectory]
+    payload = {
+        "tag": "conversation",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "question": scrubbed_question,
+        "toolsCalled": tools_called,
+        "toolCount": len(tools_called),
+        "abstainedHint": bool(_ABSTAIN_HINT_RE.search(text or "")),
+        "answerChars": len(text or ""),
+    }
+    print(f"[conversation] {json.dumps(payload, ensure_ascii=False)}")
+
+
+# ---------------------------------------------------------------------------
 # Responses Agent handlers
 # ---------------------------------------------------------------------------
 
 async def _run(request, on_tool=None):
     ws = get_user_workspace_client()
     tools, dispatch = await _mcp_tools_and_dispatch(ws)
-    return await _run_tool_loop(
+    messages = _messages_from_request(request)
+    result = await _run_tool_loop(
         _build_claude_client(ws), model=_MODEL, system=_SYSTEM,
-        messages=_messages_from_request(request), tools=tools, dispatch=dispatch, max_steps=6,
+        messages=messages, tools=tools, dispatch=dispatch, max_steps=6,
         on_tool=on_tool)
+    try:
+        question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        _conversation_audit_log(question, result.get("trajectory") or [], result.get("text") or "")
+    except Exception as exc:
+        # Failure-isolated: the emit must never break a conversation, and the except must never
+        # log the raw question or `str(exc)` (which could echo the offending input back into the
+        # log) -- at most the exception TYPE name.
+        print(f"[conversation] log failed: {type(exc).__name__}")
+    return result
 
 
 @invoke()
