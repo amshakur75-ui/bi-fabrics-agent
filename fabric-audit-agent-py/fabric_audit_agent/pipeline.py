@@ -31,6 +31,7 @@ from .audience import view_for
 from .narrative import exec_narrative
 from .confidence import score_confidence
 from .run_log import build_run_log
+from .egress import apply_egress_controls, disclosure_line
 
 
 def _parse_ms(s):
@@ -157,5 +158,13 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
         d["dataQuality"] = validation["issues"]
     d["narrative"] = exec_narrative(view_for(envelope, "exec"))
     d["runLog"] = build_run_log(facts, envelope, run_at)
-    delivery["deliver"](envelope)
+
+    # Egress chokepoint (Phase 5.2): gate the DELIVERED copy only. The returned envelope stays
+    # FULL — it feeds _write_outputs and callers, and the run-history store already persisted
+    # above (independent of this return). See egress.py for the contract.
+    safe, meta = apply_egress_controls(envelope, sink="delivery")
+    line = disclosure_line(meta)
+    if line and isinstance(safe, dict):
+        safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
+    delivery["deliver"](safe)
     return envelope

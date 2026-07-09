@@ -92,3 +92,38 @@ def test_run_audit_with_store_appends_history():
                     store=store, agent_id="a", now="2026-06-11T00:00:00Z")
     assert len(appended) == 1 and appended[0]["tenant"] == "Acme"
     assert env["data"]["roadmap"]
+
+
+# ---- pipeline egress chokepoint (Phase 5.2 Task 2): delivered payload gated, return stays full ----
+def _secret_finding(key="capacity.throttle::TestCap"):
+    return {
+        "what": "leaked", "where": "w", "when": "", "why": "y", "impact": "i",
+        "fix": ["do x"], "score": {"level": "Critical", "value": 90},
+        "key": key, "clientSecret": "s3cr3t",
+    }
+
+
+def test_run_audit_delivered_payload_is_gated_but_return_stays_full():
+    delivered = {}
+    reasoner = {"reason": lambda facts, flags: [_secret_finding()]}
+    env = run_audit({"collect": lambda: _opt_facts()}, reasoner, {"deliver": lambda e: delivered.update(e)},
+                    agent_id="a", now="2026-06-11T00:00:00Z")
+    # delivered to the sink: masked
+    assert delivered["data"]["findings"][0]["clientSecret"] == "***"
+    # returned envelope: full/unmasked (feeds _write_outputs + callers; store already persisted earlier)
+    assert env["data"]["findings"][0]["clientSecret"] == "s3cr3t"
+
+
+def test_run_audit_over_budget_findings_capped_at_delivery_disclosed_in_summary_return_full():
+    findings = [{
+        "what": "x", "where": "w", "when": "", "why": "y", "impact": "i",
+        "fix": ["do x"], "score": {"level": "Info", "value": 10},
+        "key": f"capacity.throttle::T{i}", "blob": "z" * 500,
+    } for i in range(30)]
+    delivered = {}
+    reasoner = {"reason": lambda facts, flags: findings}
+    env = run_audit({"collect": lambda: _opt_facts()}, reasoner, {"deliver": lambda e: delivered.update(e)},
+                    agent_id="a", now="2026-06-11T00:00:00Z")
+    assert len(delivered["data"]["findings"]) < 30
+    assert "omitted" in delivered["summary"]
+    assert len(env["data"]["findings"]) == 30   # returned envelope uncapped/full

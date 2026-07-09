@@ -50,3 +50,15 @@ def test_alert_card_summary_carries_error_text(monkeypatch):
     job_mod._alert_failure(RuntimeError("secret expired"),
                            {"TEAMS_WEBHOOK_URL": "h"}, now_iso="2026-07-07T12:00:00Z")
     assert "RuntimeError" in posted["summary"] and "secret expired" in posted["summary"]
+
+
+def test_alert_failure_gates_planted_secret_in_summary(monkeypatch):
+    # Egress chokepoint (Phase 5.2 Task 2): the failure card is a real outbound surface too —
+    # a secret-shaped token embedded in the exception text must be masked in what deliver receives.
+    posted = {}
+    monkeypatch.setattr(job_mod, "_build_failure_delivery",
+                        lambda env: {"deliver": lambda card: posted.update(card)})
+    job_mod._alert_failure(RuntimeError("token=abc123XYZ"),
+                           {"TEAMS_WEBHOOK_URL": "h"}, now_iso="2026-07-09T00:00:00Z")
+    assert "token=abc123XYZ" not in posted["summary"]
+    assert "token=***" in posted["summary"]
