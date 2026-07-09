@@ -172,6 +172,19 @@ class TestHostileScopeValues(unittest.TestCase):
                 self.assertNotIn("}", text)
                 self.assertNotIn("\n", text)
 
+    def test_empty_or_whitespace_value_drops_hint_no_dangling_preposition(self):
+        # An empty/whitespace value must not render a dangling "for " / "(top )".
+        for empty in ["", "   ", "\t"]:
+            with self.subTest(empty=repr(empty)):
+                self.assertEqual(
+                    _progress_text("investigate_user", {"user": empty}),
+                    "\U0001F50E looking into that user's activity",
+                )
+        self.assertEqual(
+            _progress_text("spike_events", {"topN": ""}),
+            "\U0001F50E checking events with unusual spikes",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -421,8 +421,10 @@ def _scope_hint(inp):
             continue
         value = str(value)
         # FORMAT guard, not a PII control: braces would leak JSON-shaped text into the plain
-        # progress line; newlines/over-length values would break the single-line format.
-        if "{" in value or "}" in value or "\n" in value or len(value) > _SCOPE_HINT_MAX_LEN:
+        # progress line; newlines/over-length values would break the single-line format. An
+        # empty/whitespace value is skipped too, so a hint never renders as a dangling "for ".
+        if (not value.strip() or "{" in value or "}" in value or "\n" in value
+                or len(value) > _SCOPE_HINT_MAX_LEN):
             continue
         return fmt.format(value)
     return ""
