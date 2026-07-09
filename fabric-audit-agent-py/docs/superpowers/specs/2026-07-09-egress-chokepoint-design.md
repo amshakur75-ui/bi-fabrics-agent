@@ -44,11 +44,24 @@ def apply_egress_controls(payload, *, sink, max_chars=12000) -> tuple[object, di
     ALWAYS, in order:
       1. Labeled-sensitive floor: any dict flagged sensitive:true or carrying a sensitivityLabel is
          replaced with {"redacted": true} (reuse sanitize's rule), recursively.
-      2. Deep secret redaction: every string value (recursively, in dicts/lists) is run through
-         redact.redact_secrets, so a credential in any field/URL/deeplink is masked.
-      3. Size cap: if payload is a list, apply cap_rows(max_chars). If payload is a dict, apply
-         cap_rows to each list-valued field whose own serialized size exceeds max_chars (cap each
-         independently; record the largest omission in meta). Scalars/small fields untouched.
+      2. Secret redaction, KEY- and SHAPE-aware (not just string-internal — plan-review Critical):
+         recursively walk dicts/lists and for each string value apply, in this order:
+           (a) KEY-aware: if the containing dict KEY matches the secret allowlist (secret, token,
+               password, pwd, apikey, api_key, key, client_secret, sig, access_token, connectionstring,
+               accountkey, sharedaccesskey — case-insensitive) → mask the whole value. This catches the
+               structured case redact_secrets misses (`{"clientSecret": "s3cr3t"}` — name is the key,
+               value is separate).
+           (b) VALUE-shape: mask a value that looks like a secret regardless of key — a JWT
+               (`eyJ...` two-dot base64url), a connection-string segment (`AccountKey=`/
+               `SharedAccessKey=`/`Password=`), a long opaque base64 token.
+           (c) then run redact_secrets(value) for the in-string `name=value`/SAS/bearer cases.
+         (redact_secrets alone under-reaches: `\bkey=` misses `AccountKey=`, and a value whose key
+         holds the secret name never matches.) Numbers/bools untouched.
+      3. Size cap: cap the KNOWN rows list `payload["data"]["findings"]` (the audit envelope's only
+         unbounded list) via cap_rows(max_chars); if `payload` is itself a list, cap it directly.
+         Do NOT blanket-cap other `data` lists (roadmap/correlations/anomalies/suppressed are
+         bounded, structured, and indexed by consumers — capping them mid-structure breaks
+         report_md/entrypoints). Record truncated + rowsOmitted.
       4. Identifiers/names PASS through unchanged (approved).
     Pure, deterministic; never raises (a malformed payload degrades to a safe, disclosed result).
     meta = {"sink": sink, "secretsRedacted": int, "sensitiveDropped": int, "truncated": bool,
@@ -60,16 +73,43 @@ def apply_egress_controls(payload, *, sink, max_chars=12000) -> tuple[object, di
 - Deep-walk helper is internal; handles dict/list/scalar; leaves non-string scalars (numbers/bools)
   untouched (they're never secrets and are load-bearing).
 
-**Wiring (enforcement):** route the current outbound seam — the Job's `deliver` port
-(`adapters/delivery_file.py` and any notification delivery) — through `apply_egress_controls` before
-the payload leaves. The delivered envelope is the gated one; `meta` is attached/logged.
+**Wiring (enforcement) — three current outbound surfaces, all gated:**
+1. `pipeline.py:160` `delivery["deliver"](envelope)` (main sweep → file/Teams). Gate the deliver ARG
+   only; leave `return envelope` full (the run-history `store` already persisted earlier at
+   `pipeline.py:100-108`, independent of the return value — so it's untouched either way).
+2. `job.py:175` the failure-delivery card (`{"summary": ...}`).
+3. `_write_outputs` (`job.py`, writes `latest.json` + `report.md` to a Databricks Volume): a durable,
+   shareable dump — gate its file content too (at minimum secret-redaction; a Volume file is arguably
+   MORE exfil-prone than a Teams card). Not "internal, therefore exempt."
+
+**Meta disclosure MUST reach the recipient (not just a log):** the gate returns `meta`, and the wiring
+folds a one-line disclosure into the DELIVERED payload's `summary` (which `teams_card.build_teams_card`
+and `report_md` both read) when anything was dropped/capped — e.g. "(N findings omitted; M sensitive
+items withheld)". Computing `meta` and logging it internally is NOT disclosure to the sink.
 
 **The "gates Phases 6 & 9" contract:** documented in the module docstring + HANDOFF: **every outbound
-sink MUST call `apply_egress_controls`; the gate is the only sanctioned way to emit outward.** Phase-6
-alerts, Phase-9 UI export, and Phase-8 memory each carry "routes through `apply_egress_controls`" as a
-task acceptance criterion, checked in their reviews. (A static "no sink bypasses" test can't cover
-not-yet-written code; the enforceable part today is: the gate exists, the current delivery path uses
-it, and a test proves that.)
+sink MUST call `apply_egress_controls`; the gate is the only sanctioned way to emit outward.** Two
+existing package surfaces are NOT yet wired but MUST route through it when activated (name them so
+they're not missed): `adapters/ticketing.py::create_ticketing_delivery` (an `{"open": open_}` port,
+NOT `deliver` — it takes a findings LIST, so it gates the list: `apply_egress_controls(findings,
+sink="ticketing")`) and `conversation.py::build_concentration_alert` (builds a Teams card from raw
+evidence). Phase-6/8/9 sinks carry "routes through `apply_egress_controls`" as a task AC. (A static
+"no sink bypasses" test can't cover unwritten code; today's enforcement = the gate exists, all three
+current surfaces use it, and tests prove it.)
+
+## Known residual limits (disclosed, not hidden)
+
+- **Sensitivity floor is inert on today's envelopes** — findings carry no `sensitive`/`sensitivityLabel`
+  (those live on detector *evidence*, handled on the separate LLM-input `sanitize()` path). The floor is
+  future-proofing + catches only *explicitly-flagged* dicts; it does NOT detect an unflagged sensitive
+  dataset named in a finding string (names pass, by decision). State this; don't imply blanket coverage.
+- **redact over-reach on delivered KQL:** `redact_secrets` masks `key=value` for allowlisted names, so a
+  legitimate KQL predicate on a column literally named `key` (`| where key=="prod"`) in
+  `runLog.queryKql` renders as `key=***`. Accepted (only affects broadcast payloads; correct caution)
+  and surfaced via the meta/disclosure; documented so it's not mistaken for a bug.
+- **Failure re-raise:** `job.py` gates the failure *card*, but `main()`/`job_main()` still `raise` after,
+  so the raw exception (possibly secret-bearing) lands in the Databricks driver stderr — that's
+  log-safety, out of this gate's scope; noted as a follow-up (the redaction helper could later wrap it).
 
 ## Testing (TDD, offline, deterministic)
 
