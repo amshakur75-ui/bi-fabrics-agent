@@ -238,3 +238,23 @@ The inlined copies are currently identical to the originals — any changes to `
 - Effect: adds Log Analytics as a per-user attribution source for `run_audit` / `list_workspaces`
 - Impact: additive and fault-tolerant — if LA auth fails, that collector is skipped with a warning
 - Read-only: Log Analytics queries are read-only
+
+## Deploy Log
+
+**2026-07-08**: MCP app `mcp-bi-fabrics-auditor` redeployed to `main` (Phase 4 / firewall, v1.8.0) — repo
+`repos update 1681080764058843 --branch main` → `apps deploy`. Verified live: `tools/list` = **18 tools**
+incl. `run_kql` + `query_library`; firewall confirmed (a denied `union database(...)` rejected at
+`denied-operator`). (Known: `query_library` returned 0 templates until v1.8.1 added `package-data` so
+`query_library.json` ships in the wheel.)
+
+**2026-07-09**: Agent app `fabric-audit-agent` redeployed to `main` (Phase 5, agent v0.1.2) — deployment
+`01f17bca…` SUCCEEDED, app RUNNING. Ships: 5.1 reconciled honesty prompt + humanized progress (no tool
+names to users), 5.4a `[conversation]` capture line. **Verified live** via `/invocations` (CLI OAuth
+token): HTTP 200, concise senior-analyst answer with **no tool-name leak**; the `[conversation]` audit
+line emitted in app logs with the expected shape (`tag/ts/question/toolsCalled/toolCount/abstainedHint/
+answerChars`). Real conversations now accumulate (unblocks the deferred 5.4b eval miner).
+- **Not yet deployed (Job side):** 5.2 egress chokepoint (gates delivery) + 5.3 `[identity]` line both
+  live in `job.py`/`pipeline.py` → they ship with the next **scheduled-Job / bundle** deploy (the egress
+  gate is inert until the Job delivers to a broadcast sink, which needs `TEAMS_WEBHOOK_URL`). The MCP app
+  does not consume these, so no MCP redeploy was needed for Phase 5.
+- **Standing:** `FABRIC_CLIENT_SECRET` rotation (B0) is still a pending user Azure action.
