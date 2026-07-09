@@ -37,31 +37,40 @@ identity label must be *accurate* — it reports the identity that actually serv
 
 New `fabric_audit_agent/identity.py` (pure/stdlib except the reused MSAL providers, lazy-imported):
 
+**Trimmed after plan review (opus improvability):** the speculative Agent-Identity fmi_path branch (it
+would test a *guessed* Phase-7 env contract / API) is DROPPED — replaced by a documented in-code
+extension point. Wiring is **label-only** (option b): resolve for the label, emit the audit line, leave
+all six SP token-construction sites untouched (truest to INERT — no live auth-path mutation).
+
 ```python
-def resolve_identity(env, *, user_token=None, sp_provider_factory=build_entra_token_provider):
+POWERBI_SCOPE = ...  # reuse clients.POWERBI_SCOPE
+def resolve_identity(env, *, user_token=None, scope=POWERBI_SCOPE, sp_provider_factory=None):
     """Return {"provider": <zero-arg token callable>, "identity": <label>, "note": <str>}.
-    Selection PRIORITY (first available wins), matching the phased B→A plan:
-      1. Agent Identity (federated, fmi_path) — if env configures FABRIC_AGENT_IDENTITY_* .
-         INERT today: the real fmi_path/federated-credential acquisition is a Phase-7 fill-in; when
-         unconfigured this branch returns None and we fall through. (No half-built MSAL-federation call
-         that can't be tested against a real Agent Identity — that lands in P7 when the grant exists.)
-      2. User OBO — if a *user_token* is passed in (the Databricks user-auth/OBO toggle, Phase-7).
-         INERT today: no caller passes one; the exchange is a P7 fill-in.
-      3. Service principal (build_entra_token_provider) — TODAY'S path; label "servicePrincipal".
-    identity label ∈ {"agentIdentity","user","servicePrincipal"}; note is a human one-liner for audit.
-    Pure selection + labeling; the SP branch delegates to the existing tested provider. Never raises for
-    a normal env (a missing SP config surfaces the same RuntimeError the SP path already raises)."""
+    Selection PRIORITY (first available wins):
+      # 1. Agent Identity (federated, fmi_path) -- Phase-7 EXTENSION POINT ONLY (not implemented):
+      #    when the real Agent Identity + federated-credential grant lands, add the branch HERE,
+      #    ABOVE user/SP, returning identity "agentIdentity". Built against the real grant, not guessed.
+      2. User OBO -- if *user_token* is passed -> a provider returning it; identity "user". (No caller
+         passes one today; the real OBO exchange is a Phase-7 fill-in. Kept as a tiny roadmapped branch.)
+      3. Service principal -> (sp_provider_factory or build_entra_token_provider)(tenant, client_id,
+         secret, scope) from env; identity "servicePrincipal" (TODAY's only real path).
+    identity label ∈ {"agentIdentity"(future),"user","servicePrincipal"}. `scope` lets a caller get the
+    right-audience SP provider (POWERBI/ARM/LOGANALYTICS) so the returned provider isn't misleadingly
+    POWERBI-only. Pure selection+labeling; SP delegates to the existing tested provider; a missing SP
+    config surfaces the SAME RuntimeError the SP path already raises (unmasked)."""
 ```
-- The resolver is a thin seam over the *existing* providers — it does not reimplement MSAL. The
-  non-SP branches are extension points exercised in tests via injection (a fake fmi source / a passed
-  `user_token`), so the *selection logic + label* are covered now; the real P7 token acquisition slots
-  into the marked branches without touching callers.
-- **Wire the label (honesty value today), minimally:** the Job/collector token-provider construction
-  calls `resolve_identity(...)` (so the seam is real, not dead code) and emits a one-line
-  `[identity] {"servedBy": "servicePrincipal", ...}` stdout audit record — mirroring the existing
-  `[adhoc-kql]` audit-line pattern (captured by Databricks App/Job logging). No threading through
-  collector→pipeline→runLog; the resolver also returns the label so any caller can use it. That's the
-  honest "which identity read the data" signal, cheaply.
+- Thin seam over the *existing* providers — no MSAL reimplementation. The SP path + `user_token` branch
+  + label are real and unit-tested; the agentIdentity branch is a documented extension point, NOT built
+  or test-mocked (avoids locking P7 into a guessed API).
+- **Wire the label (honesty value today), label-only:** at the Job's primary sweep path, call
+  `resolve_identity(env)` and emit one `[identity] {"runIdentity": "servicePrincipal", ...}` stdout line
+  (mirroring the `[adhoc-kql]` pattern). Do NOT thread the provider into the six SP sites (leave them —
+  same identity today; no live-path change). The field is **`runIdentity`** (the run's primary-path
+  identity), not `servedBy` (which would falsely imply "served every call").
+- **P7 honesty marker (in code + spec):** activating any non-SP identity requires routing ALL SIX token
+  sites (`job.py:50/294/295`, `clients.py:337` LA, `connectivity.py:141`, `tools.py:219`) through
+  `resolve_identity` — otherwise `runIdentity` would overstate the identity while other audiences (ARM,
+  LA, run_kql) still use the SP. This is a gated checklist item for P7, recorded so it can't be missed.
 
 ### (B) Least-privilege scope manifest
 
@@ -71,20 +80,33 @@ New data file `fabric_audit_agent/scopes.json` + loader `identity.load_scope_man
   `Tenant.Read.All`, Log Analytics `Reader`, …), each with: `scope`, `purpose`, `grantedBy`,
   `requiredForSources` (which collectors need it), and `tier` (core vs gated-source).
 - `load_scope_manifest()` returns it (tolerates missing/malformed → `[]`, like `_load_query_library`).
-- **Value now:** it is the P7 provisioning contract (exactly what to grant the Agent Identity, least
-  privilege), and a **drift test** asserts every live collector's required scope is present and no
-  scope is orphaned — so scope creep/rot is caught in CI.
+- **Value now (its teeth):** it is the P7 provisioning contract (exactly what to grant, least
+  privilege), guarded by TWO tests: (1) a **read-only guard** — every scope is read-only (reject
+  `.Write`/`.Manage`/`.ReadWrite`/`Contributor`/`Owner`); (2) a **`PERMISSIONS.md` ↔ `scopes.json`
+  consistency test** — parse the enumerable API scopes (`\w+(\.\w+)*\.Read\.All`, Graph `*.Read*.All`)
+  and the named Azure RBAC roles (Reader / Monitoring Reader / Log Analytics Reader / Storage Blob Data
+  Reader) out of `PERMISSIONS.md` and assert set-consistency with `scopes.json` (no orphan either
+  direction). Since `scopes.json` is hand-transcribed from `PERMISSIONS.md` (two sources of truth), this
+  consistency test is what stops silent drift — and is precisely what justifies building the manifest
+  now rather than deferring it (its only other consumer is P7). The collector-declares-required-scope
+  drift test from the brainstorm is NOT built (collectors don't declare scopes today — it would be
+  speculative); tracked as a HANDOFF follow-up.
 - **Honesty:** every entry is READ-only; the manifest asserts the agent asks for nothing write-capable.
 
 ## Testing (TDD, offline, deterministic)
 
 - `resolve_identity`: SP-only env → `{identity:"servicePrincipal"}` + a working provider (delegates to
-  the injected `sp_provider_factory`); a passed `user_token` → `{identity:"user"}`; a configured fake
-  fmi source → `{identity:"agentIdentity"}`; priority order (agentIdentity > user > SP) proven; label
-  always matches the branch taken (honesty); missing SP config surfaces the existing error.
-- Wiring: constructing the token provider via `resolve_identity` emits an `[identity] {...}` stdout line
-  with `servedBy == "servicePrincipal"` on a normal (SP-only) config; captured via capsys.
-- `load_scope_manifest`: parses; every scope is READ-only (no `.Write`/`.Manage`); missing file → `[]`.
+  the injected `sp_provider_factory`); a passed `user_token` → `{identity:"user"}` + provider returns
+  that token; `user_token` takes priority over SP; label always matches the branch taken (honesty);
+  missing SP config surfaces the existing RuntimeError (unmasked); `scope` is passed through to the SP
+  factory. (No agentIdentity-branch test — it's a documented extension point, not built.)
+- Wiring: the primary sweep path emits an `[identity] {...}` stdout line with
+  `runIdentity == "servicePrincipal"` on a normal (SP-only) config (capsys); and a **no-secret test** —
+  seed a sentinel `FABRIC_CLIENT_SECRET` and assert it is absent from the emitted line (`note` is static,
+  never interpolates env/secret/tenant).
+- `load_scope_manifest`: parses; missing/malformed file → `[]`.
+- Scope manifest **read-only guard**: every scope rejects `.Write`/`.Manage`/`.ReadWrite`/`Contributor`/`Owner`; non-empty; includes the documented core.
+- Scope manifest **consistency**: the API scopes + named RBAC roles parsed from `PERMISSIONS.md` equal the set in `scopes.json` (no orphan either direction).
 - Drift test: each live collector's declared required scope appears in the manifest; no orphan scope.
 - Full suite stays green.
 
@@ -97,8 +119,13 @@ admin-gated.
 ## Explicitly NOT pursued — with reasons
 
 - **Real fmi_path / OBO token acquisition** — Phase-7 (needs the Agent Identity + toggle to exist; the
-  exact federated-credential API is best built against the real grant, not guessed now). The seam +
-  selection logic + label are built now so activation is a fill-in.
+  exact federated-credential API is best built against the real grant, not guessed now).
+- **A built/tested Agent-Identity (fmi) branch or `FABRIC_AGENT_IDENTITY_*` env contract** — dropped
+  after review: mocking a guessed P7 API is speculative and risks locking P7 into an invented shape. It's
+  a documented in-code extension point above the user/SP branches instead. (The tiny `user_token` OBO
+  branch is kept — real + testable by injection.)
+- **Threading the resolver's provider through the 6 SP token sites** — not now (label-only wiring, option
+  b; keeps the change INERT). P7 does this (and MUST, per the honesty marker) when activating a non-SP identity.
 - **Outbound-action allowlist (C)** — deferred to Phase 6 (its consumer); see Scope decision.
 - **Changing the SP path / requesting new scopes / any write scope** — read-only absolute; the manifest
   is documentation + drift-guard, it grants nothing.
