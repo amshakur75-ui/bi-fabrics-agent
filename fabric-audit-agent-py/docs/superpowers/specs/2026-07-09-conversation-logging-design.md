@@ -29,26 +29,35 @@ the single path both `invoke_handler` and `stream_handler` share. After `_run_to
 
 **The line** (mirrors the `[adhoc-kql]`/`[identity]` audit-line pattern; captured by Databricks App logging):
 ```
-[conversation] {"tag":"conversation","question":<scrubbed+truncated>,"toolsCalled":[<names>],
-                "toolCount":N,"abstained":<bool>,"answerChars":<int>}
+[conversation] {"tag":"conversation","ts":<iso-utc>,"question":<scrubbed+truncated>,
+                "toolsCalled":[<names>],"toolCount":N,"abstainedHint":<bool>,"answerChars":<int>}
 ```
-- **`question`** — the last user message text, run through an inline `_scrub_secrets` and truncated to a
-  cap (e.g. 500 chars). Needed because the eval case's `messages` is the question.
-- **`toolsCalled`** — tool NAMES in call order, from `trajectory` (no arguments — args can carry
-  user/PII and aren't needed for `expectTool`). `toolCount` = len.
-- **`abstained`** — a COARSE heuristic on the answer text (e.g. matches "abstain/insufficient/can't/
-  don't have/not able" — the prompt's abstain vocabulary). Labeled a hint: the future miner / human
-  reviewer refines it into `expectAbstain`. (We log the signal, not a verdict.)
-- **`answerChars`** — `len(text)` only; the full answer is NOT logged (PII/secret minimization).
+- **`question`** — the last user message text (from `_messages_from_request`, agent.py:335; bind it to a
+  local in `_run`), **scrubbed THEN truncated** to a cap (e.g. 500 chars). Order matters: a secret before
+  the cap must be scrubbed; truncation is only a backstop for content past the cap.
+- **`toolsCalled`** — tool NAMES only, extracted as `[t["tool"] for t in trajectory]` (a trajectory
+  entry is `{"tool", "input"}` — agent.py:180; NEVER serialize the entry, `input` carries PII args).
+- **`abstainedHint`** — a COARSE heuristic on the answer text (plausible abstain phrasing, e.g.
+  "insufficient"/"cannot"/"can't"/"don't have"/"not able"). NOTE: this is an author-guessed approximation,
+  NOT the prompt's literal vocabulary (the prompt says "insufficient"/"cannot" but the model answers in
+  free prose), and the prompt's hypothesis language ("can't rule out X") can false-positive — hence the
+  `Hint` suffix. The miner/human refines it into `expectAbstain`; we log a signal, never a verdict.
+- **`answerChars`** — `len(text)` only; the full answer is NOT logged.
+- **`ts`** — an ISO-UTC timestamp so the future miner can order/dedup interleaved concurrent-user lines.
 
-**Inline `_scrub_secrets`** (self-contained, ~5 lines mirroring `query/redact.py`'s allowlist: SAS
-`sig=`, `bearer <tok>`, allowlisted `key=value`). The agent app deliberately does not import the
-`fabric_audit_agent` package (it inlines the prompt + loop, per Phase 5.1), so this small duplication is
-consistent with that established pattern — noted, not a new coupling. It is a FORMAT/secret control, not
-a PII control (names pass, per the 5.2 decision).
+**Inline `_scrub_secrets` — deliberately MORE aggressive than `query/redact.py`.** `redact.py`'s
+allowlist is tight *because it also runs over KQL/URLs* (a blanket mask would corrupt `where Status=200`).
+That constraint does NOT apply here — this runs over a free-text user *question*. So the scrub covers:
+(a) the redact allowlist (`sig=`/`bearer <tok>`/allowlisted `key=value`/URL creds), PLUS (b) a **JWT
+shape** (`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+` — catches a pasted bare token), PLUS (c)
+**connection-string** secrets (`(?i)(accountkey|sharedaccesskey|password)\s*=` — the `\bkey=` allowlist
+MISSES `AccountKey=`, the highest-realism leak when a user pastes a connection string). Self-contained
+inline (the agent app doesn't import the package, per 5.1). FORMAT/secret control, not PII (names pass, 5.2).
 
-**Failure isolation:** emitting the line must NEVER break a conversation — wrap it in try/except; on any
-error, skip the line silently (a broken audit line must not fail the user's answer).
+**Failure isolation:** the emit must NEVER break a conversation — wrap ONLY the emit (after
+`_run_tool_loop` returns; do NOT widen over the loop call or the `return`) in try/except. On error, skip
+the line and log NOTHING containing the question — at most `type(exc).__name__` (never `str(exc)`, which
+could echo the raw offending input back into the log).
 
 ## Testing (TDD, offline, deterministic)
 
