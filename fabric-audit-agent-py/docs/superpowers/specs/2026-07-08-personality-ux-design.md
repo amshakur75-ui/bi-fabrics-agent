@@ -75,7 +75,7 @@ Pure function; deterministic. A `dict` map from tool name → present-tense plai
 | `run_audit` | running the capacity audit |
 | `list_workspaces` | listing the workspaces |
 | `user_activity` / `investigate_user` / `user_timeline` / `user_spike_history` | looking into that user's activity |
-| `investigate_capacity_spike` / `spike_events` | checking the most expensive events |
+| `investigate_capacity_spike` / `spike_events` | checking events with unusual spikages |
 | `raw_events` | pulling the raw event stream |
 | `capacity_patterns` / `capacity_diagnostics` | analyzing capacity patterns |
 | `describe_source` / `sample_events` | checking what the data source contains |
