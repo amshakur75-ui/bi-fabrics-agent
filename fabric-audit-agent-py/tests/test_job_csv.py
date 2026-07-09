@@ -61,3 +61,50 @@ def test_run_unified_job_csv_path(tmp_path):
     assert envelope["success"] is True
     assert (out / "report.md").exists() and (out / "latest.json").exists()
     assert delivered
+
+
+# ---- _write_outputs egress chokepoint (Phase 5.2 Task 2): written file gated, return stays full ----
+def _secret_finding(key="capacity.throttle::TestCap"):
+    return {
+        "what": "leaked", "where": "w", "when": "", "why": "y", "impact": "i",
+        "fix": ["do x"], "score": {"level": "Critical", "value": 90},
+        "key": key, "clientSecret": "s3cr3t",
+    }
+
+
+def test_write_outputs_masks_planted_secret_in_written_latest_json(tmp_path):
+    cap = tmp_path / "data.csv"
+    cap.write_text("Timepoint,Total CU Usage %,SKU\n2026-06-01T00:00:00,50,F64\n", encoding="utf-8")
+    out = tmp_path / "out"
+    reasoner = {"reason": lambda facts, flags: [_secret_finding()]}
+    env = {"AUDIT_HISTORY_PATH": str(tmp_path / "history.json")}
+
+    envelope = run_csv_job(csv_paths=[str(cap)], out_dir=str(out), env=env, reasoner=reasoner,
+                           delivery={"deliver": lambda e: None})
+
+    # returned envelope: full/unmasked
+    assert envelope["data"]["findings"][0]["clientSecret"] == "s3cr3t"
+    # written file: masked
+    saved = json.loads((out / "latest.json").read_text(encoding="utf-8"))
+    assert saved["data"]["findings"][0]["clientSecret"] == "***"
+
+
+def test_write_outputs_caps_over_budget_findings_and_discloses_in_written_summary(tmp_path):
+    cap = tmp_path / "data.csv"
+    cap.write_text("Timepoint,Total CU Usage %,SKU\n2026-06-01T00:00:00,50,F64\n", encoding="utf-8")
+    out = tmp_path / "out"
+    findings = [{
+        "what": "x", "where": "w", "when": "", "why": "y", "impact": "i",
+        "fix": ["do x"], "score": {"level": "Info", "value": 10},
+        "key": f"capacity.throttle::T{i}", "blob": "z" * 500,
+    } for i in range(30)]
+    reasoner = {"reason": lambda facts, flags: findings}
+    env = {"AUDIT_HISTORY_PATH": str(tmp_path / "history2.json")}
+
+    envelope = run_csv_job(csv_paths=[str(cap)], out_dir=str(out), env=env, reasoner=reasoner,
+                           delivery={"deliver": lambda e: None})
+
+    assert len(envelope["data"]["findings"]) == 30   # returned envelope uncapped/full
+    saved = json.loads((out / "latest.json").read_text(encoding="utf-8"))
+    assert len(saved["data"]["findings"]) < 30
+    assert "omitted" in saved["summary"]

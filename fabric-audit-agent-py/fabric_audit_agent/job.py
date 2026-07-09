@@ -114,12 +114,20 @@ def _csv_delivery(env):
 
 
 def _write_outputs(out_dir, envelope):
+    """Write ``latest.json``/``report.md`` to *out_dir* (a Volume — a durable, shareable dump).
+    Egress chokepoint (Phase 5.2): gate the WRITTEN copy only (sink="file"); the caller's
+    ``envelope`` (and its return value elsewhere) is never mutated or replaced."""
     from .report_md import build_markdown_report
+    from .egress import apply_egress_controls, disclosure_line
+    safe, meta = apply_egress_controls(envelope, sink="file")
+    line = disclosure_line(meta)
+    if line and isinstance(safe, dict):
+        safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "latest.json"), "w", encoding="utf-8") as fh:
-        json.dump(envelope, fh, indent=2, ensure_ascii=False)
+        json.dump(safe, fh, indent=2, ensure_ascii=False)
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as fh:
-        fh.write(build_markdown_report(envelope))
+        fh.write(build_markdown_report(safe))
     return out_dir
 
 
@@ -168,12 +176,20 @@ def _alert_failure(exc, env, now_iso=None):
         return False
     try:
         from datetime import datetime, timezone
+        from .egress import apply_egress_controls, disclosure_line
         at = now_iso if now_iso is not None else datetime.now(timezone.utc).isoformat()
         delivery = _build_failure_delivery(env)
         # build_teams_card reads ONLY envelope["summary"]/["data"] — the error text MUST be
         # inside summary, or the production card silently drops the diagnostic payload.
-        delivery["deliver"]({"summary": (f"⚠️ fabric-audit sweep FAILED at {at}: "
-                                          f"{type(exc).__name__}: {exc}")})
+        card = {"summary": (f"⚠️ fabric-audit sweep FAILED at {at}: "
+                             f"{type(exc).__name__}: {exc}")}
+        # Egress chokepoint (Phase 5.2): the failure card is an outbound surface too — a
+        # secret leaking into an exception message must still be masked before it is posted.
+        safe, meta = apply_egress_controls(card, sink="failure")
+        line = disclosure_line(meta)
+        if line and isinstance(safe, dict):
+            safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
+        delivery["deliver"](safe)
         return True
     except Exception:
         return False

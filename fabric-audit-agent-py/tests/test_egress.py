@@ -1,7 +1,9 @@
 """Egress chokepoint: key+shape-aware redaction + sensitivity floor + findings-targeted size cap.
 Pure stdlib, deterministic. See docs/superpowers/specs/2026-07-09-egress-chokepoint-design.md."""
 import copy
+import pathlib
 
+from fabric_audit_agent import egress as egress_mod
 from fabric_audit_agent.egress import apply_egress_controls, disclosure_line
 
 
@@ -319,3 +321,25 @@ def test_disclosure_line_composes_both_parts():
     assert line is not None
     assert "12" in line
     assert "1" in line
+
+
+# ---------------------------------------------------------------------------
+# Contract doc (Phase 5.2 Task 2): egress.py's docstring + docs/HANDOFF.md must state the
+# chokepoint contract and name the two currently-unwired surfaces.
+# ---------------------------------------------------------------------------
+
+def test_egress_docstring_states_the_chokepoint_contract():
+    doc = (egress_mod.__doc__ or "").lower()
+    assert "apply_egress_controls" in doc
+    assert "only sanctioned way" in doc
+    assert "ticketing" in doc
+    assert "build_concentration_alert" in doc
+
+
+def test_handoff_states_the_chokepoint_contract_and_names_unwired_surfaces():
+    handoff = pathlib.Path(__file__).parent.parent / "docs" / "HANDOFF.md"
+    text = handoff.read_text(encoding="utf-8")
+    assert "apply_egress_controls" in text
+    assert "only sanctioned way" in text.lower()
+    assert "ticketing" in text.lower()
+    assert "build_concentration_alert" in text

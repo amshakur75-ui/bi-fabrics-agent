@@ -6,6 +6,18 @@ deterministic, never raises. See docs/superpowers/specs/2026-07-09-egress-chokep
 Reuses (does not reimplement): ``query.redact.redact_secrets`` (in-string name=value / SAS /
 bearer masking), the ``sanitize`` sensitivity rule (``sensitive is True`` or a truthy
 ``sensitivityLabel``), and ``query.envelope.cap_rows`` (char-budget row cap).
+
+CONTRACT: every outbound sink MUST route through ``apply_egress_controls`` before it emits
+anything outward — it is the ONLY sanctioned way to emit outward. Gate the delivered/written
+payload only; never the returned envelope or the earlier-persisted run-history store.
+
+Currently wired (Phase 5.2 Task 2): ``pipeline.run_audit`` (sink="delivery"),
+``job._alert_failure`` (sink="failure"), ``job._write_outputs`` (sink="file").
+
+NOT yet wired — MUST gate when activated: ``adapters/ticketing.py``'s ``{"open": open_}`` port
+(gate the findings LIST it takes: ``apply_egress_controls(findings, sink="ticketing")``) and
+``conversation.py``'s ``build_concentration_alert`` (gate the card it builds before it is
+posted). Neither may bypass this chokepoint.
 """
 import copy
 import re
