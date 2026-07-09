@@ -97,6 +97,9 @@ def test_fix4_caveats_per_load_bearing_claim_not_once():
     assert "per load-bearing claim" in low
     assert "not once per conversation" in low
     assert "even if you stated it earlier" in low
+    # Coverage/blind-spot is enumerated alongside proxy/truncation/mock (final-review finding):
+    # a narrow follow-up must not drop the blind-spot caveat on a load-bearing figure.
+    assert "omits data you were blind to" in low
     # Never print a raw flag -- translate it, never drop it.
     assert "never print a raw flag" in low
     assert "never drop it" in low
