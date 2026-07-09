@@ -83,7 +83,7 @@ Pure function; deterministic. A `dict` map from tool name → present-tense plai
 | `analyze_dax` | reviewing the DAX |
 | `whats_changed` | comparing against the last run |
 | `run_kql` | running a read-only query |
-| `query_library` | checking the grounded query library |
+| `query_library` | checking the latest query library |
 
 Rules: output contains **no tool name and no JSON**. Unknown/unmapped tool → the generic phrase
 "working on it…". Scope hint (decided, not optional): append a human hint ONLY for this whitelist of
