@@ -5,8 +5,10 @@ Each returns a text block (testable) and, where the Node CLI did, performs the s
 side effects (audit writes ``runs/latest.json`` + ``runs/report.md``). ``base_dir`` locates
 ``fixtures/`` and ``runs/`` (defaults to the repo root) so tests can redirect to a temp dir.
 """
+import argparse
 import json
 import os
+import sys
 
 from .adapters import (
     create_mock_collector, create_stub_reasoner, create_file_delivery,
@@ -22,6 +24,7 @@ from .whatif import assess_what_if
 from .triggers import evaluate_threshold_triggers
 from .lifecycle import set_state
 from .dax import analyze_dax
+from .query.mine import parse_audit_lines, rank_candidates, to_library_entries
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENT_ID = "fabric-audit-agent"
@@ -175,3 +178,169 @@ def run_dax_cli(measure=""):
     if not suggestions:
         return "No obvious DAX anti-patterns detected."
     return "\n".join(f'[{s["pattern"]}] {s["suggestion"]}' for s in suggestions)
+
+
+# ---- mine-queries (query-library growth loop, Task 4: the CLI seam) ----
+
+_DEFAULT_LIBRARY_NAME = "query_library.json"
+_MINE_KQL_PREVIEW_MAX = 120
+
+
+class _MineArgError(Exception):
+    """Raised by ``_MineArgParser.error`` instead of the base class's ``sys.exit`` so a bad CLI
+    invocation degrades to a clean returned string, not a stack trace / process exit."""
+
+
+class _MineArgParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise _MineArgError(message)
+
+
+def _resolve_library_path(base_dir=None, library_path=None):
+    """One path used for BOTH the dedup-existing read and the --write mutation (plan Architecture
+    decision: ``_load_query_library()`` in tools.py hardcodes the package path and can't be
+    redirected, so this CLI resolves its own path instead of calling it). ``library_path`` wins
+    when given (tests); otherwise the package-adjacent ``query_library.json`` ships. ``base_dir``
+    is accepted for signature parity with the other ``run_*_cli`` helpers but does not affect this
+    resolution -- the library is package data, not a per-run fixture/output like ``runs/``."""
+    if library_path is not None:
+        return library_path
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), _DEFAULT_LIBRARY_NAME)
+
+
+def _read_query_library_from(path):
+    """Load templates from *path*. A missing or malformed file degrades to ``[]`` (same
+    tolerance as ``tools._load_query_library``) rather than raising. Used for the dedup/preview
+    READ, where tolerance is correct; the ``--write`` path uses ``_library_write_base`` instead."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _library_write_base(path):
+    """The existing entries to preserve on ``--write``, or ``(None, error_string)`` if the file is
+    present but unreadable / not a JSON list. A truly ABSENT file is fine -> ``([], None)`` (create a
+    new library). This is deliberately STRICTER than ``_read_query_library_from``: silently treating
+    a present-but-malformed library as ``[]`` here would OVERWRITE a curated library with just the
+    mined entries — turning a recoverable parse error into unrecoverable data loss. A malformed file
+    is recoverable; a clobbered one is not, so we refuse before opening for write."""
+    if not os.path.exists(path):
+        return [], None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, (f"mine-queries: refusing to --write — the library at {path} exists but is "
+                      f"unreadable ({exc}); fix or remove it first (no changes made)")
+    if not isinstance(data, list):
+        return None, (f"mine-queries: refusing to --write — the library at {path} is not a JSON "
+                      f"list; fix it first (no changes made)")
+    return data, None
+
+
+def _detect_newline(path):
+    """The library file's existing newline style, so a ``--write`` rewrite doesn't flip every
+    line's ending (CRLF<->LF churn that would bury the intended additions in the PR diff). An
+    absent/unreadable file -> ``"\\n"`` (repo-friendly LF default)."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return "\n"
+    return "\r\n" if b"\r\n" in raw else "\n"
+
+
+def _mine_one_line_kql(kql, limit=_MINE_KQL_PREVIEW_MAX):
+    """Collapse a (possibly multi-line) kql to one line for the preview table, truncated."""
+    flat = " ".join(str(kql).split())
+    if len(flat) > limit:
+        flat = flat[: limit - 1].rstrip() + "…"
+    return flat
+
+
+def _mine_no_candidates_message(min_count, write):
+    base = (
+        f"No promotable query shapes found (need >= {min_count} repeat(s) of a new, "
+        "not-already-in-the-library query shape)."
+    )
+    if write:
+        return base + " Nothing to add — the library file was left unchanged."
+    return base
+
+
+def _mine_format_preview(entries, logfile):
+    lines = [f"Found {len(entries)} promotable query shape(s) in {logfile} (preview only — nothing written):", ""]
+    lines.append(f'{"rank":>4}  {"hitCount":>8}  {"engine":<8}  name / kql')
+    for i, e in enumerate(entries, start=1):
+        lines.append(f'{i:>4}  {e["hitCount"]:>8}  {e["engine"]:<8}  {e["name"]}')
+        lines.append(f'      {_mine_one_line_kql(e["kql"])}')
+    lines.append("")
+    lines.append("Ready-to-paste query_library.json entries:")
+    for e in entries:
+        lines.append(json.dumps(e, indent=2, ensure_ascii=False))
+    lines.append("")
+    lines.append("Re-run with --write to append these entries to the query library.")
+    return "\n".join(lines)
+
+
+def run_mine_queries_cli(rest, base_dir=None, library_path=None) -> str:
+    """``mine-queries`` CLI: mine the ``[adhoc-kql]`` audit log for repeated, firewall-passing
+    query shapes not already in ``query_library.json`` and either preview them (default) or
+    ``--write`` them to the library. Read-only unless ``--write`` is passed, and even then the
+    ONLY file ever mutated is the single resolved library path (see ``_resolve_library_path``).
+
+    ``rest`` is the CLI arg list: positional ``logfile`` (``-`` = stdin), ``--min-count`` (default
+    3), ``--top`` (default 10), ``--write`` (flag). Never raises for user-facing failures (a bad
+    arg list or a missing logfile returns a clean error string).
+    """
+    parser = _MineArgParser(prog="mine-queries", add_help=False)
+    parser.add_argument("logfile")
+    parser.add_argument("--min-count", type=int, default=3)
+    parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--write", action="store_true")
+    try:
+        args = parser.parse_args(list(rest))
+    except _MineArgError as exc:
+        return f"mine-queries: {exc}"
+
+    lib_path = _resolve_library_path(base_dir=base_dir, library_path=library_path)
+    existing = _read_query_library_from(lib_path)
+
+    if args.logfile == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            with open(args.logfile, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            return f"mine-queries: could not read log file {args.logfile!r}: {exc.strerror or exc}"
+
+    records = parse_audit_lines(text.splitlines())
+    ranked = rank_candidates(records, existing, min_count=args.min_count, top_n=args.top)
+    entries = to_library_entries(ranked, existing)
+
+    if not entries:
+        return _mine_no_candidates_message(args.min_count, args.write)
+
+    if not args.write:
+        return _mine_format_preview(entries, args.logfile)
+
+    # --write: never clobber a present-but-unreadable curated library. A parse error must abort
+    # BEFORE we open for write (a malformed file is recoverable; a wiped one is not). An absent
+    # file is fine -> create a new library. This strict re-read is separate from `existing` above,
+    # which is intentionally tolerant for dedup/preview.
+    base_entries, err = _library_write_base(lib_path)
+    if err is not None:
+        return err
+
+    updated = list(base_entries) + entries
+    with open(lib_path, "w", encoding="utf-8", newline=_detect_newline(lib_path)) as fh:
+        json.dump(updated, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+
+    names = ", ".join(e["name"] for e in entries)
+    plural = "y" if len(entries) == 1 else "ies"
+    return f"Wrote {len(entries)} new quer{plural} to {lib_path}: {names}"
