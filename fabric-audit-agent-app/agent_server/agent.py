@@ -379,6 +379,15 @@ _SECRET_KV_RE = re.compile(
     r'(?i)\b(password|pwd|secret|token|apikey|api_key|key|client_secret|sig|access_token)=[^&\s]+'
 )
 
+# Same allowlisted names but COLON-delimited (JSON / header form, e.g. a pasted app-registration
+# block `"client_secret": "abc"` or `x-api-key: <val>`) -- the `=`-only rule above misses these.
+# Bare "key" is deliberately EXCLUDED here (a plain `key: value` in prose/JSON is common and benign;
+# masking it would needlessly corrupt the mined question) -- only the specific secret names.
+_SECRET_KV_COLON_RE = re.compile(
+    r'(?i)(["\']?(?:password|pwd|secret|token|api[-_]?key|client[-_]?secret|sig|access[-_]?token)["\']?\s*:\s*)'
+    r'["\']?[^"\',}\s]+["\']?'
+)
+
 # JWT shape (three base64url segments) -- catches a bare token pasted into free text, which the
 # key=value allowlist above would miss entirely.
 _JWT_RE = re.compile(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b')
@@ -407,6 +416,7 @@ def _scrub_secrets(text):
     out = _BEARER_TOKEN_RE.sub(r'\1 ***', out)
     out = _CONN_STRING_RE.sub(r'\1=***', out)
     out = _SECRET_KV_RE.sub(r'\1=***', out)
+    out = _SECRET_KV_COLON_RE.sub(r'\1***', out)
     out = _JWT_RE.sub('***', out)
     return out
 

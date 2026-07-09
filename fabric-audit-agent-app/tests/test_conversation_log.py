@@ -48,6 +48,21 @@ class TestScrubSecrets(unittest.TestCase):
         out = _agent._scrub_secrets("foo=bar")
         self.assertEqual(out, "foo=bar")
 
+    def test_colon_delimited_client_secret_masked(self):
+        """A pasted JSON app-registration block uses colon form, not '=' -- must still mask."""
+        out = _agent._scrub_secrets('{"client_secret": "abc123XYZ", "client_id": "keep-me"}')
+        self.assertNotIn("abc123XYZ", out)
+        self.assertIn("client_id", out)  # non-secret name + its value survive
+
+    def test_colon_delimited_api_key_header_masked(self):
+        out = _agent._scrub_secrets("x-api-key: SUPERSECRETVALUE")
+        self.assertNotIn("SUPERSECRETVALUE", out)
+
+    def test_benign_colon_prose_key_unchanged(self):
+        # bare "key:" is deliberately NOT masked (common benign prose/JSON) -- preserves question fidelity.
+        out = _agent._scrub_secrets("the key: takeaway is throttling")
+        self.assertIn("takeaway", out)
+
     def test_benign_kql_predicate_unchanged(self):
         out = _agent._scrub_secrets("where Status=200")
         self.assertEqual(out, "where Status=200")
