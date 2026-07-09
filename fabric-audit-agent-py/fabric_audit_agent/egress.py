@@ -19,17 +19,27 @@ _MASK = "***"
 # shape -- catches the structured case redact_secrets misses: the secret NAME is the dict key and
 # the value is a separate string (e.g. {"clientSecret": "s3cr3t"}).
 _SECRET_KEYS = {
-    "secret", "token", "password", "pwd", "apikey", "api_key", "key", "client_secret", "sig",
+    "secret", "token", "password", "pwd", "apikey", "api_key", "client_secret", "sig",
     "access_token", "connectionstring", "accountkey", "sharedaccesskey",
 }
+# NB: bare "key" is deliberately NOT in this set -- a finding's identity field is literally named
+# "key" (propagated into data.roadmap/suppressed/sla/accountability/digest), and masking it would
+# break card/report/lifecycle correlation. The specific secret-key names (accountkey, apikey,
+# client_secret, sharedaccesskey) are independent members, so real secrets are still caught.
 _SECRET_KEYS_NORM = {k.replace("_", "") for k in _SECRET_KEYS}
 
 # A JWT: three base64url segments separated by dots, starting with the near-universal "eyJ" header.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 # A connection-string secret segment: AccountKey=/SharedAccessKey=/Password= (case-insensitive).
 _CONN_STRING_RE = re.compile(r"(?i)(accountkey|sharedaccesskey|password)\s*=")
-# A long opaque base64-alphabet token with no other structure -- the whole string, not embedded.
+# A long opaque base64 TOKEN: >=40 chars of the base64 alphabet AND containing an actual base64
+# special char (+ / =). Requiring a special char is what distinguishes a real base64 secret from a
+# legitimate long identifier/name (PascalCase item/dataset names use only letters/digits/-/_ and so
+# must PASS -- the approved names-pass rule). base64url secrets without padding aren't caught here,
+# but a JWT is caught by _JWT_RE and a keyed secret by the key-aware rule; over-masking a real name
+# is the worse failure, so this errs toward letting a bare unpadded token through.
 _LONG_BASE64_RE = re.compile(r"^[A-Za-z0-9+/=_-]{40,}$")
+_BASE64_SPECIAL_RE = re.compile(r"[+/=]")
 
 
 def _normalize_key(key):
@@ -42,8 +52,13 @@ def _is_secret_key(key):
     return _normalize_key(key) in _SECRET_KEYS_NORM
 
 
+def _looks_like_long_base64(value):
+    # Length + alphabet AND a real base64 special char (+ / =) -- so a long plain name never matches.
+    return bool(_LONG_BASE64_RE.match(value) and _BASE64_SPECIAL_RE.search(value))
+
+
 def _looks_like_secret_shape(value):
-    return bool(_JWT_RE.search(value) or _CONN_STRING_RE.search(value) or _LONG_BASE64_RE.match(value))
+    return bool(_JWT_RE.search(value) or _CONN_STRING_RE.search(value) or _looks_like_long_base64(value))
 
 
 def _redact_string(value, parent_key):
@@ -122,15 +137,14 @@ def apply_egress_controls(payload, *, sink, max_chars=12000):
     """
     meta = {"sink": sink, "secretsRedacted": 0, "sensitiveDropped": 0, "truncated": False, "rowsOmitted": 0}
 
+    # Fail CLOSED: if we can't deep-copy or walk the payload, do NOT emit the raw (possibly
+    # secret-bearing) content -- return a redacted stub instead. (_walk is very robust, so this is a
+    # backstop for a security boundary, not an expected path.)
     try:
         working = copy.deepcopy(payload)
-    except Exception:
-        working = payload
-
-    try:
         safe, secrets_count, sensitive_count = _walk(working)
     except Exception:
-        return working, meta
+        return {"redacted": True, "note": "egress gate error — payload withheld"}, meta
 
     meta["secretsRedacted"] = secrets_count
     meta["sensitiveDropped"] = sensitive_count

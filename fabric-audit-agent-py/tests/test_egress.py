@@ -42,11 +42,41 @@ def test_shape_aware_bare_jwt_masked_regardless_of_key():
 
 
 def test_shape_aware_long_base64_blob_masked():
-    blob = "A" * 60  # long opaque base64-alphabet token, no secret key/shape hint otherwise
+    # A real base64 token: long, base64 alphabet, AND carrying base64 special chars (+ / =).
+    blob = "TWFuIGlzIGRpc3Rpbmd1aXNoZWQ+by9mcm9tIGFuaW1hbHM=" + "AB12cd34"
     payload = {"blob": blob}
     safe, meta = apply_egress_controls(payload, sink="test")
     assert safe["blob"] == "***"
     assert meta["secretsRedacted"] == 1
+
+
+def test_long_plain_name_is_NOT_masked_names_pass():
+    # Regression (plan-review Important): a long space-free PascalCase item/dataset name has no
+    # base64 special char, so it must PASS (approved names-pass rule) -- length alone must not mask.
+    name = "EnterpriseReportingSalesConsolidatedGlobalMonthlyView"  # 53 chars, letters only
+    payload = {"data": {"findings": [{"dataset": name, "workspace": "Fin-Enterprise-Reporting-Prod-2026"}]}}
+    safe, meta = apply_egress_controls(payload, sink="test")
+    assert safe["data"]["findings"][0]["dataset"] == name
+    assert safe["data"]["findings"][0]["workspace"] == "Fin-Enterprise-Reporting-Prod-2026"
+    assert meta["secretsRedacted"] == 0
+
+
+def test_finding_key_identity_field_survives():
+    # Regression (plan-review Critical): a finding's identity field is literally named "key" and is
+    # propagated into data.roadmap/suppressed/sla/accountability/digest. It is NOT a secret and must
+    # survive -- masking it would break card/report/lifecycle correlation. "key" is not key-aware.
+    payload = {"data": {
+        "findings": [{"key": "capacity.throttle::CapacityX", "what": "throttled"}],
+        "roadmap": [{"rank": 1, "key": "capacity.throttle::CapacityX", "level": "Critical"}],
+        "suppressed": [{"key": "model.oversized::DatasetY"}],
+    }}
+    safe, meta = apply_egress_controls(payload, sink="test")
+    assert safe["data"]["findings"][0]["key"] == "capacity.throttle::CapacityX"
+    assert safe["data"]["roadmap"][0]["key"] == "capacity.throttle::CapacityX"
+    assert safe["data"]["suppressed"][0]["key"] == "model.oversized::DatasetY"
+    # but a genuinely secret-named key is still masked
+    s2, _ = apply_egress_controls({"clientSecret": "s3cr3t", "accountKey": "abc"}, sink="t")
+    assert s2["clientSecret"] == "***" and s2["accountKey"] == "***"
 
 
 # ---------------------------------------------------------------------------
