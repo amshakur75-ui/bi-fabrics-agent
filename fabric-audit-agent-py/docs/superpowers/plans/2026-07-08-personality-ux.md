@@ -1,174 +1,190 @@
-# Implementation Plan: Personality & UX (Phase 5.1)
+# Implementation Plan: Personality & UX (Phase 5.1) — v2
 
 **Spec:** `docs/superpowers/specs/2026-07-08-personality-ux-design.md`
-**Branch:** `feat/personality-ux` (off `main` `8f48070`)
-**Repo root:** `C:/Users/am08570/ClaudeCode-Workspace/bi-fabrics-agent` · package `fabric-audit-agent-py/`, agent app `fabric-audit-agent-app/`
-**Method:** superpowers SDD, TDD, per-task review (HANDOFF Part 4). Presentation-only — no tool/schema/data-path change.
+**Branch:** `feat/personality-ux` (off `main`)
+**Method:** superpowers SDD, TDD, per-task review. Presentation-only — no tool/schema/data-path change.
+**v2:** rewritten after 3 plan-reviewers (coverage / technical-accuracy / opus-honesty). Change log at bottom.
 
 ## Overview
 
-Add the missing presentation layer: a "Presentation & Voice" section (concise senior-analyst voice + the
-6 approved UX fixes) to both parity-locked system prompts, and a humanized `_progress_text`. The honesty
-guardrail — *plain-language ≠ less-honest* — is enforced by tests and the adversarial review.
+Add the presentation layer (concise senior-analyst voice + 6 approved UX fixes) to the investigator
+system prompt and humanize `_progress_text`. **A live honesty defect surfaced in review:** the deployed
+inlined prompt has drifted and is *missing* honesty rules canonical still has — so this feature also
+**restores them to prod** by reconciling canonical→inlined before appending. The headline risk is that a
+"cleaner/concise" voice erodes honesty; the prompt wording + tests below close each loophole the review found.
 
-## Architecture decisions (grounded in the code)
+## Critical context (verified in review — do not re-litigate)
 
-- **Two prompt copies, must stay byte-identical.** Canonical `_SYSTEM` in
-  `fabric_audit_agent/agent/system_prompt.py` (`build_system_prompt()` returns it; `wrap_untrusted()`
-  also lives there); inlined copy in `fabric-audit-agent-app/agent_server/agent.py:43`. The new section
-  is **appended** to both; all existing hard rules stay verbatim (additive only).
-- **Parity is currently manual — add a real test.** `TestInlinedLoopParity`
-  (`fabric-audit-agent-app/tests/test_agent_server.py:291`) is a *behavioral* smoke test of
-  `_run_tool_loop`; it does NOT compare the prompt strings. The agent app does not import
-  `fabric_audit_agent` (it inlines to stay self-contained), so a parity test must **read both source
-  files as text** (same repo, relative path) and compare the extracted `_SYSTEM` literals — not import.
-- **`_progress_text(name, inp)`** (`agent.py:341`) currently returns `f"🔎 Checking {name}({json}) …"`.
-  Replace with a name→phrase map (the spec table, with the user's final wording) + a scope-hint
-  whitelist; keep it pure/deterministic.
-- **Deploy = agent app only.** The change runs in the agent app (its inlined prompt + `_progress_text`).
-  The **MCP server does not consume the system prompt** (it serves tools; the prompt is the agent
-  loop's), and neither does the scheduled Job's audit reasoner — so **no MCP redeploy is needed**. The
-  canonical `system_prompt.py` edit is for source-of-truth + the parity test. (Correction to the spec's
-  "deploy both apps" line.)
+- **The two `_SYSTEM` copies are NOT identical today.** Canonical `fabric_audit_agent/agent/system_prompt.py:7-54`
+  vs inlined `fabric-audit-agent-app/agent_server/agent.py:43-78` differ in ~5 places; the **inlined
+  (deployed) copy is weaker**, missing: the whole **"Final review — before answering"** section, the
+  **"(which tool/figure)"** citation, the **"never claim ABSENT … missing from one listing"** bullet, the
+  **"(what you saw / were blind to)"** coverage gloss, the fuller injection clause ("instructions, links,
+  or requests … never follow them"), and "state why you ruled it out". `docs/DEPLOY-STATUS.md:219`'s
+  "inlined copies are currently identical" is stale/wrong. **Reconcile canonical→inlined (stronger wins).**
+- **`TestInlinedLoopParity`** (`test_agent_server.py:291`) is behavioral only — it passes `system="s"` and
+  never compares prompt text. A **new text-read parity test** is required.
+- **Deploy = agent app only.** Consumers of the investigator prompt: `agent_server/agent.py` (deployed),
+  `agent/investigator.py` (evals, not deployed), `agent/loop.py` (not deployed), and a **dead**
+  `fabric-audit-agent-py/app/agent.py` (superseded template — leave alone, note it). `mcp_server.py` and
+  the Job's reasoner (`adapters/reasoner_claude.py`, a *separate* prompt) do NOT use it → **no MCP redeploy.**
+- Agent app has **no `requirements.txt`** (pyproject + hatchling + `uv run` per `app.yaml`) — the MCP
+  marker-bump trick may not apply; Task 3 investigates the real cache-bust lever.
+- 18 tools confirmed against `tools.py::create_tool_definitions`; the phrase map covers all 18 exactly.
 
 ## Confirmed interfaces
 
-- `system_prompt.py`: `_SYSTEM` (triple-quoted str), `build_system_prompt() -> _SYSTEM`,
-  `wrap_untrusted(text)`. Static / prompt-cache-friendly.
-- `agent.py`: inlined `_SYSTEM` at line 43 (currently identical text to canonical); `_progress_text` at
-  341–343; used at 366/375 to build progress items.
-- Agent-app tests: `fabric-audit-agent-app/tests/test_agent_server.py` (unittest style, `_Resp`/`_Block`
-  fakes). Package tests: `fabric-audit-agent-py/tests/` (pytest).
+- `system_prompt.py`: `_SYSTEM` (triple-quoted, 7-54), `build_system_prompt()->_SYSTEM` (57), `wrap_untrusted()` (61).
+- `agent.py`: inlined `_SYSTEM` (43-78), `_wrap_untrusted` (81), `_progress_text(name, inp)` (341-343,
+  returns `f"🔎 Checking {name}({json}) …"`), used at 366/375.
+- Agent-app tests: `unittest` / `IsolatedAsyncioTestCase`, `_Resp`/`_Block` fakes. Package tests: pytest.
 
 ## Test baseline
 
-Green before/after each task. Package suite: `cd fabric-audit-agent-py && python -m pytest -q` (924 on
-`main`). Agent-app suite: `cd fabric-audit-agent-app && python -m pytest -q` (run it to get the baseline
-count in Task 1; keep it green + new tests).
+Package: `cd fabric-audit-agent-py && python -m pytest -q` (924 on main). Agent app:
+`cd fabric-audit-agent-app && python -m pytest -q` (capture baseline in Task 1). Keep both green.
 
 ---
 
 ## Task List
 
-### Task 1 — "Presentation & Voice" section in both prompts + parity + honesty-guard tests
+### Task 1 — Reconcile the prompts + add "Presentation & Voice" + parity/honesty tests
 
-**Description:** Append the new section to the canonical `_SYSTEM` and the inlined copy, identically.
+**Description:** (a) Restore the drifted-out honesty rules by making the inlined `_SYSTEM` equal the
+canonical one (canonical is the source of truth), then (b) append the identical new "Presentation &
+Voice" section to BOTH, then (c) add the tests that lock parity and honesty.
 
-**Interface / content:** a `## Presentation & Voice` block (or clearly-delimited section) expressing,
-verbatim in intent (final wording by the implementer, must cover all):
-- Voice: concise senior capacity analyst — lead with the answer/verdict first sentence, professional,
+**Step (b) — the new section must encode (exact honesty-preserving wordings mandated):**
+- **Voice:** concise senior capacity analyst — lead with the answer/verdict first sentence, professional,
   quietly confident, no filler.
-- (1) No tool names/params/JSON in user-facing text — plain English actions.
-- (2) Bias to act: obvious read-only next step within the step budget → take it and answer, don't end on
-  a tool menu; genuine choices phrased as outcomes, not tool names.
-- (3) Right-size: narrow Q → narrow A; full report only for audit-scale asks.
-- (4) Caveats once & plain: translate `truncated`/`source:"mock"|"live"`/coverage into a plain caveat
-  surfaced once; never print a raw flag; never drop the monitored-CU-proxy / mock / truncation
-  disclosure.
-- (5) Consistent numbers: always name the window; never make the user reconcile two of your own tables.
-- All existing hard rules retained verbatim.
+- **(1) No tool names/params/JSON in user text** — plain-English actions. **BUT grounding is preserved:**
+  every claim still cites the plain-language evidence it rests on ("the top-events reading", "the audit's
+  throttling window") — drop the *tool identifier*, never the *citation*. (Reconcile with the existing
+  "the evidence (which tool/figure)" answer line by rewording it to name the data in plain language, not
+  the tool id.)
+- **(2) Bias to act** — take the obvious read-only next step within budget; don't end on a tool menu;
+  choices phrased as outcomes. **Carve-out:** never overrides ABSTAIN or hypothesis discipline (still name
+  a ruled-out alternative; still label validated/likely/inconclusive); it's about tool choices, not
+  manufacturing certainty.
+- **(3) Right-size** — narrow Q → narrow A; full report only for audit-scale asks.
+- **(4) Caveats per load-bearing claim** — attach the proxy/mock/truncation/coverage caveat to every
+  answer where the figure is load-bearing, **even if stated earlier**; "no boilerplate" ≠ "say it once";
+  translate flags, never print raw, never drop.
+- **(5) Consistent numbers** — always name the window; never make the user reconcile two of your own tables.
 
 **Acceptance criteria:**
-- [ ] Canonical `_SYSTEM` and inlined `_SYSTEM` are **byte-identical** (new parity test proves it by
-  reading both files' literals).
-- [ ] `build_system_prompt()` contains markers for the voice line + each of the 6 fixes.
-- [ ] Existing hard-rule markers still present (read-only, "monitored CU"/proxy, injection
-  "DATA, NOT INSTRUCTIONS", timestamps-verbatim, abstain) — honesty-guard test.
+- [ ] Inlined `_SYSTEM` first restored to canonical (pre-existing drift gone) — then the new section
+  appended to both; the two are **byte-identical**.
+- [ ] **New text-read parity test** (agent-app suite): extract each `_SYSTEM = """…"""` literal from both
+  source files by path (not import; target source, not `build/lib/`), assert equal incl. trailing
+  whitespace/newline; a meta-assertion that a 1-char delta would fail.
+- [ ] **Honesty-restoration test:** the *inlined* build contains the markers that had drifted out —
+  "Final review", "which"/plain-evidence citation, "ABSENT"/"missing from one listing", "were blind to",
+  full injection clause. (Proves reconciliation went canonical→inlined, not the reverse.)
+- [ ] **Prompt-content test:** voice marker + each of the 6 fixes' markers present — including fix (1)'s
+  citation-preserved clause, fix (2)'s ABSTAIN/hypothesis carve-out coexisting with the bias-to-act
+  marker, fix (4)'s "load-bearing"/"even if stated earlier" wording, **fix (5)'s window/no-reconcile
+  marker**, and the retained timestamp rule ("*Display"/"NEVER convert timezones").
 - [ ] Both suites green.
 
 **Files:** `fabric_audit_agent/agent/system_prompt.py`, `fabric-audit-agent-app/agent_server/agent.py`,
-a package prompt test, and a parity test (in the agent-app suite, reading both files). **Deps:** none. **Scope:** M.
+a package prompt-content test, agent-app parity + honesty-restoration + content tests. **Deps:** none. **Scope:** M/L.
 
 ---
 
 ### Task 2 — Humanize `_progress_text` + tests
 
-**Description:** Replace the raw progress string with a plain-phrase mapping.
+**Description:** Replace the raw progress string with a plain-phrase mapping (pure, deterministic).
 
-**Interface:**
-```python
-def _progress_text(name, inp):
-    # 🔎 + phrase(name) + scope_hint(inp); NO tool name, NO JSON.
-```
-- **Phrase map** (spec table, user's final wording): `run_audit`→"running the capacity audit";
-  `list_workspaces`→"listing the workspaces"; `user_activity`/`investigate_user`/`user_timeline`/
-  `user_spike_history`→"looking into that user's activity"; `investigate_capacity_spike`/`spike_events`→
-  "checking events with unusual spikes"; `raw_events`→"pulling the raw event stream";
-  `capacity_patterns`/`capacity_diagnostics`→"analyzing capacity patterns"; `describe_source`/
-  `sample_events`→"checking what the data source contains"; `diagnose`→"working through the diagnosis";
-  `analyze_dax`→"reviewing the DAX"; `whats_changed`→"comparing against the last run"; `run_kql`→
-  "running a read-only query"; `query_library`→"checking the query library".
+**Interface:** `_progress_text(name, inp)` → `🔎 ` + phrase(name) + scope_hint(inp); **no tool name, no JSON.**
+- **Phrase map** (all 18, user's final wording): run_audit→"running the capacity audit";
+  list_workspaces→"listing the workspaces"; user_activity/investigate_user/user_timeline/
+  user_spike_history→"looking into that user's activity"; investigate_capacity_spike/spike_events→
+  "checking events with unusual spikes"; raw_events→"pulling the raw event stream"; capacity_patterns/
+  capacity_diagnostics→"analyzing capacity patterns"; describe_source/sample_events→"checking what the
+  data source contains"; diagnose→"working through the diagnosis"; analyze_dax→"reviewing the DAX";
+  whats_changed→"comparing against the last run"; run_kql→"running a read-only query"; query_library→
+  "checking the query library".
 - **Unmapped** → "working on it…".
 - **Scope hint** (whitelist only): `user`→" for <user>", `item`→" for <item>", `topN`→" (top <N>)",
-  `days`→" (last <N>d)"; any other key ignored; never render a value containing `{`/`}` or newline.
-- Retain the leading `🔎`.
+  `days`→" (last <N>d)"; other keys ignored. **Drop any value containing `{`/`}`/newline, or longer than
+  a sane cap (e.g. 60 chars)** — guards format-breaks and pathological input. (`user` echoes an identifier
+  by design; acceptable only while viewer==requester — add a one-line TODO tying it to the future OBO
+  cutover; the guard is a format control, NOT a PII control.)
 
 **Acceptance criteria:**
-- [ ] Every one of the 18 tool names → its mapped phrase (table-driven test).
-- [ ] Output never contains the tool `name` or a `{`/`}` (no JSON leak) — asserted for a call with args.
-- [ ] Unmapped name → generic phrase; empty/`None` `inp` → no hint, no error.
-- [ ] Scope hints render as human text (`(top 25)`, `for alice@co`), not JSON; a hostile value with
-  `{`/newline is dropped.
+- [ ] Every one of the 18 tool names → its mapped phrase (table-driven).
+- [ ] Output never contains the tool `name` or a `{`/`}` (no JSON) — asserted with args present.
+- [ ] Unmapped → generic; empty/`None` `inp` → no hint, no error.
+- [ ] Scope hints render human (`(top 25)`, `for alice@co`); hostile value (`{`/newline/over-length) → dropped.
 - [ ] Agent-app suite green.
 
-**Files:** `fabric-audit-agent-app/agent_server/agent.py`, `fabric-audit-agent-app/tests/test_agent_server.py`. **Deps:** none. **Scope:** S.
+**Files:** `fabric-audit-agent-app/agent_server/agent.py`, `.../tests/test_agent_server.py`. **Deps:** none. **Scope:** S.
 
 ---
 
-### Task 3 — Agent-app deploy enablement
+### Task 3 — Agent-app deploy enablement (investigate, don't assume)
 
-**Description:** Make sure the redeploy actually ships the new prompt/progress (agent app caches like the
-MCP app did in 3-B).
+**Description:** Ensure the redeploy actually ships the new prompt/progress; the agent app's dependency
+install differs from the MCP app's.
 
 **Acceptance criteria:**
-- [ ] Confirm the agent app's build/deploy cache mechanism (its `requirements.txt`/`app.yaml` under
-  `fabric-audit-agent-app/`); if it caches on a requirements hash, bump its deploy marker so the
-  redeploy reinstalls (the 3-B lesson). If it deploys source directly (no wheel/version cache), no bump.
-- [ ] (Hygiene, optional) bump the `fabric-audit-agent` package version since `system_prompt.py` changed
-  — NOT required for deploy since the MCP app isn't redeployed.
-- [ ] Document in the PR: **deploy the agent app only**; no MCP redeploy.
+- [ ] Inspect `fabric-audit-agent-app/app.yaml` + `pyproject.toml` (hatchling/`uv run`) and determine the
+  real cache-bust lever for `databricks apps deploy` on THIS app — do not assume the MCP `requirements.txt`
+  `# code version:` trick applies (there is no requirements.txt here). Document the confirmed mechanism.
+- [ ] PR notes: **deploy the agent app only; no MCP redeploy** (with the verified consumer list). Note the
+  dead `fabric-audit-agent-py/app/agent.py` so a future deploy audit doesn't get confused; note canonical
+  `system_prompt.py` is now source-of-truth-for-parity (its package isn't the deployed prompt surface).
 
-**Files:** `fabric-audit-agent-app/requirements.txt` (or equivalent), maybe `pyproject.toml`. **Deps:** Tasks 1–2. **Scope:** XS.
+**Files:** docs/PR notes; possibly `fabric-audit-agent-app/pyproject.toml` if a version marker is the lever. **Deps:** 1–2. **Scope:** XS/S.
 
 ---
 
 ### Checkpoint (feature complete)
-- [ ] Both suites green; parity test proves identical prompts.
-- [ ] `_progress_text` leaks no tool name/JSON for any of the 18 tools.
-- [ ] Honesty-guard test green (no caveat dropped).
-- [ ] Ready for opus adversarial final review (attack: does any presentation rule let a caveat be
-  dropped / a mock read as live?).
+- [ ] Both suites green; parity test proves byte-identical prompts; honesty-restoration test green.
+- [ ] `_progress_text` leaks no tool name/JSON for any of the 18 tools; hostile inputs dropped.
+- [ ] Ready for opus adversarial final review — attack lens: can any presentation rule drop a caveat on a
+  load-bearing narrow answer, let a mock read as live, skip ABSTAIN/alternative, or drop the citation?
 
-## Global constraints block (verbatim into implementer + reviewer prompts)
+## Global constraints (verbatim into implementer + reviewer prompts)
 
-- **Presentation-only.** No tool behavior, schema, input_schema, or data-path change. Prompts additive.
-- **Plain-language ≠ less-honest.** Never drop/soften the monitored-CU-proxy, mock-vs-live, truncation,
-  or coverage disclosures; translate flags, never suppress. Read-only-absolute + the three invariants hold.
-- **Prompt parity is mandatory** — the two `_SYSTEM` copies must be byte-identical; the new parity test
-  enforces it.
-- Conventions (Part 1e): data keys camelCase, identifiers snake_case; nullish-not-falsy; stdlib-only;
-  Python ≥3.10. Offline deterministic tests; keep both suites green.
-- Do the work YOURSELF; do not delegate to a nested agent.
-- Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+- **Presentation-only.** No tool behavior/schema/input_schema/data-path change.
+- **Plain-language ≠ less-honest.** Caveats are **per load-bearing claim, not once-per-conversation**;
+  translate flags, never drop; bias-to-act never overrides ABSTAIN/hypothesis; no-tool-names never drops
+  the plain-language citation. Read-only + three invariants hold. **Reconcile prompts canonical→inlined
+  (stronger wins) — never delete a rule to make them match.**
+- Prompt parity mandatory (new text-read test). Conventions (Part 1e): camelCase data / snake_case ids;
+  nullish-not-falsy; stdlib-only; py≥3.10. Offline deterministic tests; keep both suites green.
+- Do the work YOURSELF; no nested agent. Trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
 ## Dependency graph
-
 ```
-Task 1 (prompts + parity) ─┐
-Task 2 (_progress_text)  ──┼─→ Task 3 (deploy enablement)
+Task 1 (reconcile+section+parity/honesty tests) ─┐
+Task 2 (_progress_text) ─────────────────────────┼─→ Task 3 (deploy enablement)
 ```
-Tasks 1 & 2 are independent (different surfaces) but both are small; run 1 then 2 sequentially for
-simplicity. Task 3 last.
+1 then 2 (both touch agent.py; sequential avoids conflicts), then 3.
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| A presentation rule lets the model drop a caveat to read cleaner | High (honesty) | Explicit "translate never drop" wording + honesty-guard test + adversarial review lens |
-| Prompt copies drift | Med | New byte-parity test (reads both files) |
-| Progress hint leaks a raw value / JSON | Low | Whitelist keys + `{`/newline guard + test |
-| Redeploy serves stale prompt (cache) | Med | Task 3 marker bump (3-B lesson) |
+| "Make identical" deletes the drifted-out honesty rules | **Critical (honesty)** | Reconcile canonical→inlined; honesty-restoration test asserts the specific markers on the inlined build |
+| Concise/right-size/caveat drops a load-bearing caveat | High | Per-load-bearing wording + "even if stated earlier" + content test + adversarial review |
+| No-tool-names drops evidence citation | High | Citation-preserved clause + reworded answer line + marker test |
+| Bias-to-act overrides ABSTAIN/hypothesis | High | Explicit carve-out wording + coexistence marker test |
+| Progress hint leaks/format-breaks | Low | Whitelist + `{`/newline + length guard; PII note tied to OBO |
+| Parity test false-green (loose extraction) | Med | Pin to `_SYSTEM = """…"""`, strict whitespace, meta-test, source-not-build |
+| Redeploy serves stale prompt | Med | Task 3 investigates the app's real cache-bust lever (not assumed) |
 
 ## Open questions
-- None blocking. (Voice = concise senior analyst; phrase wording finalized by the user incl.
-  "unusual spikes" and "the query library".)
+- None blocking. Voice + phrase wording finalized by the user.
+
+## Change log (v1 → v2)
+- **Coverage:** added an explicit fix-(5) content marker/AC.
+- **Technical-accuracy:** corrected the "copies identical / TestInlinedLoopParity enforces parity" premise
+  (they've drifted; test is behavioral); reworded Job-reasoner (separate prompt); noted dead `app/agent.py`;
+  Task 3 now investigates the agent app's uv/hatchling deploy cache (no requirements.txt); parity test
+  targets source not `build/lib`.
+- **Opus honesty:** Task 1 now reconciles canonical→inlined restoring lost honesty rules (+ honesty-
+  restoration test); mandated prompt wordings for citation-preserved (fix 1), per-load-bearing caveats
+  (fix 4), and the ABSTAIN/hypothesis carve-out (fix 2); `_progress_text` length cap + PII note.
