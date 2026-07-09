@@ -1,0 +1,107 @@
+[
+  {
+    "scope": "Capacity.Read.All",
+    "purpose": "read capacity state, SKU, and CU info",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "core"
+  },
+  {
+    "scope": "Workspace.Read.All",
+    "purpose": "list workspaces and what's in them",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "core"
+  },
+  {
+    "scope": "Dataset.Read.All",
+    "purpose": "read semantic models + refresh history",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "core"
+  },
+  {
+    "scope": "Tenant.Read.All",
+    "purpose": "tenant-wide metadata across all workspaces",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Report.Read.All",
+    "purpose": "read reports (detect orphaned/stale ones)",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Dashboard.Read.All",
+    "purpose": "read dashboards",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Dataflow.Read.All",
+    "purpose": "read dataflows + their refresh history",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Item.Read.All",
+    "purpose": "read Fabric items (Lakehouses, notebooks, pipelines)",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["restAdmin"],
+    "tier": "gated"
+  },
+  {
+    "scope": "User.ReadBasic.All",
+    "purpose": "turn user IDs into real names/emails",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["attribution"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Group.Read.All",
+    "purpose": "resolve group ownership of workspaces",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["attribution"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Team.ReadBasic.All",
+    "purpose": "find the Teams channel to route alerts to",
+    "grantedBy": "Global Admin",
+    "requiredForSources": ["teamsDelivery"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Reader",
+    "purpose": "look up Azure resources tied to a capacity",
+    "grantedBy": "Azure Admin",
+    "requiredForSources": ["logAnalytics"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Monitoring Reader",
+    "purpose": "read Azure Monitor infra metrics (CPU/throttle)",
+    "grantedBy": "Azure Admin",
+    "requiredForSources": ["logAnalytics"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Log Analytics Reader",
+    "purpose": "query the per-user CPU logs (cost-weighted attribution)",
+    "grantedBy": "Azure Admin",
+    "requiredForSources": ["logAnalytics"],
+    "tier": "gated"
+  },
+  {
+    "scope": "Storage Blob Data Reader",
+    "purpose": "read data stored in Fabric Lakehouses (OneLake)",
+    "grantedBy": "Azure Admin",
+    "requiredForSources": ["oneLake"],
+    "tier": "gated"
+  }
+]
