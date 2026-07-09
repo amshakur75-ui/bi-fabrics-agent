@@ -18,6 +18,7 @@ import os
 from .pipeline import run_audit
 from .config import DEFAULT_CONFIG, merge_config
 from .reasoner_stub import create_stub_reasoner
+from .identity import resolve_identity, emit_identity_audit
 
 _REST_ENV = {
     "capacityUrl": "FABRIC_CAPACITY_URL",
@@ -309,6 +310,26 @@ def build_collector_from_env(env, window=None):
     return create_merged_collector(collectors)
 
 
+def _emit_identity_audit(env):
+    """Label-only identity audit at the primary sweep path (Phase 5.3 Task 2). Resolves the run's
+    primary-path identity via ``resolve_identity`` and emits ONE ``[identity]`` stdout line via
+    ``emit_identity_audit``. This is LABEL-ONLY wiring: the resolved provider is never called
+    here (no token is acquired just for the label), and it is NOT threaded into the six existing
+    SP token-construction sites (``job.py`` x3, ``clients.py`` Log Analytics, ``connectivity.py``,
+    ``tools.py`` run_kql) -- those stay exactly as they are. Activating any non-SP identity for
+    real would require routing ALL SIX of those sites through ``resolve_identity``, or
+    ``runIdentity`` would overstate the identity actually used elsewhere (Phase-7, admin-gated).
+
+    If SP config isn't set yet (e.g. a no-permission CSV-only deployment), there is no
+    primary-path identity to label -- skip silently rather than crash an otherwise-working sweep.
+    """
+    try:
+        resolved = resolve_identity(env)
+    except RuntimeError:
+        return
+    emit_identity_audit(resolved)
+
+
 def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=None,
                     config=None, agent_id="fabric-audit-agent", tenant=None, now=None):
     """Production sweep: audit whatever sources are configured, end to end.
@@ -323,6 +344,7 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
     if config is None:
         raw = env.get("FABRIC_AUDIT_CONFIG")
         config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
+    _emit_identity_audit(env)
     collector = build_collector_from_env(env)
     if reasoner is None:
         reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)

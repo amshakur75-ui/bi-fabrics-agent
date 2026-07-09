@@ -4,12 +4,13 @@ resolve_identity: SP-only env / user_token / label-honesty / missing-config / no
 load_scope_manifest: parses scopes.json; missing file -> [].
 Read-only guard + PERMISSIONS.md <-> scopes.json consistency (no orphan either direction).
 """
+import json
 import os
 import re
 
 import pytest
 
-from fabric_audit_agent.identity import resolve_identity, load_scope_manifest
+from fabric_audit_agent.identity import resolve_identity, load_scope_manifest, emit_identity_audit
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PERMISSIONS_PATH = os.path.join(_REPO_ROOT, "PERMISSIONS.md")
@@ -145,3 +146,27 @@ def test_scopes_json_matches_permissions_md_with_no_orphan_either_direction():
     orphans_in_manifest = actual - expected
     assert not missing_from_manifest, f"in PERMISSIONS.md but not scopes.json: {missing_from_manifest}"
     assert not orphans_in_manifest, f"in scopes.json but not PERMISSIONS.md: {orphans_in_manifest}"
+
+
+# ---- emit_identity_audit (Task 2 -- the [identity] stdout line) ----
+
+def test_emit_identity_audit_prints_exactly_one_identity_line(capsys):
+    resolved = {"provider": lambda: "SHOULD-NEVER-BE-CALLED", "identity": "servicePrincipal",
+                "note": "identity resolved for the primary data path"}
+    emit_identity_audit(resolved)
+
+    captured = capsys.readouterr()
+    lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    assert lines[0].startswith("[identity] ")
+    rec = json.loads(lines[0][len("[identity] "):])
+    assert rec == {"runIdentity": "servicePrincipal", "note": "identity resolved for the primary data path"}
+
+
+def test_emit_identity_audit_never_prints_a_token(capsys):
+    resolved = {"provider": lambda: "SUPER-SECRET-TOKEN-XYZ", "identity": "user",
+                "note": "identity resolved for the primary data path"}
+    emit_identity_audit(resolved)
+
+    captured = capsys.readouterr()
+    assert "SUPER-SECRET-TOKEN-XYZ" not in captured.out

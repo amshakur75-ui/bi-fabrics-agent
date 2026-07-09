@@ -75,6 +75,19 @@ def resolve_identity(env, *, user_token=None, scope=None, sp_provider_factory=No
     }
 
 
+def emit_identity_audit(resolved):
+    """Print ONE ``[identity]`` stdout line naming the run's primary-path identity (Task 2,
+    label-only wiring) -- mirrors ``tools._adhoc_audit_log``'s ``[adhoc-kql]`` pattern.
+
+    ``resolved`` is a ``resolve_identity(...)`` result. Only its ``identity`` label (emitted as
+    ``runIdentity``, per the P7 honesty marker -- the run's PRIMARY-PATH identity, not "every
+    call") and its static ``note`` are emitted. The ``provider`` callable is never invoked here,
+    so no token is acquired just to produce this line, and no token/secret can ever appear in it.
+    """
+    rec = {"runIdentity": resolved["identity"], "note": resolved["note"]}
+    print("[identity] " + json.dumps(rec, ensure_ascii=False, separators=(",", ": ")))
+
+
 def load_scope_manifest(path=None):
     """Load the package-adjacent least-privilege scope manifest (``scopes.json``, next to this
     module by default). Each entry: ``{scope, purpose, grantedBy, requiredForSources, tier}``.
