@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent"
-version = "1.8.0"
+version = "1.8.1"
 description = "Read-only Microsoft Fabric / Power BI capacity & performance audit agent (Python, Databricks-ready)."
 requires-python = ">=3.10"
 dependencies = []   # anthropic / msal / databricks-sdk added as their adapters are ported
@@ -30,6 +30,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["fabric_audit_agent*"]
+
+# Ship the grounded KQL template catalog INSIDE the wheel. Without this, setuptools excludes
+# the non-.py file and `_load_query_library` finds nothing in the installed package (prod), so
+# `query_library` returns 0 templates even though run_kql's firewall is present. (Local tests pass
+# because they read the source tree, not the wheel.)
+[tool.setuptools.package-data]
+fabric_audit_agent = ["query_library.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
