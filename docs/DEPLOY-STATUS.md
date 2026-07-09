@@ -5,8 +5,34 @@
 | Service | URL | Status |
 |---------|-----|--------|
 | **Agent App** (Phase 2) | `https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com` | RUNNING — verified end-to-end 2026-07-01 |
-| **MCP App** (data tools) | `https://mcp-bi-fabrics-auditor-7405609570261849.9.azure.databricksapps.com/mcp` | RUNNING |
+| **MCP App** (data tools) | `https://mcp-bi-fabrics-auditor-7405609570261849.9.azure.databricksapps.com/mcp` | RUNNING — **18 tools + query firewall live (v1.8.1, 2026-07-08)** |
 | **Claude endpoint** | `databricks-claude-opus-4-7` | READY |
+
+## Phase 4 / 3-B — Firewall + 18 tools deployed (2026-07-08)
+
+The MCP app was on pre-firewall `bddbdb8` (16 tools, no `run_kql`/`query_library`); the earlier
+"8 tools" note below was stale. Redeployed `main` → prod now serves **18 tools with the query
+firewall**. Verified live via MCP JSON-RPC `tools/list` + `tools/call` with a CLI OAuth token:
+`run_kql` rejects a denied `union database(...)` at `rejectionStage: denied-operator` (gate active,
+engine never hit); `query_library` returns 21 grounded templates.
+
+Deploy mechanic used (Repo id `1681080764058843`, branch `main`):
+`databricks repos update 1681080764058843 --branch main --dangerously-force-discard-all` →
+`databricks apps deploy mcp-bi-fabrics-auditor --source-code-path <repo>/fabric-audit-agent-py --mode SNAPSHOT`.
+
+**Two deploy bugs caught + fixed during this activation (both would silently ship stale/empty state):**
+1. **No version bump on the firewall merge** — `requirements.txt` hash unchanged ⇒ Databricks skips
+   the pip reinstall ⇒ stale pre-firewall code keeps serving. Fixed by bumping `pyproject` version +
+   the `# code version:` marker in lockstep (`1.7.0`→`1.8.0`). Remember this on EVERY code change.
+2. **`query_library.json` not packaged** — `pyproject` had no `package-data`, so setuptools excluded
+   the file from the wheel ⇒ `_load_query_library` found nothing ⇒ `query_library` returned 0
+   templates in prod (local tests passed against the source tree). Fixed with
+   `[tool.setuptools.package-data] fabric_audit_agent = ["query_library.json"]` + bump `→1.8.1`.
+   Verified the built wheel now contains `fabric_audit_agent/query_library.json`.
+
+**Deferred (still owed):** durable `FABRIC_HISTORY_PATH` (App still on ephemeral `/tmp`; the durable
+App-reads / Job-writes split is its own follow-up) · **B0 secret rotation** (the exposed
+`FABRIC_CLIENT_SECRET`, user's Azure action).
 
 ## Verification (2026-07-01)
 
