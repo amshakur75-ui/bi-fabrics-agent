@@ -286,6 +286,31 @@ def test_rank_expect_abstain_is_majority_false():
     assert out[0]["abstainHintCounts"] == {"true": 1, "false": 3}
 
 
+def test_rank_expect_abstain_tie_resolves_false():
+    # 2-2 tie -> strict majority fails -> False (documented; also matches the scorer reading an
+    # absent key as False, so a tie never over-claims abstain).
+    records = (
+        [_rec("give me diagnostics", abstainedHint=True)] * 2
+        + [_rec("give me diagnostics", abstainedHint=False)] * 2
+    )
+    out = rank_candidates(records, [], min_count=2)
+    assert len(out) == 1
+    assert out[0]["expectAbstain"] is False
+    assert out[0]["abstainHintCounts"] == {"true": 2, "false": 2}
+
+
+def test_rank_expect_tool_tie_breaks_lexicographically():
+    # A 1-1(-1) tool tie resolves to the lexicographically smallest name (deterministic).
+    records = [
+        _rec("why did capacity spike?", ["spike_events"]),
+        _rec("why did capacity spike?", ["investigate_capacity_spike"]),
+        _rec("why did capacity spike?", ["capacity_patterns"]),
+    ]
+    out = rank_candidates(records, [], min_count=3)
+    assert len(out) == 1
+    assert out[0]["expectTool"] == "capacity_patterns"  # min of the three tied names
+
+
 def test_rank_deterministic_order_count_desc_shapekey_asc_tie_break():
     records = (
         [_rec("z question here?", ["tool_a"])] * 2
