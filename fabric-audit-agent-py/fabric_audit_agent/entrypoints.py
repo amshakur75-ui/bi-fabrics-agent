@@ -25,6 +25,9 @@ from .triggers import evaluate_threshold_triggers
 from .lifecycle import set_state
 from .dax import analyze_dax
 from .query.mine import parse_audit_lines, rank_candidates, to_library_entries
+from .eval.mine_evals import (
+    parse_conversation_lines, rank_candidates as rank_eval_candidates, to_eval_skeletons,
+)
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENT_ID = "fabric-audit-agent"
@@ -344,3 +347,122 @@ def run_mine_queries_cli(rest, base_dir=None, library_path=None) -> str:
     names = ", ".join(e["name"] for e in entries)
     plural = "y" if len(entries) == 1 else "ies"
     return f"Wrote {len(entries)} new quer{plural} to {lib_path}: {names}"
+
+
+# ---- mine-evals (eval-flywheel growth loop, Phase 5.4b Task 2: the CLI seam) ----
+#
+# PREVIEW-ONLY, deliberately -- unlike mine-queries there is no --write flag at all. A mined
+# skeleton's ``script`` is never fabricated (see eval/mine_evals.py); appending an unedited
+# skeleton to agent_cases.json would silently corrupt the golden suite (the scorer bracket-
+# accesses ``case["script"]`` and iterates it -- see ``score_agent_case``), so this CLI only ever
+# prints candidates for a human to author real replay scripts for. No file is ever mutated here.
+
+_DEFAULT_AGENT_CASES_NAME = "agent_cases.json"
+
+
+def _resolve_agent_cases_path(cases_path=None):
+    """The path read for existing-case dedup. ``cases_path`` wins (tests); otherwise the
+    package-adjacent ``eval/agent_cases.json`` ships -- the same file ``score_agent_case`` scores
+    (see score_investigations.py's ``_AGENT_CASES``)."""
+    if cases_path is not None:
+        return cases_path
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", _DEFAULT_AGENT_CASES_NAME)
+
+
+def _read_agent_cases_from(path):
+    """Load golden agent cases from *path*, tolerantly: a missing or malformed file degrades to
+    ``[]`` rather than raising. There is no strict write-guard counterpart here (unlike
+    ``_library_write_base`` in mine-queries) because mine-evals never writes to this path."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _mine_evals_no_candidates_message(min_count):
+    return (
+        f"No promotable conversation shapes found (need >= {min_count} repeat(s) of a new, "
+        "not-already-in-agent_cases.json conversation shape)."
+    )
+
+
+# The preview header (verbatim, per the eval-miner spec): skeletons are candidates, not finished
+# cases -- a human must author a real script, verify the abstain token requirement, and strip the
+# non-schema `_minedFrom` provenance before committing the case.
+_MINE_EVALS_HEADER = (
+    "These are CANDIDATE skeletons, not finished eval cases. Before adding any of them to\n"
+    "agent_cases.json you MUST:\n"
+    "  1. Author a real `script` -- the placeholder below ERRORS if scored unedited.\n"
+    "  2. For expectAbstain: true, make sure the script's final text block contains one of:\n"
+    "     can't / cannot / insufficient / \"enable monitoring\" / abstain (the scorer's abstain\n"
+    "     check -- score_agent_case, score_investigations.py).\n"
+    "  3. Delete the `_minedFrom` key (non-schema provenance for your review only).\n"
+    "`expectTool` / `expectAbstain` are UNVERIFIED hints mined from observed traffic -- see each\n"
+    "skeleton's `_minedFrom.observedTools` / `_minedFrom.abstainHintCounts` for the vote spread."
+)
+
+
+def _mine_evals_format_preview(ranked, skeletons, logfile):
+    lines = [
+        f"Found {len(skeletons)} promotable conversation shape(s) in {logfile} "
+        "(preview only -- nothing written):",
+        "",
+        f'{"rank":>4}  {"hitCount":>8}  {"abstain":>7}  {"tool":<24}  question',
+    ]
+    for i, cand in enumerate(ranked, start=1):
+        tool = cand.get("expectTool") or "-"
+        lines.append(
+            f'{i:>4}  {cand["hitCount"]:>8}  {str(cand["expectAbstain"]):>7}  {tool:<24}  {cand["question"]}'
+        )
+    lines.append("")
+    lines.append(_MINE_EVALS_HEADER)
+    lines.append("")
+    lines.append("Ready-to-paste eval-case skeletons:")
+    for sk in skeletons:
+        lines.append(json.dumps(sk, indent=2, ensure_ascii=False))
+    return "\n".join(lines)
+
+
+def run_mine_evals_cli(rest, base_dir=None, cases_path=None) -> str:
+    """``mine-evals`` CLI: mine the ``[conversation]`` audit log (5.4a) for repeated, not-already-
+    covered question shapes and print candidate golden agent-eval SKELETONS for
+    ``eval/agent_cases.json``. PREVIEW-ONLY -- there is no ``--write``; this command never mutates
+    any file.
+
+    ``rest`` is the CLI arg list: positional ``logfile`` (``-`` = stdin), ``--min-count`` (default
+    2), ``--top`` (default 20). Never raises for user-facing failures (a bad arg list or a missing
+    logfile returns a clean error string). ``base_dir`` is accepted for signature parity with the
+    other ``run_*_cli`` helpers but is not used -- ``agent_cases.json`` is package data, resolved
+    via ``cases_path`` (test override) or the package-adjacent default.
+    """
+    parser = _MineArgParser(prog="mine-evals", add_help=False)
+    parser.add_argument("logfile")
+    parser.add_argument("--min-count", type=int, default=2)
+    parser.add_argument("--top", type=int, default=20)
+    try:
+        args = parser.parse_args(list(rest))
+    except _MineArgError as exc:
+        return f"mine-evals: {exc}"
+
+    resolved_cases_path = _resolve_agent_cases_path(cases_path)
+    existing_cases = _read_agent_cases_from(resolved_cases_path)
+
+    if args.logfile == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            with open(args.logfile, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            return f"mine-evals: could not read log file {args.logfile!r}: {exc.strerror or exc}"
+
+    records = parse_conversation_lines(text.splitlines())
+    ranked = rank_eval_candidates(records, existing_cases, min_count=args.min_count, top_n=args.top)
+    skeletons = to_eval_skeletons(ranked, existing_cases)
+
+    if not skeletons:
+        return _mine_evals_no_candidates_message(args.min_count)
+
+    return _mine_evals_format_preview(ranked, skeletons, args.logfile)

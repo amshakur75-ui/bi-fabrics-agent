@@ -10,6 +10,8 @@
   dax "<measure>"                 DAX anti-pattern analysis
   mine-queries <file|-> [opts]    grow query_library.json from the [adhoc-kql] audit log
                                   (preview by default; opts: --min-count N --top N --write)
+  mine-evals <file|-> [opts]      mine candidate agent-eval skeletons from the [conversation]
+                                  audit log (preview-only; opts: --min-count N --top N)
   import <file> [...]             import CSV/.vpax exports + diagnose
   inspect <file.csv>              safe per-column stats
   mytest                          re-diagnose my-estate.json
@@ -65,6 +67,8 @@ def main(argv=None):
         print(ep.run_dax_cli(" ".join(rest)))
     elif cmd == "mine-queries":
         print(ep.run_mine_queries_cli(rest))
+    elif cmd == "mine-evals":
+        print(ep.run_mine_evals_cli(rest))
     elif cmd == "import":
         print(run_import(rest))
     elif cmd == "inspect":
