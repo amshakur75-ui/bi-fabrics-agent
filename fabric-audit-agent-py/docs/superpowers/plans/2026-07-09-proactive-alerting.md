@@ -175,3 +175,6 @@ Task 3 (delivery_email.py)             ┘
   - NICE-7 store snapshot contract → stated + mutating-store test (Task 4).
   - NICE-8 first-run baseline honesty → `reason="baseline"` + caveat-bearing subject (Task 1/3).
   - NICE-9 `changes` vs `min_level` → `changes` lists only qualifying keys (Task 1).
+
+## Opus final review (whole-branch, adversarial) — SHIP
+No Critical, no Major. All invariants verified HELD (read-only absolute; exfil gate on every path incl. self-gate backstop; recipients from `SMTP_TO` only; send-only-when-configured with the sink as sole owner; failure isolation; no secrets/real IDs). `decide_alert` key-reading (envelope `score.level` vs history flat `level`), snooze-safe union, SLA-increase-only, verdict ordinal, first-run baseline, None-safe fields all confirmed correct; pipeline verdict-relocation confirmed behavior-neutral. One MINOR addressed post-review: added `test_local_store_history_returns_immutable_snapshot` to defend the history()-immutable-snapshot contract on the real prod store (the local store already re-reads from disk; the contract now has a defending test).
