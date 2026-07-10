@@ -172,28 +172,43 @@ def _build_failure_delivery(env):
 
 def _alert_failure(exc, env, now_iso=None):
     """Post a minimal failure card so a crashed sweep is never silent. Never raises; never
-    masks the original error (caller re-raises regardless of the return value)."""
-    if not env.get("TEAMS_WEBHOOK_URL"):
-        return False
+    masks the original error (caller re-raises regardless of the return value). Routes to BOTH
+    the existing Teams path (→ Phase 7 broadens this) and the Phase 6 email channel; each is
+    independently gated, failure-isolated, and inert unless its channel is configured."""
+    from datetime import datetime, timezone
+    at = now_iso if now_iso is not None else datetime.now(timezone.utc).isoformat()
+    # build_teams_card reads ONLY envelope["summary"]/["data"] — the error text MUST be inside
+    # summary, or the production card silently drops the diagnostic payload.
+    card = {"summary": (f"⚠️ fabric-audit sweep FAILED at {at}: "
+                        f"{type(exc).__name__}: {exc}")}
+    delivered = False
+
+    # Teams path (existing; inert unless TEAMS_WEBHOOK_URL is set).
+    if env.get("TEAMS_WEBHOOK_URL"):
+        try:
+            from .egress import apply_egress_controls, disclosure_line
+            # Egress chokepoint (Phase 5.2): the failure card is an outbound surface too — a secret
+            # leaking into an exception message must still be masked before it is posted.
+            safe, meta = apply_egress_controls(card, sink="failure")
+            line = disclosure_line(meta)
+            if line and isinstance(safe, dict):
+                safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
+            _build_failure_delivery(env)["deliver"](safe)
+            delivered = True
+        except Exception:
+            pass
+
+    # Email path (Phase 6; inert unless SMTP is configured). Routed through the outbound allowlist,
+    # which gates the card before the email adapter (which self-gates again) sends it.
     try:
-        from datetime import datetime, timezone
-        from .egress import apply_egress_controls, disclosure_line
-        at = now_iso if now_iso is not None else datetime.now(timezone.utc).isoformat()
-        delivery = _build_failure_delivery(env)
-        # build_teams_card reads ONLY envelope["summary"]/["data"] — the error text MUST be
-        # inside summary, or the production card silently drops the diagnostic payload.
-        card = {"summary": (f"⚠️ fabric-audit sweep FAILED at {at}: "
-                             f"{type(exc).__name__}: {exc}")}
-        # Egress chokepoint (Phase 5.2): the failure card is an outbound surface too — a
-        # secret leaking into an exception message must still be masked before it is posted.
-        safe, meta = apply_egress_controls(card, sink="failure")
-        line = disclosure_line(meta)
-        if line and isinstance(safe, dict):
-            safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
-        delivery["deliver"](safe)
-        return True
+        from .outbound import dispatch_outbound
+        from .adapters.delivery_email import create_email_delivery
+        res = dispatch_outbound("email_notify", card, sinks={"email": create_email_delivery(env)})
+        delivered = delivered or res["delivered"]
     except Exception:
-        return False
+        pass
+
+    return delivered
 
 
 def main():
@@ -352,10 +367,31 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
         delivery = _csv_delivery(env)
     if store is None:
         store = _default_store(env)
+    # Capture history BEFORE run_audit — the pipeline appends the current run to the store during
+    # the run (pipeline.py), so store["history"]() afterward would include it. decide_alert needs
+    # the PREVIOUS run to detect resolved/verdict/SLA change against.
+    prev_history = store["history"]()
     envelope = run_audit(collector, reasoner, delivery, store=store, config=config,
                          agent_id=agent_id, tenant=tenant, now=now)
     _write_outputs(out_dir, envelope)
+    _maybe_alert(envelope, prev_history, env)
     return envelope
+
+
+def _maybe_alert(envelope, prev_history, env):
+    """Phase 6: on a MATERIAL change vs the previous run, surface an alert via the outbound
+    allowlist (email; inert unless SMTP configured). Failure-isolated — an alert-path error must
+    never fail the sweep. Read-only: this surfaces findings, it never acts."""
+    try:
+        from .automation.alerting import decide_alert
+        from .outbound import dispatch_outbound
+        from .adapters.delivery_email import create_email_delivery
+        decision = decide_alert(envelope, prev_history)
+        if decision["alert"]:
+            dispatch_outbound("email_notify", envelope, sinks={"email": create_email_delivery(env)})
+        return decision
+    except Exception:
+        return None
 
 
 def job_main():

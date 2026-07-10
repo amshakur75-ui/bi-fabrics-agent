@@ -51,6 +51,19 @@ def test_local_store_append_roundtrip_and_trim(tmp_path):
     assert [r["runAt"] for r in store["history"]()] == ["2", "3"]
 
 
+def test_local_store_history_returns_immutable_snapshot(tmp_path):
+    # Phase 6 contract: history() MUST return a fresh snapshot so a captured prev_history is not
+    # retroactively mutated by a later in-run append. decide_alert (resolved/verdict/SLA change)
+    # relies on run_unified_job capturing prev_history before run_audit appends the current run;
+    # if history() returned a live reference, that capture would be silently corrupted.
+    store = create_local_store(str(tmp_path / "h" / "hist.json"))
+    store["append"]({"runAt": "1"})
+    snap = store["history"]()
+    store["append"]({"runAt": "2"})
+    assert snap == [{"runAt": "1"}]                          # earlier snapshot unaffected by later append
+    assert store["history"]() is not store["history"]()      # a fresh object each call
+
+
 def test_local_store_append_is_atomic_no_tmp_residue(tmp_path):
     hist_path = tmp_path / "h" / "hist.json"
     store = create_local_store(str(hist_path))
