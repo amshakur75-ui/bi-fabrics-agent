@@ -61,7 +61,7 @@ Make the scheduled sweep proactive: after each run, decide whether a **material 
 
 ## Task 2 — `outbound.py` typed allowlist `dispatch_outbound` + tests
 **Description:** The typed outbound-action registry (the 5.3-C item, landing with its first consumer). Enforces "typed allowlist, never open-ended", carries the egress disclosure, and routes every payload through the egress gate.
-**Interface:** `dispatch_outbound(action_type, payload, env, *, sinks) -> {"dispatched": bool, "actionType": str, "disclosure": str|None, "reason": str|None}`.
+**Interface:** `dispatch_outbound(action_type, payload, *, sinks) -> {"dispatched": bool, "actionType": str, "disclosure": str|None, "reason": str|None}`. *(v2-impl note: `env` dropped from the signature — enablement is static and the sink, built with `env` by the caller, owns runtime config; `dispatch_outbound` has no use for `env`, so carrying it would be an unused param.)*
 - Registry: module-level typed dict with **STATIC** enablement — `email_notify` → enabled (permitted type); `teams_notify`, `ado_create_ticket` → **registered but DISABLED (→ Phase 7)**. `dispatch_outbound` does NOT read `SMTP_*` — the sink owns configured-vs-inert (single source of truth).
 - Unknown or disabled type → refuse (`dispatched:False`, `reason`), send nothing, never raise on refusal.
 - Enabled path (in order): `safe, meta = apply_egress_controls(payload, sink="alert")`; `line = disclosure_line(meta)`; if `line` and `safe` is a dict, `safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()` (mirror `pipeline.py:167-169`); **then** `sinks["email"]["deliver"](safe)`; return `disclosure=line`.
@@ -103,7 +103,7 @@ Make the scheduled sweep proactive: after each run, decide whether a **material 
 ## Task 4 — Job wiring in `run_unified_job` (+ dead-man's-switch through the allowlist) + tests
 **Description:** Wire alerting into the scheduled sweep, failure-isolated, using previous-run history.
 **Changes (`job.py`):**
-- In `run_unified_job`: **before** `run_audit`, `prev_history = store["history"]()`. After the envelope, `decision = decide_alert(envelope, prev_history)`; if `decision["alert"]`, build `sinks = {"email": create_email_delivery(env)}` and `dispatch_outbound("email_notify", envelope, env, sinks=sinks)`. Wrap the whole alert block in try/except that logs and swallows (an alert-path error NEVER fails the sweep). Return the envelope unchanged.
+- In `run_unified_job`: **before** `run_audit`, `prev_history = store["history"]()`. After the envelope, `decision = decide_alert(envelope, prev_history)`; if `decision["alert"]`, build `sinks = {"email": create_email_delivery(env)}` and `dispatch_outbound("email_notify", envelope, sinks=sinks)`. Wrap the whole alert block in try/except that logs and swallows (an alert-path error NEVER fails the sweep). Return the envelope unchanged.
 - **Do NOT** add a separate `run_diagnosis`/re-investigation call — the envelope already carries the deep analysis (spec §2). (Negative check to prevent reintroducing the redundancy.)
 - `_alert_failure` (dead-man's-switch): keep its existing gated Teams path unchanged; **ADDITIONALLY** dispatch `email_notify` via `dispatch_outbound` (inert unless SMTP configured) — addition, not replacement. The failure card is a minimal `{"summary": ...}` dict; `build_markdown_report` tolerates it and the email subject falls back to `summary`. Keep it independent of the main alert path and failure-isolated.
 - No change to the read-only pipeline logic, tool count, or MCP surface.
