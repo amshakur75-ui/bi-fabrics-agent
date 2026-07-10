@@ -42,6 +42,11 @@ resources:
             spark_version: 15.4.x-scala2.12
             node_type_id: ${var.node_type_id}
             num_workers: 0                 # single node
+            spark_conf:                    # required so num_workers:0 is a valid single-node cluster
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
             data_security_mode: SINGLE_USER   # required for Unity Catalog Volume access
             spark_env_vars:
               FABRIC_CSV_PATHS: /Volumes/${var.catalog}/${var.schema}/raw/capacity_metrics/data.csv
