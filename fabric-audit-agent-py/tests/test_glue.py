@@ -92,6 +92,9 @@ def test_run_audit_with_store_appends_history():
                     store=store, agent_id="a", now="2026-06-11T00:00:00Z")
     assert len(appended) == 1 and appended[0]["tenant"] == "Acme"
     assert env["data"]["roadmap"]
+    # Phase 6: the appended run records verdict + SLA state for alert-on-change comparison.
+    assert appended[0]["verdictDecision"] == env["data"]["verdict"]["decision"]
+    assert appended[0]["slaBreachedCount"] == (env["data"].get("sla") or {}).get("breachedCount", 0)
 
 
 # ---- pipeline egress chokepoint (Phase 5.2 Task 2): delivered payload gated, return stays full ----

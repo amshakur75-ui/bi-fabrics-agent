@@ -87,6 +87,9 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
     digest = forecast = outcomes = None
     anomalies = []
     peak = (facts.get("capacity") or {}).get("peakCuPct")
+    # Verdict is a pure function of facts+flags; compute it here (once) so the run-history append
+    # below can record its decision for the Phase 6 alert-on-change comparison. Reused at d["verdict"].
+    verdict = build_capacity_verdict(facts, flags)
 
     if store:
         history = store["history"]()
@@ -102,6 +105,10 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
             "runAt": run_at,
             "tenant": resolved_tenant,
             "metrics": {"peakCuPct": peak},
+            # verdictDecision + slaBreachedCount let Phase 6 decide_alert detect verdict changes and
+            # SLA-breach increases against the previous run. Additive; older records omit them.
+            "verdictDecision": verdict["decision"],
+            "slaBreachedCount": summarize_sla(findings)["breachedCount"],
             "findings": [
                 *[{"key": f.get("key"), "level": f["score"]["level"], "where": f.get("where"), "what": f.get("what"), "suppressed": False} for f in findings],
                 *[{"key": f.get("key"), "level": f["score"]["level"], "where": f.get("where"), "what": f.get("what"), "suppressed": True} for f in suppressed],
@@ -119,7 +126,6 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
     # Confidence — deterministic detections = high; Claude-enriched = medium; meta/errors = low.
     findings = [{**f, "confidence": score_confidence(f)} for f in findings]
 
-    verdict = build_capacity_verdict(facts, flags)
     health_score = build_health_score(findings)
     roadmap = build_roadmap(findings)
     correlations = correlate(findings)
