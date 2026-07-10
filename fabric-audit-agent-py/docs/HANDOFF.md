@@ -302,7 +302,9 @@ Phases run in order; each is its own brainstorm → spec → plan → 3 reviewer
 ### Phase 6 — Proactivity & Alerting (read-only autonomy; needs Phase 5 anti-exfil)
 - **Watchdog Job:** harden the scheduled sweep into an always-on monitor (dead-man's-switch already exists).
 - **Autonomy:** self-triggered observe → investigate → deduce → surface, without a human prompt. Hard line: never auto-act; remediation stays forbidden.
-- **Activator / Teams alerts:** delivery adapter (Fabric Data Activator / Teams webhook). Publishing → explicit auth + anti-exfil redaction + derived only from read-only data. Alert de-dup/state uses 3-B's interim store until Phase 8's durable memory upgrades it.
+- **Alert-on-change decision** (reuse `whats_changed`/digest/history): alert only on a MATERIAL change vs the last run (new/escalated/resolved finding, verdict change, SLA breach) — low-noise. All outbound via the typed outbound-action allowlist (the 5.3-C item lands here) + the 5.2 egress gate.
+- **Email alerts (P6 channel):** `adapters/delivery_email.py` (stdlib SMTP), INERT until `SMTP_*` env is set — no admin consent. This is the P6 delivery channel.
+- **Activator / Teams alerts → MOVED to Phase 7** (2026-07-09, user): the Teams webhook / Data Activator setup is an admin/authorization item, so it activates in P7 alongside the other permission grants; `delivery_teams.py` already exists but stays unused by P6.
 
 ### Phase 7 — Authoritative Data + Authorizations (gated — org / data unlocks + admin grants; parallelizable as gates open)
 - **FUAM collector** (3-C) — authoritative per-item CU + owner.
@@ -310,6 +312,7 @@ Phases run in order; each is its own brainstorm → spec → plan → 3 reviewer
 - **Authoritative CU unlock** (3-E) — the north star: verdict flips from indicative → authoritative.
 - **semantic-link-labs spike** (3-F) — VertiPaq/BPA model-bloat analyzer; spike → ADD or SKIP.
 - **ADO ticketing + change-correlation** (3-G) — "what deployed right before the spike."
+- **Teams / Activator alert activation + Graph `sendMail`** (moved from P6, 2026-07-09) — the admin-consent alert channels: the Teams webhook / Fabric Data Activator, and Graph `Mail.Send` if email ever moves off SMTP. Enable the corresponding types in the P6 outbound-action allowlist when the grant lands.
 - **Identity & permission activations (light up the Phase-5 plumbing):** provision the Entra Agent Identity (Blueprint → BlueprintPrincipal → Agent Identity, tenant-admin) + least-privilege role grants; enable the Databricks **"User authorization for Apps"** toggle (per-user OBO on the Databricks plane); the approach-A Entra OIDC sign-in bridge + Entra-OBO-to-Fabric delegated consent; the ADO outbound grant. Each is a separate admin gate — ask before starting.
 
 ### Phase 8 — Durable Memory (after authoritative data, deliberately)
