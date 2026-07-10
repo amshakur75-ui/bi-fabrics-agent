@@ -80,6 +80,19 @@ def test_caller_payload_not_mutated():
     assert payload == before   # deep-copied inside the gate; caller object untouched
 
 
+def test_delivered_reflects_sink_noop():
+    # A sink reporting {"delivered": False} (e.g. unconfigured email) → dispatched True, delivered False.
+    noop_sink = {"deliver": lambda e: {"delivered": False, "reason": "unconfigured"}}
+    out = dispatch_outbound("email_notify", _envelope(), sinks={"email": noop_sink})
+    assert out["dispatched"] is True and out["delivered"] is False
+
+
+def test_delivered_true_when_sink_sends():
+    _, sink = _capturing_sink()   # returns None -> assumed delivered
+    out = dispatch_outbound("email_notify", _envelope(), sinks={"email": sink})
+    assert out["dispatched"] is True and out["delivered"] is True
+
+
 def test_registry_has_no_data_mutating_action_type():
     # Outbound is surface-only: nothing that writes/scales/refreshes/deletes may be registrable.
     forbidden = ("delete", "scale", "refresh", "write", "update", "restart", "resume", "pause")

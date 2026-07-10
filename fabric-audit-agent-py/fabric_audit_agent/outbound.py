@@ -22,15 +22,18 @@ _ALLOWLIST = {
 
 
 def _refuse(action_type, reason):
-    return {"dispatched": False, "actionType": action_type, "disclosure": None, "reason": reason}
+    return {"dispatched": False, "delivered": False, "actionType": action_type,
+            "disclosure": None, "reason": reason}
 
 
 def dispatch_outbound(action_type, payload, *, sinks):
     """Gate *payload* and hand it to the sink for *action_type*, iff that type is allowed+enabled.
 
-    Returns ``{"dispatched": bool, "actionType": str, "disclosure": str|None, "reason": str|None}``.
-    A refusal (unknown/disabled type, or missing sink) never raises and never sends. Runtime
-    configured-vs-inert is the sink's responsibility, so this routes purely over the allowlist.
+    Returns ``{"dispatched": bool, "delivered": bool, "actionType": str, "disclosure": str|None,
+    "reason": str|None}``. ``dispatched`` = the payload passed the allowlist+gate and reached the
+    sink; ``delivered`` = the sink reported an actual send (a sink may no-op when unconfigured, e.g.
+    email without SMTP set). A refusal (unknown/disabled type, or missing sink) never raises and
+    never sends. Runtime configured-vs-inert is the sink's responsibility.
     """
     spec = _ALLOWLIST.get(action_type)
     if spec is None:
@@ -48,5 +51,9 @@ def dispatch_outbound(action_type, payload, *, sinks):
     line = disclosure_line(meta)
     if line and isinstance(safe, dict):
         safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
-    sink["deliver"](safe)
-    return {"dispatched": True, "actionType": action_type, "disclosure": line, "reason": None}
+    result = sink["deliver"](safe)
+    # A sink that returns a {"delivered": ...} status (email) reports whether it actually sent;
+    # a sink that returns nothing is assumed to have delivered.
+    delivered = result.get("delivered", True) if isinstance(result, dict) else True
+    return {"dispatched": True, "delivered": bool(delivered), "actionType": action_type,
+            "disclosure": line, "reason": None}
