@@ -49,8 +49,19 @@ resources:
               AUDIT_HISTORY_PATH: /Volumes/${var.catalog}/${var.schema}/reports/history/history.json
               # --- Uncomment each line AFTER you create the matching secret (see PHASE3-DATABRICKS.md) ---
               # DATABRICKS_CLAUDE_ENDPOINT: "databricks-claude-3-7-sonnet"   # in-tenant Claude (confirm name under Serving)
-              # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
+              # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"   # Teams alerts -> Phase 7
               # ANTHROPIC_API_KEY: "{{secrets/fabric-audit/ANTHROPIC_API_KEY}}"
+              # --- Phase 6 email alerts. Email stays INERT until BOTH SMTP_HOST and SMTP_TO resolve.
+              #     Create the secrets first (see below), then uncomment and redeploy. Referencing a
+              #     missing secret makes the cluster fail to start, so do NOT uncomment before the
+              #     secret scope holds every key you enable. SMTP_PASSWORD MUST be a secret (never a literal).
+              # SMTP_HOST: "{{secrets/fabric-audit/SMTP_HOST}}"
+              # SMTP_PORT: "587"
+              # SMTP_FROM: "{{secrets/fabric-audit/SMTP_FROM}}"
+              # SMTP_TO: "{{secrets/fabric-audit/SMTP_TO}}"
+              # SMTP_USER: "{{secrets/fabric-audit/SMTP_USER}}"
+              # SMTP_PASSWORD: "{{secrets/fabric-audit/SMTP_PASSWORD}}"
+              # SMTP_STARTTLS: "true"
               # --- When permissions land, add the SP + live-source config and redeploy ---
               # FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
               # FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
