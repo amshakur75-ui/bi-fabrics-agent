@@ -41,7 +41,7 @@ Escalation ladder: Metrics-app-equivalent (fast, 14d) → FUAM (long history) �
 → activity logs/semantic-link-labs (who). Throttle bands 10min/60min/24h; `capacityThrottlingMs > 0`
 isolates throttled ops in Workspace Monitoring.
 
-## Design — five components
+## Design — six components
 
 ### 1. The gated investigation loop (agent app — the core build)
 Replace the freestyle loop with a **9-step disciplined loop**, implemented as (a) a structured
@@ -96,10 +96,14 @@ demands):
   cover — e.g. the `XmlaRequestId → capacityThrottlingMs` join, `EventText` DAX-pattern inspection,
   day/week binned recurrence KQL. **New: promote verified investigation queries into `query_library`**
   (throttle-join, recurrence-binning, top-user-per-item templates) so Tier 2 is trained, not improvised.
-- **Tier 3 — direct Fabric/Power BI REST** (`fabric_direct.py`, extend): read-only GET allowlist grows —
-  dataset refresh **schedule** (contention analysis), datasets/dataflows in workspace, capacity state,
-  (gated) admin activity events for tenant-wide "who" corroboration. Model chooses tools-vs-direct per
-  task; direct is how it "works in Fabric/Power BI itself."
+- **Tier 3 — direct Fabric/Power BI REST + Azure Log Analytics** (`fabric_direct.py`, extend): read-only
+  GET allowlist grows — dataset refresh **schedule** (contention analysis), datasets/dataflows in
+  workspace, capacity state, (gated) admin activity events for tenant-wide "who" corroboration. PLUS
+  **direct Azure Log Analytics querying** (user addition): firewalled ad-hoc KQL against the LA workspace
+  (`PowerBIDatasetsWorkspace` table) — the long-retention twin of Workspace Monitoring, essential for
+  month-over-month recurrence beyond the 30-day WM window. Same KQL firewall as `run_kql`; read-only
+  query API only. Model chooses tools-vs-direct per task; direct is how it "works in Fabric/Power BI
+  itself."
 - **Tier 4 — FUAM + VertiPaq** (gated/deferred): FUAM lakehouse = long history + item→owner
   (`configuredBy`) — existing B3/3-C gate; VertiPaq `.vpax` = human-in-the-loop (agent analyzes a provided
   file; generating one live is a Phase-7+ notebook-runner question).
@@ -107,7 +111,20 @@ Schema names from the practitioner write-up (`ItemName` vs `ArtifactName`, `inte
 capacity-events threshold fields, SP-blocked Metrics app) are **verified against Microsoft docs during
 implementation before any gate hard-codes them**.
 
-### 5. Remediation engine (literal fixes)
+### 5. Investigative thinking — reason like an engineer chasing an answer (user addition)
+The loop must not read as mechanical gate-ticking. The playbook instructs the agent to think and narrate
+like a senior architect/engineer mid-chase: state what it **wonders** ("two things could explain this
+spike…"), what it **suspects and why**, why it checks *this* signal *next*, what each result lets it
+**deduce or discard**, and what it now understands that it didn't before. Deduction is explicit
+("refreshes were quiet in that window, so background load can't be the driver — that leaves interactive"),
+surprises are acknowledged, and dead ends are named as findings ("ruled out X, which matters because…").
+The final answer of an investigation gives the **full understanding** — what happened, why, how it was
+established, what was ruled out, and the fix — while simple lookups keep the lean default. This is a
+PRESENTATION-and-REASONING layer on top of the gates: the gates guarantee honesty; this guarantees the
+reasoning is genuinely followed and visible, the way a real engineer walks a stakeholder through a
+root-cause chase.
+
+### 6. Remediation engine (literal fixes)
 Extend the existing KB (`kb/*.py` playbooks, ~per-type rootCause/fixes/owner) so every confirmed root
 cause maps to a **named** fix (the column/measure/schedule/SKU — not "consider reviewing your model"),
 including the research-verified fixes (stagger refreshes out of peak, incremental refresh, aggregations,
