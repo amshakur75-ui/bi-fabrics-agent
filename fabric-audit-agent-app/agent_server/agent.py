@@ -461,6 +461,14 @@ def _conversation_audit_log(question, trajectory, text):
 async def _run(request, on_tool=None):
     ws = get_user_workspace_client()
     tools, dispatch = await _mcp_tools_and_dispatch(ws)
+    # Feature 2: add the direct read-only Fabric REST tools ALONGSIDE the MCP tools, so the model can
+    # choose the best path per task. Inert (adds nothing) unless the SP creds are configured, so the
+    # MCP path is unaffected when direct access isn't set up.
+    from .fabric_direct import direct_tools_and_dispatch
+    direct_tools, direct_dispatch = direct_tools_and_dispatch(os.environ)
+    if direct_tools:
+        tools = tools + direct_tools
+        dispatch = {**dispatch, **direct_dispatch}
     messages = _messages_from_request(request)
     result = await _run_tool_loop(
         _build_claude_client(ws), model=_MODEL, system=_SYSTEM,
@@ -510,6 +518,11 @@ _PROGRESS_PHRASES = {
     "whats_changed": "comparing against the last run",
     "run_kql": "running a read-only query",
     "query_library": "checking the query library",
+    # Direct Fabric REST tools (Feature 2) — same no-tool-name-leak wording.
+    "fabric_list_workspaces": "listing the workspaces",
+    "fabric_list_items": "checking what's in that workspace",
+    "fabric_list_capacities": "listing the capacities",
+    "fabric_dataset_refresh_history": "checking the refresh history",
 }
 _PROGRESS_DEFAULT = "working on it…"
 
