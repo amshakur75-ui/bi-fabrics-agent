@@ -3,7 +3,7 @@ import useSWR from 'swr';
 import { fetcher } from '@/lib/utils';
 
 export const DEFAULT_GREETING =
-  "👋 I'm CAMP — your read-only Fabric & Power BI capacity analyst. Pick something below to get started, or just ask.";
+  "👋 I'm Newell — your read-only Fabric & Power BI capacity analyst. Pick something below to get started, or just ask.";
 
 interface ConfigResponse {
   features: {

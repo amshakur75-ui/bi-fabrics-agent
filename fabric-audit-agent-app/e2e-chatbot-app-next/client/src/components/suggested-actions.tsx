@@ -26,6 +26,11 @@ const CAMP_CAPABILITIES: { label: string; prompt: string }[] = [
   { label: '🔄 Dataset refresh history', prompt: 'Check dataset refresh history — ask me which dataset.' },
   { label: '🏆 Top resource consumers', prompt: 'Identify the top resource consumers on the capacity.' },
   { label: '📝 Summarize audit logs', prompt: 'Summarize the recent audit logs and anything notable.' },
+  { label: '🔀 What changed since last run', prompt: 'What changed on the capacity since the last audit?' },
+  { label: '🩺 Diagnose an issue', prompt: 'Diagnose a capacity issue — ask me for the symptom if you need it.' },
+  { label: '📈 Forecast throttling risk', prompt: 'Forecast whether and when the capacity is likely to throttle.' },
+  { label: '🧮 Analyze a DAX measure', prompt: 'Analyze a DAX measure for anti-patterns — ask me to paste it.' },
+  { label: '🗺️ List capacities & workspaces', prompt: 'List the Fabric capacities and workspaces you can see.' },
 ];
 
 function PureSuggestedActions({ chatId, sendMessage }: SuggestedActionsProps) {
