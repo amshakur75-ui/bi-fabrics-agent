@@ -563,6 +563,14 @@ def _progress_text(name, inp):
     return f"🔎 {phrase}{_scope_hint(inp)}"
 
 
+def _progress_line(name, inp):
+    # Streamed progress line: an animated-feel "…" working indicator, plus a trailing paragraph break
+    # so each check STACKS on its own line. The chat UI merges consecutive text items into one block,
+    # so without the break the checks run together on a single line ("🔎 A 🔎 B"); the "\n\n" makes
+    # them drop underneath one another as they arrive, like a normal running list.
+    return f"{_progress_text(name, inp)} …\n\n"
+
+
 @stream()
 async def stream_handler(request: ResponsesAgentRequest):
     """Emit a progress event per tool call, then the final answer. A multi-step investigation
@@ -583,7 +591,7 @@ async def stream_handler(request: ResponsesAgentRequest):
             idx += 1
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
-                item=create_text_output_item(text=_progress_text(name, inp), id=f"progress_{idx}"),
+                item=create_text_output_item(text=_progress_line(name, inp), id=f"progress_{idx}"),
             )
             continue
         getter.cancel()
@@ -592,7 +600,7 @@ async def stream_handler(request: ResponsesAgentRequest):
             idx += 1
             yield ResponsesAgentStreamEvent(
                 type="response.output_item.done",
-                item=create_text_output_item(text=_progress_text(name, inp), id=f"progress_{idx}"),
+                item=create_text_output_item(text=_progress_line(name, inp), id=f"progress_{idx}"),
             )
         try:
             r = task.result()
