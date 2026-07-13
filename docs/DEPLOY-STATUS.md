@@ -285,3 +285,10 @@ checks stack vertically** — each streamed check ends with `\n\n` so they list 
 SUCCEEDED, bubbles/greeting render, backend healthy (lean answer, tool loop intact), and the stream emits
 separated progress lines. Frontend cannot be built/verified locally (no Node/mlflow) — UI confirmed by
 deploy + visual check.
+
+**2026-07-13 (Investigation Harness)**: MCP app -> v1.9.0, agent app -> v0.2.0, both SUCCEEDED. Gated
+investigator live: STOP-gates in payloads, Investigation Mode playbook, 6/12 step budget, plain trail,
+4 LA investigation templates, 2 direct PBI endpoints. Live-verified: multi-tool investigation cited both
+gates, ran the differential (noisy-neighbor vs runaway user), recurrence (6/8 sweeps), proxy caveat +
+Metrics-app direction, plain-language trail. Opus final review: SHIP. Pending live check: the
+ExecutionMetrics/capacityThrottlingMs template (safe-fail if schema differs).
