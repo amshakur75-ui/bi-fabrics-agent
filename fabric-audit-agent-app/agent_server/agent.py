@@ -126,6 +126,38 @@ Presentation & Voice:
   (e.g. "278 users on Ent-Reporting-Sales" vs "the capacity's 488 users in total"), and treat an
   item's top users and the capacity's top user as separate rankings, never merged.
 
+Investigation Mode (applies when the question asks WHY something happened, what caused it, whether
+it recurs, or who is driving it -- as opposed to a simple status lookup):
+- Work the funnel like a practitioner: CONFIRM the problem exists (the audit's verdict + its gates)
+  -> ATTRIBUTE (which item/operation, interactive vs background) -> WHO (which user, corroborated)
+  -> WHY (root cause via the decision tree and query evidence) -> RECURRENCE (has this happened
+  before). Never attribute blame before confirming the problem exists.
+- Think in hypotheses: state the hypothesis, state what evidence would confirm or kill it, gather
+  the cheapest sufficient evidence, then decide. When evidence kills a hypothesis, say it is RULED
+  OUT and why that matters -- a ruled-out cause is a finding, not a dead end. Never reframe evidence
+  to keep a favorite hypothesis alive.
+- Respect the STOP-gates carried in tool payloads (the gates fields): a throttling claim requires
+  the throttle gate to have passed -- CU% over 100 alone is smoothing, not throttling; they are two
+  different claims and you cite the gate values for each. Per-user shares are monitored-CU proxy,
+  never billed CU. True billed CU per user is permanently out of reach (Capacity Metrics app only --
+  direct the admin there, never state the figure). An empty or failed source makes that branch
+  INCONCLUSIVE ("data unavailable"), never "healthy".
+- Run the differential before blaming: one item or distributed? one user or everyone on an expensive
+  item? a scheduled-time pattern or chronic? interactive or background? started at a date (what
+  changed then) or gradual growth? Name the competitor you ruled out and how.
+- Escalate data tiers only when the lead demands it: detector tools first; then the query library or
+  ad-hoc read-only KQL (capacity events or Log Analytics) for joins and history the tools don't
+  cover; deeper sources (long-term FUAM history, model internals) are gated or need a human -- say
+  so honestly. All access is read/query only.
+- Narrate the chase like an engineer walking a colleague through it: what you wondered, what you
+  suspected, why you checked what you checked next, what each result ruled in or out, and what you
+  now understand. This narration is for investigations; simple lookups keep the lean default above.
+  It never relaxes any honesty rule.
+- Conclude with: what happened; why (root cause at the level the evidence supports); the specific
+  fix (name the column, measure, schedule, or SKU -- never generic advice); who should act; and your
+  confidence (validated = gate-confirmed, likely = consistent but unconfirmed, inconclusive = cannot
+  be determined). Offer the full investigation trail on request.
+
 Default answer shape: the verdict/finding, the one or two numbers it rests on stated in plain language
 (name the data, not the tool), your confidence level (validated/likely/inconclusive), and any
 load-bearing caveat -- then stop, offering to go deeper. Save the full evidence in plain language, the
@@ -458,6 +490,34 @@ def _conversation_audit_log(question, trajectory, text):
 # Responses Agent handlers
 # ---------------------------------------------------------------------------
 
+# Investigation harness (B2): a PRE-CALL deterministic classifier sets the step budget — an
+# investigation ("why/what caused/who is driving/has this happened") earns a deeper loop than a
+# status lookup. Deliberately keyword-based: the budget must exist before the first model call.
+_INVESTIGATION_HINTS = (
+    "investigate", "why ", "why?", "root cause", "what caused", "what happened", "diagnose",
+    "spike", "recurring", "what's causing", "what is causing", "has this happened", "happened before", "who is driving", "who's driving",
+    "dig into", "deep dive", "walk me through", "find out what",
+)
+_LOOKUP_BUDGET = 6
+_INVESTIGATION_BUDGET = 12
+
+
+def _step_budget(question):
+    q = f" {str(question or '').lower()} "
+    return _INVESTIGATION_BUDGET if any(h in q for h in _INVESTIGATION_HINTS) else _LOOKUP_BUDGET
+
+
+def _plain_trail(trajectory):
+    """The investigation trail in PLAIN LANGUAGE (progress phrases; never tool names/inputs)."""
+    out = []
+    for step in trajectory or []:
+        try:
+            out.append(_progress_text(step.get("tool"), step.get("input")))
+        except Exception:
+            continue
+    return out
+
+
 async def _run(request, on_tool=None):
     ws = get_user_workspace_client()
     tools, dispatch = await _mcp_tools_and_dispatch(ws)
@@ -470,12 +530,14 @@ async def _run(request, on_tool=None):
         tools = tools + direct_tools
         dispatch = {**dispatch, **direct_dispatch}
     messages = _messages_from_request(request)
+    question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     result = await _run_tool_loop(
         _build_claude_client(ws), model=_MODEL, system=_SYSTEM,
-        messages=messages, tools=tools, dispatch=dispatch, max_steps=6,
-        on_tool=on_tool)
+        messages=messages, tools=tools, dispatch=dispatch,
+        max_steps=_step_budget(question), on_tool=on_tool)
+    # Plain-language investigation trail (no tool names/inputs) — surfaced via custom_outputs.
+    result["trail"] = _plain_trail(result.get("trajectory"))
     try:
-        question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
         _conversation_audit_log(question, result.get("trajectory") or [], result.get("text") or "")
     except Exception as exc:
         # Failure-isolated: the emit must never break a conversation, and the except must never
@@ -492,7 +554,7 @@ async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentRespon
     return ResponsesAgentResponse(
         output=[text_item],
         custom_outputs={"trajectory": r["trajectory"], "toolResults": r.get("toolResults"),
-                        "stoppedReason": r["stoppedReason"]},
+                        "stoppedReason": r["stoppedReason"], "trail": r.get("trail")},
     )
 
 

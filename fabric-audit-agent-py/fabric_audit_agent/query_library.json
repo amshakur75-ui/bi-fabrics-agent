@@ -1,170 +1,202 @@
 [
-  {
-    "name": "capacity-peak-windows-24h",
-    "category": "capacity",
-    "engine": "capacity",
-    "description": "Per-30s-window CU% over the last 24h, highest first — find the peak windows.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime)\n| where base > 0\n| summarize cuPct = max(100.0 * used / (base * 1000 * 30)) by win\n| top 50 by cuPct desc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
-  },
-  {
-    "name": "capacity-peak-windows-7d",
-    "category": "capacity",
-    "engine": "capacity",
-    "description": "Per-30s-window CU% over the last 7d, highest first — a wider peak-hunting sweep.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(7d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime)\n| where base > 0\n| summarize cuPct = max(100.0 * used / (base * 1000 * 30)) by win\n| top 50 by cuPct desc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
-  },
-  {
-    "name": "capacity-cu-pct-trend-hourly-24h",
-    "category": "trend",
-    "engine": "capacity",
-    "description": "Average CU% bucketed hourly over the last 24h, in chronological order — the shape of the day.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = todatetime(data.windowStartTime)\n| where base > 0\n| summarize avgCuPct = avg(100.0 * used / (base * 1000 * 30)) by bin(win, 1h)\n| sort by win asc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
-  },
-  {
-    "name": "capacity-throttle-candidates-24h",
-    "category": "throttle",
-    "engine": "capacity",
-    "description": "Windows in the last 24h where CU% reached or exceeded 100 — throttle/overload candidates.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime), cap = tostring(data.capacityId)\n| where base > 0\n| extend cuPct = 100.0 * used / (base * 1000 * 30)\n| where cuPct >= 100\n| project cap, win, cuPct\n| top 50 by cuPct desc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula; 100% = throttle threshold"
-  },
-  {
-    "name": "capacity-avg-cu-pct-by-capacity-7d",
-    "category": "capacity",
-    "engine": "capacity",
-    "description": "Average CU% per capacityId over the last 7d, highest first — which capacity runs hottest.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(7d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), cap = tostring(data.capacityId)\n| where base > 0\n| summarize avgCuPct = avg(100.0 * used / (base * 1000 * 30)), windows = count() by cap\n| top 50 by avgCuPct desc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
-  },
-  {
-    "name": "capacity-window-count-24h",
-    "category": "capacity",
-    "engine": "capacity",
-    "description": "Row count of capacity windows ingested per capacityId in the last 24h — sanity check for telemetry coverage.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| summarize windowCount = count() by cap = tostring(data.capacityId)\n| top 50 by windowCount desc",
-    "groundedIn": "collector_capacity_events._default_kql (ingestion_time() lookback, schema-independent)"
-  },
-  {
-    "name": "capacity-latest-windows-1h",
-    "category": "capacity",
-    "engine": "capacity",
-    "description": "Most recent capacity windows in the last hour, newest first, with CU% — a live tail.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(1h)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime), cap = tostring(data.capacityId)\n| where base > 0\n| extend cuPct = 100.0 * used / (base * 1000 * 30)\n| project cap, win, cuPct\n| top 50 by win desc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
-  },
-  {
-    "name": "capacity-min-max-cu-pct-7d",
-    "category": "capacity",
-    "engine": "capacity",
-    "description": "Min/avg/max CU% per capacityId over the last 7d — the volatility range for each capacity.",
-    "kql": "CapacityEvents\n| where ingestion_time() > ago(7d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), cap = tostring(data.capacityId)\n| where base > 0\n| extend cuPct = 100.0 * used / (base * 1000 * 30)\n| summarize minCuPct = min(cuPct), maxCuPct = max(cuPct), avgCuPct = avg(cuPct) by cap\n| top 50 by maxCuPct desc",
-    "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
-  },
-  {
-    "name": "top-users-by-cpu-24h",
-    "category": "user",
-    "engine": "la",
-    "description": "Top ExecutingUsers by total CpuTimeMs over the last 24h.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where isnotempty(ExecutingUser)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by ExecutingUser\n| top 20 by totalCpuMs desc",
-    "groundedIn": "collector_events_la project columns + runbook:noisy-neighbor"
-  },
-  {
-    "name": "slow-queries-over-10s",
-    "category": "report",
-    "engine": "la",
-    "description": "Interactive queries whose CpuTimeMs exceeded 10s, newest first, with the query text.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == 'QueryEnd'\n| where CpuTimeMs > 10000\n| project TimeGenerated, ExecutingUser, ArtifactName, CpuTimeMs, DurationMs, EventText\n| top 50 by CpuTimeMs desc",
-    "groundedIn": "collector_events_la columns + ms-learn semantic-model-operations"
-  },
-  {
-    "name": "refresh-operations-by-hour",
-    "category": "refresh",
-    "engine": "la",
-    "description": "Refresh/command operation counts bucketed hourly over the last 3 days.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(3d)\n| where OperationName in ('CommandEnd', 'ProgressReportEnd')\n| summarize refreshes = count() by ArtifactName, bin(TimeGenerated, 1h)\n| top 100 by refreshes desc",
-    "groundedIn": "runbook:refresh-collision + top-level op names"
-  },
-  {
-    "name": "top-items-by-cpu-24h",
-    "category": "item",
-    "engine": "la",
-    "description": "Top ArtifactNames (items) by total CpuTimeMs over the last 24h.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where isnotempty(ArtifactName)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by ArtifactName\n| top 20 by totalCpuMs desc",
-    "groundedIn": "collector_events_la project columns"
-  },
-  {
-    "name": "top-items-by-refresh-duration-24h",
-    "category": "refresh",
-    "engine": "la",
-    "description": "Top ArtifactNames (items) by total refresh DurationMs over the last 24h.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName in ('CommandEnd', 'ProgressReportEnd')\n| summarize totalDurationMs = sum(DurationMs), refreshes = count() by ArtifactName\n| top 20 by totalDurationMs desc",
-    "groundedIn": "collector_events_la project columns + runbook:refresh-collision"
-  },
-  {
-    "name": "queries-by-operation-type-24h",
-    "category": "report",
-    "engine": "la",
-    "description": "Operation counts by OperationName over the last 24h — the query/refresh/command mix.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| summarize ops = count() by OperationName\n| top 20 by ops desc",
-    "groundedIn": "collector_events_la OperationName values (QueryEnd/CommandEnd/ProgressReportEnd)"
-  },
-  {
-    "name": "per-workspace-cpu-24h",
-    "category": "workspace",
-    "engine": "la",
-    "description": "Top PowerBIWorkspaceName by total CpuTimeMs over the last 24h.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where isnotempty(PowerBIWorkspaceName)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by PowerBIWorkspaceName\n| top 20 by totalCpuMs desc",
-    "groundedIn": "collector_events_la project columns"
-  },
-  {
-    "name": "long-running-refreshes-over-60s",
-    "category": "refresh",
-    "engine": "la",
-    "description": "Refresh/command operations whose DurationMs exceeded 60s over the last 24h, slowest first.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName in ('CommandEnd', 'ProgressReportEnd')\n| where DurationMs > 60000\n| project TimeGenerated, ArtifactName, PowerBIWorkspaceName, DurationMs\n| top 50 by DurationMs desc",
-    "groundedIn": "collector_events_la project columns + runbook:refresh-collision"
-  },
-  {
-    "name": "user-query-count-24h",
-    "category": "user",
-    "engine": "la",
-    "description": "Interactive query counts (QueryEnd) per ExecutingUser over the last 24h, highest first.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == 'QueryEnd'\n| where isnotempty(ExecutingUser)\n| summarize queries = count() by ExecutingUser\n| top 20 by queries desc",
-    "groundedIn": "collector_events_la project columns + runbook:noisy-neighbor"
-  },
-  {
-    "name": "recent-events-sample-1h",
-    "category": "sample",
-    "engine": "la",
-    "description": "A raw sample of the newest events in the last hour — ground before querying more heavily.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1h)\n| project TimeGenerated, ExecutingUser, ArtifactName, OperationName, CpuTimeMs, DurationMs\n| top 20 by TimeGenerated desc",
-    "groundedIn": "collector_events_la project columns; mirrors sample_events_handler's grounding query"
-  },
-  {
-    "name": "queries-with-query-text-sample-24h",
-    "category": "sample",
-    "engine": "la",
-    "description": "Interactive queries with non-empty EventText (DAX/query text), costliest first — sample real query text.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == 'QueryEnd'\n| where isnotempty(EventText)\n| project TimeGenerated, ExecutingUser, ArtifactName, CpuTimeMs, EventText\n| top 20 by CpuTimeMs desc",
-    "groundedIn": "collector_events_la project columns + ms-learn semantic-model-operations"
-  },
-  {
-    "name": "per-user-per-item-cpu-7d",
-    "category": "user",
-    "engine": "la",
-    "description": "Total CpuTimeMs per (ExecutingUser, ArtifactName) pair over the last 7d — who is driving cost on which item.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(7d)\n| where isnotempty(ExecutingUser) and isnotempty(ArtifactName)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by ExecutingUser, ArtifactName\n| top 50 by totalCpuMs desc",
-    "groundedIn": "collector_events_la project columns + runbook:noisy-neighbor"
-  },
-  {
-    "name": "workspace-activity-trend-hourly-3d",
-    "category": "trend",
-    "engine": "la",
-    "description": "Operation counts bucketed hourly over the last 3 days, in chronological order — the estate's activity shape.",
-    "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(3d)\n| summarize ops = count() by bin(TimeGenerated, 1h)\n| sort by TimeGenerated asc",
-    "groundedIn": "collector_events_la project columns"
-  }
+ {
+  "name": "capacity-peak-windows-24h",
+  "category": "capacity",
+  "engine": "capacity",
+  "description": "Per-30s-window CU% over the last 24h, highest first — find the peak windows.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime)\n| where base > 0\n| summarize cuPct = max(100.0 * used / (base * 1000 * 30)) by win\n| top 50 by cuPct desc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
+ },
+ {
+  "name": "capacity-peak-windows-7d",
+  "category": "capacity",
+  "engine": "capacity",
+  "description": "Per-30s-window CU% over the last 7d, highest first — a wider peak-hunting sweep.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(7d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime)\n| where base > 0\n| summarize cuPct = max(100.0 * used / (base * 1000 * 30)) by win\n| top 50 by cuPct desc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
+ },
+ {
+  "name": "capacity-cu-pct-trend-hourly-24h",
+  "category": "trend",
+  "engine": "capacity",
+  "description": "Average CU% bucketed hourly over the last 24h, in chronological order — the shape of the day.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = todatetime(data.windowStartTime)\n| where base > 0\n| summarize avgCuPct = avg(100.0 * used / (base * 1000 * 30)) by bin(win, 1h)\n| sort by win asc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
+ },
+ {
+  "name": "capacity-throttle-candidates-24h",
+  "category": "throttle",
+  "engine": "capacity",
+  "description": "Windows in the last 24h where CU% reached or exceeded 100 — throttle/overload candidates.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime), cap = tostring(data.capacityId)\n| where base > 0\n| extend cuPct = 100.0 * used / (base * 1000 * 30)\n| where cuPct >= 100\n| project cap, win, cuPct\n| top 50 by cuPct desc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula; 100% = throttle threshold"
+ },
+ {
+  "name": "capacity-avg-cu-pct-by-capacity-7d",
+  "category": "capacity",
+  "engine": "capacity",
+  "description": "Average CU% per capacityId over the last 7d, highest first — which capacity runs hottest.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(7d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), cap = tostring(data.capacityId)\n| where base > 0\n| summarize avgCuPct = avg(100.0 * used / (base * 1000 * 30)), windows = count() by cap\n| top 50 by avgCuPct desc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
+ },
+ {
+  "name": "capacity-window-count-24h",
+  "category": "capacity",
+  "engine": "capacity",
+  "description": "Row count of capacity windows ingested per capacityId in the last 24h — sanity check for telemetry coverage.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(1d)\n| summarize windowCount = count() by cap = tostring(data.capacityId)\n| top 50 by windowCount desc",
+  "groundedIn": "collector_capacity_events._default_kql (ingestion_time() lookback, schema-independent)"
+ },
+ {
+  "name": "capacity-latest-windows-1h",
+  "category": "capacity",
+  "engine": "capacity",
+  "description": "Most recent capacity windows in the last hour, newest first, with CU% — a live tail.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(1h)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), win = tostring(data.windowStartTime), cap = tostring(data.capacityId)\n| where base > 0\n| extend cuPct = 100.0 * used / (base * 1000 * 30)\n| project cap, win, cuPct\n| top 50 by win desc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
+ },
+ {
+  "name": "capacity-min-max-cu-pct-7d",
+  "category": "capacity",
+  "engine": "capacity",
+  "description": "Min/avg/max CU% per capacityId over the last 7d — the volatility range for each capacity.",
+  "kql": "CapacityEvents\n| where ingestion_time() > ago(7d)\n| extend base = tolong(data.baseCapacityUnits), used = tolong(data.capacityUnitMs), cap = tostring(data.capacityId)\n| where base > 0\n| extend cuPct = 100.0 * used / (base * 1000 * 30)\n| summarize minCuPct = min(cuPct), maxCuPct = max(cuPct), avgCuPct = avg(cuPct) by cap\n| top 50 by maxCuPct desc",
+  "groundedIn": "collector_capacity_events._default_kql + CU% formula (ms/(base*1000*30)*100)"
+ },
+ {
+  "name": "top-users-by-cpu-24h",
+  "category": "user",
+  "engine": "la",
+  "description": "Top ExecutingUsers by total CpuTimeMs over the last 24h.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where isnotempty(ExecutingUser)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by ExecutingUser\n| top 20 by totalCpuMs desc",
+  "groundedIn": "collector_events_la project columns + runbook:noisy-neighbor"
+ },
+ {
+  "name": "slow-queries-over-10s",
+  "category": "report",
+  "engine": "la",
+  "description": "Interactive queries whose CpuTimeMs exceeded 10s, newest first, with the query text.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == 'QueryEnd'\n| where CpuTimeMs > 10000\n| project TimeGenerated, ExecutingUser, ArtifactName, CpuTimeMs, DurationMs, EventText\n| top 50 by CpuTimeMs desc",
+  "groundedIn": "collector_events_la columns + ms-learn semantic-model-operations"
+ },
+ {
+  "name": "refresh-operations-by-hour",
+  "category": "refresh",
+  "engine": "la",
+  "description": "Refresh/command operation counts bucketed hourly over the last 3 days.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(3d)\n| where OperationName in ('CommandEnd', 'ProgressReportEnd')\n| summarize refreshes = count() by ArtifactName, bin(TimeGenerated, 1h)\n| top 100 by refreshes desc",
+  "groundedIn": "runbook:refresh-collision + top-level op names"
+ },
+ {
+  "name": "top-items-by-cpu-24h",
+  "category": "item",
+  "engine": "la",
+  "description": "Top ArtifactNames (items) by total CpuTimeMs over the last 24h.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where isnotempty(ArtifactName)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by ArtifactName\n| top 20 by totalCpuMs desc",
+  "groundedIn": "collector_events_la project columns"
+ },
+ {
+  "name": "top-items-by-refresh-duration-24h",
+  "category": "refresh",
+  "engine": "la",
+  "description": "Top ArtifactNames (items) by total refresh DurationMs over the last 24h.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName in ('CommandEnd', 'ProgressReportEnd')\n| summarize totalDurationMs = sum(DurationMs), refreshes = count() by ArtifactName\n| top 20 by totalDurationMs desc",
+  "groundedIn": "collector_events_la project columns + runbook:refresh-collision"
+ },
+ {
+  "name": "queries-by-operation-type-24h",
+  "category": "report",
+  "engine": "la",
+  "description": "Operation counts by OperationName over the last 24h — the query/refresh/command mix.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| summarize ops = count() by OperationName\n| top 20 by ops desc",
+  "groundedIn": "collector_events_la OperationName values (QueryEnd/CommandEnd/ProgressReportEnd)"
+ },
+ {
+  "name": "per-workspace-cpu-24h",
+  "category": "workspace",
+  "engine": "la",
+  "description": "Top PowerBIWorkspaceName by total CpuTimeMs over the last 24h.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where isnotempty(PowerBIWorkspaceName)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by PowerBIWorkspaceName\n| top 20 by totalCpuMs desc",
+  "groundedIn": "collector_events_la project columns"
+ },
+ {
+  "name": "long-running-refreshes-over-60s",
+  "category": "refresh",
+  "engine": "la",
+  "description": "Refresh/command operations whose DurationMs exceeded 60s over the last 24h, slowest first.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName in ('CommandEnd', 'ProgressReportEnd')\n| where DurationMs > 60000\n| project TimeGenerated, ArtifactName, PowerBIWorkspaceName, DurationMs\n| top 50 by DurationMs desc",
+  "groundedIn": "collector_events_la project columns + runbook:refresh-collision"
+ },
+ {
+  "name": "user-query-count-24h",
+  "category": "user",
+  "engine": "la",
+  "description": "Interactive query counts (QueryEnd) per ExecutingUser over the last 24h, highest first.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == 'QueryEnd'\n| where isnotempty(ExecutingUser)\n| summarize queries = count() by ExecutingUser\n| top 20 by queries desc",
+  "groundedIn": "collector_events_la project columns + runbook:noisy-neighbor"
+ },
+ {
+  "name": "recent-events-sample-1h",
+  "category": "sample",
+  "engine": "la",
+  "description": "A raw sample of the newest events in the last hour — ground before querying more heavily.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1h)\n| project TimeGenerated, ExecutingUser, ArtifactName, OperationName, CpuTimeMs, DurationMs\n| top 20 by TimeGenerated desc",
+  "groundedIn": "collector_events_la project columns; mirrors sample_events_handler's grounding query"
+ },
+ {
+  "name": "queries-with-query-text-sample-24h",
+  "category": "sample",
+  "engine": "la",
+  "description": "Interactive queries with non-empty EventText (DAX/query text), costliest first — sample real query text.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == 'QueryEnd'\n| where isnotempty(EventText)\n| project TimeGenerated, ExecutingUser, ArtifactName, CpuTimeMs, EventText\n| top 20 by CpuTimeMs desc",
+  "groundedIn": "collector_events_la project columns + ms-learn semantic-model-operations"
+ },
+ {
+  "name": "per-user-per-item-cpu-7d",
+  "category": "user",
+  "engine": "la",
+  "description": "Total CpuTimeMs per (ExecutingUser, ArtifactName) pair over the last 7d — who is driving cost on which item.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(7d)\n| where isnotempty(ExecutingUser) and isnotempty(ArtifactName)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by ExecutingUser, ArtifactName\n| top 50 by totalCpuMs desc",
+  "groundedIn": "collector_events_la project columns + runbook:noisy-neighbor"
+ },
+ {
+  "name": "workspace-activity-trend-hourly-3d",
+  "category": "trend",
+  "engine": "la",
+  "description": "Operation counts bucketed hourly over the last 3 days, in chronological order — the estate's activity shape.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(3d)\n| summarize ops = count() by bin(TimeGenerated, 1h)\n| sort by TimeGenerated asc",
+  "groundedIn": "collector_events_la project columns"
+ },
+ {
+  "name": "throttled-operations-attribution-24h",
+  "category": "throttle",
+  "engine": "la",
+  "description": "Funnel: attribute. Which operations were actually throttle-delayed in the last 24h, joined to who ran what: ExecutionMetrics rows with capacityThrottlingMs > 0 joined to their QueryEnd/CommandEnd on XmlaRequestId. A non-empty result CONFIRMS throttling at the operation level (the throttle-claim gate).",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(1d)\n| where OperationName == \"ExecutionMetrics\"\n| extend throttleMs = tolong(parse_json(EventText).capacityThrottlingMs)\n| where throttleMs > 0\n| join kind=inner (\n    PowerBIDatasetsWorkspace\n    | where TimeGenerated > ago(1d)\n    | where OperationName in (\"QueryEnd\", \"CommandEnd\")\n    | project XmlaRequestId, sourceOp = OperationName, ArtifactName, ExecutingUser, DurationMs, CpuTimeMs\n  ) on XmlaRequestId\n| project TimeGenerated, ArtifactName, ExecutingUser, sourceOp, throttleMs, DurationMs, CpuTimeMs\n| top 50 by throttleMs desc",
+  "groundedIn": "PowerBIDatasetsWorkspace schema (learn.microsoft.com/azure/azure-monitor/reference/tables/powerbidatasetsworkspace) + ExecutionMetrics capacityThrottlingMs join on XmlaRequestId (blog.crossjoin.co.uk 2025-09-21, deep-research verified source)"
+ },
+ {
+  "name": "recurrence-daily-user-item-14d",
+  "category": "trend",
+  "engine": "la",
+  "description": "Funnel: recurrence. Day-by-day CPU per user per item over 14d — is the same user/item at the top of every heavy day (structural), or was it a one-off? CpuTimeMs is monitored-CU proxy, not billed CU.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(14d)\n| where isnotempty(ExecutingUser)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by bin(TimeGenerated, 1d), ExecutingUser, ArtifactName\n| top 200 by totalCpuMs desc",
+  "groundedIn": "collector_events_la project columns + Microsoft consumption-troubleshoot Stage 2 (drill by date)"
+ },
+ {
+  "name": "weekday-hour-load-profile-30d",
+  "category": "trend",
+  "engine": "la",
+  "description": "Funnel: recurrence. Load profile by weekday and hour over 30d — a spike that repeats at the same clock time is a schedule (refresh/business-cycle), not organic growth.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(30d)\n| extend dow = dayofweek(TimeGenerated), hourOfDay = hourofday(TimeGenerated)\n| summarize totalCpuMs = sum(CpuTimeMs), ops = count() by dow, hourOfDay\n| sort by totalCpuMs desc",
+  "groundedIn": "Microsoft consumption-troubleshoot Stage 2 (when do peaks occur) + KQL bin/dayofweek"
+ },
+ {
+  "name": "refresh-contention-by-hour-7d",
+  "category": "refresh",
+  "engine": "la",
+  "description": "Funnel: why. Hours where multiple refreshes (CommandEnd) overlapped over 7d, with total and max duration — overlapping heavy refreshes on one capacity are the classic contention pattern; the fix is staggering or incremental refresh.",
+  "kql": "PowerBIDatasetsWorkspace\n| where TimeGenerated > ago(7d)\n| where OperationName == \"CommandEnd\"\n| summarize refreshes = count(), totalDurationMs = sum(DurationMs), maxDurationMs = max(DurationMs) by bin(TimeGenerated, 1h)\n| where refreshes > 1\n| top 50 by totalDurationMs desc",
+  "groundedIn": "Microsoft capacity-planning refresh-contention guidance + CommandEnd = refresh/XMLA command"
+ }
 ]

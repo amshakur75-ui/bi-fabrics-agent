@@ -2346,6 +2346,23 @@ def test_diagnose_invalid_symptom_returns_error_envelope_never_raises(monkeypatc
     _clear_live(monkeypatch)
     out = _handler("diagnose")({"symptom": "bogus"})
     assert "error" in out
+    # Reachability (harness A2): the error TEACHES -- accepted values + mapping guidance.
+    assert out["acceptedSymptoms"] == ["throttle", "refresh", "slowness"]
+    assert "slowness" in out["error"] and "refresh" in out["error"]
+
+
+def test_diagnose_natural_phrasings_normalize_to_engine_symptoms(monkeypatch):
+    # Defense-in-depth (harness A2): a model that passes a natural phrase instead of the enum
+    # value still reaches the engine -- free text no longer dead-ends the agent's best tool.
+    _clear_live(monkeypatch)
+    h = _handler("diagnose")
+    for phrase, expect in [
+        ("throttling", "throttle"), ("rejected operations", "throttle"),
+        ("slow reports", "slowness"), ("performance problems", "slowness"),
+        ("stale data after refresh", "refresh"), ("REFRESH failures", "refresh"),
+    ]:
+        out = h({"symptom": phrase})
+        assert out.get("symptom") == expect, (phrase, out.get("error"))
 
 
 def test_diagnose_tier1_env_has_coverage_note_and_unconfirmed_driver(monkeypatch):
@@ -2633,3 +2650,35 @@ def test_query_library_get_by_name_returns_full_entry():
 def test_query_library_unknown_name_lists_available():
     out = _handler("query_library")({"name": "no-such-template"})
     assert out["error"] and isinstance(out["available"], list) and out["available"]
+
+
+def test_run_audit_payload_carries_stop_gates(monkeypatch):
+    # Harness A1b: gate outputs are REAL payload fields the agent cites -- throttle and
+    # CU-pressure are separate gated claims; true-CU-per-user is permanently blocked.
+    _clear_live(monkeypatch)
+    out = _handler("run_audit")({})
+    g = out["gates"]
+    assert set(g) == {"throttleClaim", "pressureClaim", "trueCuPerUser"}
+    assert isinstance(g["throttleClaim"]["passed"], bool)
+    assert g["trueCuPerUser"]["blocked"] is True
+    assert "metrics app" in g["trueCuPerUser"]["note"].lower()
+
+
+def test_run_kql_la_engine_goes_through_the_one_firewall_chokepoint(monkeypatch):
+    # C2 chokepoint pin (harness): the LA engine path validates ad-hoc KQL through the SAME
+    # static firewall as the capacity engine, BEFORE any client call -- a denied control
+    # command must be rejected at the firewall stage, never reach Log Analytics.
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws-guid")
+    # Stub the LA client builder (imports msal at construction) -- the firewall must reject
+    # BEFORE any query executes, so the stub must never be CALLED as a query.
+    import fabric_audit_agent.adapters.clients as clients_mod
+    calls = []
+    monkeypatch.setattr(clients_mod, "build_log_analytics_query",
+                        lambda *a, **k: (lambda kql: calls.append(kql)))
+    out = _handler("run_kql")({"engine": "la", "kql": ".drop table X"})
+    assert calls == []   # the denied statement never reached the LA client
+    assert "error" in out and out.get("rejectionStage") not in (None, "engine-unconfigured")
+    assert out["engine"] == "la"

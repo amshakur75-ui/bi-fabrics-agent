@@ -116,3 +116,17 @@ def test_4xx_returns_clean_error():
     _, dispatch = direct_tools_and_dispatch(ENV, http=_Http(get=_Resp({"error": "forbidden"}, status=403)))
     out = _run(dispatch["fabric_list_workspaces"]({}))
     assert out["error"] == "Fabric REST 403"
+
+
+def test_pbi_endpoints_hit_powerbi_base_get_only():
+    # C1: schedule/datasets live on the Power BI REST base with its own token scope - still GET-only.
+    http = _Http()
+    _, dispatch = direct_tools_and_dispatch(ENV, http=http)
+    _run(dispatch["fabric_refresh_schedule"]({"workspaceId": "w1", "datasetId": "d1"}))
+    assert http.gets[-1]["url"] == "https://api.powerbi.com/v1.0/myorg/groups/w1/datasets/d1/refreshSchedule"
+    _run(dispatch["fabric_list_datasets"]({"workspaceId": "w1"}))
+    assert http.gets[-1]["url"].endswith("/groups/w1/datasets")
+    # every token POST still goes to Entra, never to a data host
+    assert all("login.microsoftonline.com" in p["url"] for p in http.posts)
+    scopes = {p["data"]["scope"] for p in http.posts}
+    assert "https://analysis.windows.net/powerbi/api/.default" in scopes

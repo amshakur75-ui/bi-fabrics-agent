@@ -309,6 +309,17 @@ def create_tool_definitions(base_dir=None):
         # own timezone math.
         for f in result["findings"]:
             add_display_time(f, "when", "whenDisplay")
+        # Investigation STOP-gates (harness A1b): surfaced as REAL payload fields so the agent's
+        # claims cite gate values from the data, not its own paraphrase. throttle vs pressure are
+        # two different claims with two different gates (smoothing: CU%>100 alone is not throttling).
+        from .investigation.gates import (throttle_claim_gate, pressure_claim_gate,
+                                          true_cu_per_user_gate)
+        ev = (result.get("verdict") or {}).get("evidence") or {}
+        result["gates"] = {
+            "throttleClaim": throttle_claim_gate(ev),
+            "pressureClaim": pressure_claim_gate(ev),
+            "trueCuPerUser": true_cu_per_user_gate(),
+        }
         return result
 
     def list_workspaces_handler(_input=None):
@@ -1205,6 +1216,20 @@ def create_tool_definitions(base_dir=None):
             "note": "heuristic hints, not verdicts",
         }
 
+    def _normalize_symptom(raw):
+        """Map natural phrasings onto the engine's three symptoms — defense-in-depth for callers
+        that don't enforce the schema enum (the engine accepts exactly these three)."""
+        s = str(raw or "").strip().lower()
+        if s in ("throttle", "refresh", "slowness"):
+            return s
+        if "throttl" in s or "reject" in s or "delay" in s:
+            return "throttle"
+        if "refresh" in s or "stale" in s:
+            return "refresh"
+        if "slow" in s or "perform" in s or "latenc" in s:
+            return "slowness"
+        return None
+
     def diagnose_handler(_input=None):
         """Run the full executable diagnostic decision tree (Task 10's pure engine) for a
         symptom, wired to live/mock event + capacity sources exactly like capacity_patterns
@@ -1215,7 +1240,17 @@ def create_tool_definitions(base_dir=None):
         inp = _input or {}
         source = "live" if _has_live_event_source(os.environ) else "mock"
         try:
-            symptom = inp.get("symptom")
+            symptom = _normalize_symptom(inp.get("symptom"))
+            if symptom is None:
+                # Reachability fix (investigation harness A2): a helpful teach-the-mapping error
+                # instead of the engine's bare ValueError — and no collector work on a bad call.
+                return {
+                    "error": (f"unrecognized symptom {inp.get('symptom')!r} — use one of: "
+                              "'throttle' (delayed/rejected operations), 'refresh' (failed/late/"
+                              "stale refreshes), 'slowness' (slow reports/queries)"),
+                    "acceptedSymptoms": ["throttle", "refresh", "slowness"],
+                    "source": source,
+                }
             events, series, meta = _resolve_event_sources(
                 days=(inp.get("days") if inp.get("days") is not None else 1),
                 hours=inp.get("hours"), start=inp.get("start"), end=inp.get("end"),
@@ -1609,6 +1644,8 @@ def create_tool_definitions(base_dir=None):
             "description": (
                 "Run a read-only Fabric/Power BI capacity audit and return prioritized findings, "
                 "capacity verdict (optimize vs size-up), health score, and per-user attribution. "
+                "Funnel stage: CONFIRM — start here to establish whether a problem exists (verdict "
+                "+ STOP-gates in the payload) before attributing blame. "
                 "Use this for capacity health questions, throttling analysis, and optimization advice. "
                 "Read-only: never modifies anything."
             ),
@@ -1667,6 +1704,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "investigate_capacity_spike",
             "description": (
+                "Funnel stage: ATTRIBUTE — after a problem is confirmed, name what/who drove it. "
                 "Investigate a capacity spike: identifies the top-consuming items and users, "
                 "assembles capacity evidence, and returns a grounded explanation with confidence "
                 "rating. Pass `when` (the spike's timestamp) to additionally analyze the ±30-minute "
@@ -1793,6 +1831,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "capacity_patterns",
             "description": (
+                "Funnel stage: RECURRENCE — is this a repeating pattern or a one-off? "
                 "Identify temporal patterns coupling activity surges with CU% spikes. "
                 "Returns one pattern per detected surge-spike pair with the driving item, user, "
                 "peak CU%, and a plain-English narrative, plus patternsDiagnostics (bucketsScanned, "
@@ -1939,7 +1978,10 @@ def create_tool_definitions(base_dir=None):
                 "Runs the full diagnostic decision tree itself — confirms AND eliminates causes, "
                 "returns the causal chain with evidence per hop. Prefer this over manually chaining "
                 "spike_events/capacity_patterns for 'why is X slow/throttled/failing' questions. "
-                "Read-only."
+                "Symptom mapping: slow reports/queries → 'slowness'; failed/late/stale refreshes → "
+                "'refresh'; delayed/rejected/throttled operations → 'throttle'. Funnel stage: "
+                "root-cause (run AFTER a symptom is confirmed, e.g. by run_audit or "
+                "investigate_capacity_spike). Read-only."
             ),
             "input_schema": {
                 "type": "object",
@@ -1959,6 +2001,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "whats_changed",
             "description": (
+                "Funnel stage: RECURRENCE — compare against past runs before calling something new. "
                 "What changed since the last scheduled sweep: new / recurring / resolved "
                 "findings + capacity-peak trend, from the Job's run history. Answers 'what's "
                 "new this week?', 'is this recurring?', 'did the fix hold?'. Read-only "
@@ -1983,6 +2026,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "user_timeline",
             "description": (
+                "Funnel stage: WHO — corroborate user attribution after an item/spike is identified. "
                 "Chronological per-user timeline for a window (default last 24h): audit-log "
                 "actions (viewed/refreshed/ran — tenant-wide, no CU figure) merged with engine "
                 "query events (per-query CU + query text, monitored workspaces only). This is "
