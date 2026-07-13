@@ -314,7 +314,7 @@ def create_tool_definitions(base_dir=None):
         # two different claims with two different gates (smoothing: CU%>100 alone is not throttling).
         from .investigation.gates import (throttle_claim_gate, pressure_claim_gate,
                                           true_cu_per_user_gate)
-        ev = (result["verdict"] or {}).get("evidence") or {}
+        ev = (result.get("verdict") or {}).get("evidence") or {}
         result["gates"] = {
             "throttleClaim": throttle_claim_gate(ev),
             "pressureClaim": pressure_claim_gate(ev),

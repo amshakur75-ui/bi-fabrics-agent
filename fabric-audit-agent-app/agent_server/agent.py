@@ -495,7 +495,7 @@ def _conversation_audit_log(question, trajectory, text):
 # status lookup. Deliberately keyword-based: the budget must exist before the first model call.
 _INVESTIGATION_HINTS = (
     "investigate", "why ", "why?", "root cause", "what caused", "what happened", "diagnose",
-    "spike", "recurring", "has this happened", "happened before", "who is driving", "who's driving",
+    "spike", "recurring", "what's causing", "what is causing", "has this happened", "happened before", "who is driving", "who's driving",
     "dig into", "deep dive", "walk me through", "find out what",
 )
 _LOOKUP_BUDGET = 6
@@ -538,7 +538,6 @@ async def _run(request, on_tool=None):
     # Plain-language investigation trail (no tool names/inputs) — surfaced via custom_outputs.
     result["trail"] = _plain_trail(result.get("trajectory"))
     try:
-        question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
         _conversation_audit_log(question, result.get("trajectory") or [], result.get("text") or "")
     except Exception as exc:
         # Failure-isolated: the emit must never break a conversation, and the except must never
