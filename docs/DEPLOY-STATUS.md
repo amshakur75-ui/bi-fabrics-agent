@@ -258,3 +258,16 @@ answerChars`). Real conversations now accumulate (unblocks the deferred 5.4b eva
   gate is inert until the Job delivers to a broadcast sink, which needs `TEAMS_WEBHOOK_URL`). The MCP app
   does not consume these, so no MCP redeploy was needed for Phase 5.
 - **Standing:** `FABRIC_CLIENT_SECRET` rotation (B0) is still a pending user Azure action.
+
+**2026-07-13**: Agent-response quality fixes deployed after a live behavior test flagged an off-looking answer.
+Root-caused (via [conversation] logs + the raw run_audit envelope over /invocations) to: (1) the agent blending
+per-item vs per-capacity user figures into one contradictory sentence, and (2) the informational top-users
+finding (`capacity.user-ranking`) leaking developer placeholders ("Pattern not yet in the knowledge base",
+"add a playbook entry"). Data itself confirmed **live and real** (Log Analytics + Capacity Events Eventhouse;
+real @newellco.com users; drift across runs is the live "today" window accumulating). Fixes: prompt now
+enforces scope separation + a lean/visual default answer (status headline + a few bullets; deep evidence held
+until the user asks); added a real KB entry + impact line for `capacity.user-ranking`. **MCP app → v1.8.2**
+(carries the KB/reasoner fix), **agent app → v0.1.3** (carries the prompt). Both deployments SUCCEEDED and
+**verified live**: the reply is now a scannable ⚠️/✅ headline + bullets, scopes are not blended, and the
+top-users finding carries real "no action required" content. Package 1100 tests / agent-app 73 green; prompt
+parity held.
