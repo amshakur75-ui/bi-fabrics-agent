@@ -2650,3 +2650,15 @@ def test_query_library_get_by_name_returns_full_entry():
 def test_query_library_unknown_name_lists_available():
     out = _handler("query_library")({"name": "no-such-template"})
     assert out["error"] and isinstance(out["available"], list) and out["available"]
+
+
+def test_run_audit_payload_carries_stop_gates(monkeypatch):
+    # Harness A1b: gate outputs are REAL payload fields the agent cites -- throttle and
+    # CU-pressure are separate gated claims; true-CU-per-user is permanently blocked.
+    _clear_live(monkeypatch)
+    out = _handler("run_audit")({})
+    g = out["gates"]
+    assert set(g) == {"throttleClaim", "pressureClaim", "trueCuPerUser"}
+    assert isinstance(g["throttleClaim"]["passed"], bool)
+    assert g["trueCuPerUser"]["blocked"] is True
+    assert "metrics app" in g["trueCuPerUser"]["note"].lower()

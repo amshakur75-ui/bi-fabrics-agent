@@ -309,6 +309,17 @@ def create_tool_definitions(base_dir=None):
         # own timezone math.
         for f in result["findings"]:
             add_display_time(f, "when", "whenDisplay")
+        # Investigation STOP-gates (harness A1b): surfaced as REAL payload fields so the agent's
+        # claims cite gate values from the data, not its own paraphrase. throttle vs pressure are
+        # two different claims with two different gates (smoothing: CU%>100 alone is not throttling).
+        from .investigation.gates import (throttle_claim_gate, pressure_claim_gate,
+                                          true_cu_per_user_gate)
+        ev = (result["verdict"] or {}).get("evidence") or {}
+        result["gates"] = {
+            "throttleClaim": throttle_claim_gate(ev),
+            "pressureClaim": pressure_claim_gate(ev),
+            "trueCuPerUser": true_cu_per_user_gate(),
+        }
         return result
 
     def list_workspaces_handler(_input=None):
@@ -1633,6 +1644,8 @@ def create_tool_definitions(base_dir=None):
             "description": (
                 "Run a read-only Fabric/Power BI capacity audit and return prioritized findings, "
                 "capacity verdict (optimize vs size-up), health score, and per-user attribution. "
+                "Funnel stage: CONFIRM — start here to establish whether a problem exists (verdict "
+                "+ STOP-gates in the payload) before attributing blame. "
                 "Use this for capacity health questions, throttling analysis, and optimization advice. "
                 "Read-only: never modifies anything."
             ),
@@ -1691,6 +1704,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "investigate_capacity_spike",
             "description": (
+                "Funnel stage: ATTRIBUTE — after a problem is confirmed, name what/who drove it. "
                 "Investigate a capacity spike: identifies the top-consuming items and users, "
                 "assembles capacity evidence, and returns a grounded explanation with confidence "
                 "rating. Pass `when` (the spike's timestamp) to additionally analyze the ±30-minute "
@@ -1817,6 +1831,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "capacity_patterns",
             "description": (
+                "Funnel stage: RECURRENCE — is this a repeating pattern or a one-off? "
                 "Identify temporal patterns coupling activity surges with CU% spikes. "
                 "Returns one pattern per detected surge-spike pair with the driving item, user, "
                 "peak CU%, and a plain-English narrative, plus patternsDiagnostics (bucketsScanned, "
@@ -1986,6 +2001,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "whats_changed",
             "description": (
+                "Funnel stage: RECURRENCE — compare against past runs before calling something new. "
                 "What changed since the last scheduled sweep: new / recurring / resolved "
                 "findings + capacity-peak trend, from the Job's run history. Answers 'what's "
                 "new this week?', 'is this recurring?', 'did the fix hold?'. Read-only "
@@ -2010,6 +2026,7 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "user_timeline",
             "description": (
+                "Funnel stage: WHO — corroborate user attribution after an item/spike is identified. "
                 "Chronological per-user timeline for a window (default last 24h): audit-log "
                 "actions (viewed/refreshed/ran — tenant-wide, no CU figure) merged with engine "
                 "query events (per-query CU + query text, monitored workspaces only). This is "
