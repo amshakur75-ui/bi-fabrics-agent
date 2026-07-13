@@ -16,3 +16,18 @@ env:
     value: "databricks-claude-opus-4-7"
   - name: FABRIC_MCP_URL
     value: "https://mcp-bi-fabrics-auditor-7405609570261849.9.azure.databricksapps.com/mcp"
+
+  # --- Feature 2: direct read-only Fabric access (fabric_direct.py) ---
+  # INERT until all three SP secrets resolve — with them unset, the agent uses only the MCP path and
+  # nothing breaks. To ACTIVATE: bind these to the SAME secret resources the MCP app uses, then
+  # uncomment. Do NOT put real values here (this repo is public). Referencing an unbound resource makes
+  # the app fail to start, so only uncomment AFTER the resources are bound.
+  # - name: FABRIC_TENANT_ID
+  #   valueFrom: tenant_id
+  # - name: FABRIC_CLIENT_ID
+  #   valueFrom: client_id
+  # - name: FABRIC_CLIENT_SECRET
+  #   valueFrom: client_secret
+  # Optional: override the Fabric REST base (defaults to https://api.fabric.microsoft.com/v1)
+  # - name: FABRIC_API_BASE
+  #   value: "https://api.fabric.microsoft.com/v1"
