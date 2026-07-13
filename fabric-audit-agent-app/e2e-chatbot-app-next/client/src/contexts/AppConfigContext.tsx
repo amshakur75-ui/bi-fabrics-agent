@@ -2,7 +2,8 @@ import { createContext, useContext, type ReactNode } from 'react';
 import useSWR from 'swr';
 import { fetcher } from '@/lib/utils';
 
-export const DEFAULT_GREETING = 'What would you like to know?';
+export const DEFAULT_GREETING =
+  "👋 I'm CAMP — your read-only Fabric & Power BI capacity analyst. Pick something below to get started, or just ask.";
 
 interface ConfigResponse {
   features: {
