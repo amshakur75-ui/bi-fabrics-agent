@@ -21,6 +21,8 @@ def _impact_for(flag):
         return "Long refreshes consume capacity memory and CU, compounding contention."
     if t == "capacity.concentration":
         return "One item monopolizing CU can slow or throttle every other workload on the same capacity."
+    if t == "capacity.user-ranking":
+        return "No single account is a runaway risk; capacity load is healthily distributed. Informational — no action required."
     if t in ("model.bidirectional", "model.auto-datetime"):
         return "Slower queries and a larger model that consumes more capacity memory."
     if t == "model.refresh-failing":

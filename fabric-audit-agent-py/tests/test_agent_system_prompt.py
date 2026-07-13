@@ -85,11 +85,15 @@ def test_fix2_bias_to_act_coexists_with_abstain_and_hypothesis_carveout():
     assert "not about" in low and "manufacturing certainty" in low
 
 
-def test_fix3_right_size_the_answer():
+def test_fix3_lean_visual_default_holds_detail_until_asked():
     low = build_system_prompt().lower()
-    assert "right-size the answer" in low
+    assert "default to lean and visual" in low
+    assert "not a data dump" in low
     assert "narrow question gets a narrow answer" in low
     assert "audit-scale" in low
+    # Deep analysis (evidence chains, breakdowns, alternatives) is held until the user asks.
+    assert "asks to explain or dig in" in low
+    assert "default answer shape" in low
 
 
 def test_fix4_caveats_per_load_bearing_claim_not_once():
@@ -105,12 +109,14 @@ def test_fix4_caveats_per_load_bearing_claim_not_once():
     assert "never drop it" in low
 
 
-def test_fix5_consistent_numbers_window_and_no_reconcile():
+def test_fix5_consistent_numbers_and_distinct_scopes():
     low = build_system_prompt().lower()
-    assert "consistent numbers" in low
+    assert "consistent numbers, distinct scopes" in low
     assert "name the time window" in low
-    assert "never present two of your own" in low
     assert "reconcile" in low
+    # Scope separation (the fix): per-item vs per-capacity are different populations, never blended.
+    assert "different populations" in low
+    assert "separate rankings" in low
 
 
 def test_presentation_voice_does_not_delete_preexisting_hard_rules():

@@ -37,4 +37,14 @@ CAPACITY_PLAYBOOKS = {
         ],
         "owner": "Power BI team + item owner",
     },
+    # Informational (the healthy, distributed-load case): no single user over the threshold. Given a
+    # real KB entry so it never falls back to the "not yet in the knowledge base" developer placeholder.
+    "capacity.user-ranking": {
+        "rootCause": "Capacity CU is spread across many users rather than concentrated in one account — the healthy, distributed-load pattern. Listed so the \"who is driving CU\" question is still answered even when no single user stands out.",
+        "fixes": [
+            "No action needed — this is the distributed-load case, not a problem.",
+            "Keep an eye on the top consumer over time; only investigate if one user's share climbs toward the concentration threshold.",
+        ],
+        "owner": "Power BI team",
+    },
 }

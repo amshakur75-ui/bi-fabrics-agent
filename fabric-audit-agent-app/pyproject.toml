@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent-app"
-version = "0.1.2"
+version = "0.1.3"
 description = "Read-only Fabric/Power BI audit agent - Phase 2 Databricks App"
 requires-python = ">=3.11"
 dependencies = [

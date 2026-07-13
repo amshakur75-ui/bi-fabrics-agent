@@ -23,3 +23,17 @@ def test_stub_unknown_flag_uses_kb_default_and_info_severity():
     assert findings[0]["why"].startswith("Pattern not yet")
     assert findings[0]["impact"] == "Impact not assessed."
     assert findings[0]["score"]["level"] == "Info"
+
+
+def test_top_users_finding_has_real_content_not_placeholder():
+    # The informational "no single user over threshold" finding (capacity.user-ranking) must carry
+    # real user-facing why/impact/fix -- never the developer placeholder scaffolding.
+    flag = {"type": "capacity.user-ranking", "resource": "top-users", "when": "",
+            "evidence": {"userCount": 488}, "what": "No single user is over 30%..."}
+    f = create_stub_reasoner()["reason"]({}, [flag])[0]
+    for field in ("why", "impact"):
+        assert "not yet in the knowledge base" not in f[field].lower()
+        assert "not assessed" not in f[field].lower()
+    assert not any("add a playbook entry" in step.lower() for step in f["fix"])
+    assert "distributed" in f["why"].lower() or "spread across" in f["why"].lower()
+    assert f["fix"] and "no action" in f["fix"][0].lower()
