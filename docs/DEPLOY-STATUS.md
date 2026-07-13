@@ -271,3 +271,17 @@ until the user asks); added a real KB entry + impact line for `capacity.user-ran
 **verified live**: the reply is now a scannable ⚠️/✅ headline + bullets, scopes are not blended, and the
 top-users finding carries real "no action required" content. Package 1100 tests / agent-app 73 green; prompt
 parity held.
+
+**2026-07-13 (CAMP UX + direct Fabric)**: Four agent-app changes shipped over several deploys (agent app
+0.1.3 → **0.1.6**), all via the vendored frontend now owned in-repo (`e2e-chatbot-app-next`, no longer
+runtime-cloned from Databricks). (1) **Auto-greeting** — greeting introduces "Newell"; the new-chat starter
+chips became 14 clickable capability bubbles (click sends + starts the agent); added a "What can I do?"
+AlertDialog summary. (2) **Direct read-only Fabric access** (`agent_server/fabric_direct.py`) — GET-only
+Fabric REST client alongside MCP, read-only by construction (only POST is the Entra token endpoint),
+INERT until the SP secrets are bound (commented block in the app `app.yaml`; user activates). (3) **Progress
+checks stack vertically** — each streamed check ends with `\n\n` so they list underneath one another
+(simplified from grid cards per user). (4) **"…" working indicator** appended per check. Agent-app suite
+**82 passed** (+9 direct-Fabric); frontend build succeeds at deploy (no local Node). Verified live: deploy
+SUCCEEDED, bubbles/greeting render, backend healthy (lean answer, tool loop intact), and the stream emits
+separated progress lines. Frontend cannot be built/verified locally (no Node/mlflow) — UI confirmed by
+deploy + visual check.
