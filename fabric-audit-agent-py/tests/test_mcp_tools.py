@@ -2346,6 +2346,23 @@ def test_diagnose_invalid_symptom_returns_error_envelope_never_raises(monkeypatc
     _clear_live(monkeypatch)
     out = _handler("diagnose")({"symptom": "bogus"})
     assert "error" in out
+    # Reachability (harness A2): the error TEACHES -- accepted values + mapping guidance.
+    assert out["acceptedSymptoms"] == ["throttle", "refresh", "slowness"]
+    assert "slowness" in out["error"] and "refresh" in out["error"]
+
+
+def test_diagnose_natural_phrasings_normalize_to_engine_symptoms(monkeypatch):
+    # Defense-in-depth (harness A2): a model that passes a natural phrase instead of the enum
+    # value still reaches the engine -- free text no longer dead-ends the agent's best tool.
+    _clear_live(monkeypatch)
+    h = _handler("diagnose")
+    for phrase, expect in [
+        ("throttling", "throttle"), ("rejected operations", "throttle"),
+        ("slow reports", "slowness"), ("performance problems", "slowness"),
+        ("stale data after refresh", "refresh"), ("REFRESH failures", "refresh"),
+    ]:
+        out = h({"symptom": phrase})
+        assert out.get("symptom") == expect, (phrase, out.get("error"))
 
 
 def test_diagnose_tier1_env_has_coverage_note_and_unconfirmed_driver(monkeypatch):
