@@ -2662,3 +2662,23 @@ def test_run_audit_payload_carries_stop_gates(monkeypatch):
     assert isinstance(g["throttleClaim"]["passed"], bool)
     assert g["trueCuPerUser"]["blocked"] is True
     assert "metrics app" in g["trueCuPerUser"]["note"].lower()
+
+
+def test_run_kql_la_engine_goes_through_the_one_firewall_chokepoint(monkeypatch):
+    # C2 chokepoint pin (harness): the LA engine path validates ad-hoc KQL through the SAME
+    # static firewall as the capacity engine, BEFORE any client call -- a denied control
+    # command must be rejected at the firewall stage, never reach Log Analytics.
+    _clear_live(monkeypatch)
+    for k, v in _T1_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("FABRIC_LA_WORKSPACE_ID", "ws-guid")
+    # Stub the LA client builder (imports msal at construction) -- the firewall must reject
+    # BEFORE any query executes, so the stub must never be CALLED as a query.
+    import fabric_audit_agent.adapters.clients as clients_mod
+    calls = []
+    monkeypatch.setattr(clients_mod, "build_log_analytics_query",
+                        lambda *a, **k: (lambda kql: calls.append(kql)))
+    out = _handler("run_kql")({"engine": "la", "kql": ".drop table X"})
+    assert calls == []   # the denied statement never reached the LA client
+    assert "error" in out and out.get("rejectionStage") not in (None, "engine-unconfigured")
+    assert out["engine"] == "la"

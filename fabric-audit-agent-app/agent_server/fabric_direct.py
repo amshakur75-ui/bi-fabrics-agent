@@ -18,8 +18,13 @@ import time
 import urllib.parse
 
 _DEFAULT_BASE = "https://api.fabric.microsoft.com/v1"
+_PBI_BASE = "https://api.powerbi.com/v1.0/myorg"
 _TOKEN_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-_SCOPE = "https://api.fabric.microsoft.com/.default"
+# Per-base token scopes: Fabric REST and Power BI REST are separate resources.
+_SCOPES = {
+    "fabric": "https://api.fabric.microsoft.com/.default",
+    "pbi": "https://analysis.windows.net/powerbi/api/.default",
+}
 _TIMEOUT = 30
 
 # Fixed allowlist: tool name -> {GET path template, required params, description}. GET-only, always.
@@ -36,7 +41,17 @@ _ENDPOINTS = {
     "fabric_dataset_refresh_history": {
         "path": "/workspaces/{workspaceId}/semanticModels/{semanticModelId}/refreshes",
         "params": ["workspaceId", "semanticModelId"],
-        "desc": "Refresh history for a semantic model / dataset (direct Fabric REST, read-only)."},
+        "desc": "Refresh history for a semantic model / dataset (direct Fabric REST, read-only). Funnel stage: WHY - failed/long refreshes."},
+    "fabric_refresh_schedule": {
+        "base": "pbi",
+        "path": "/groups/{workspaceId}/datasets/{datasetId}/refreshSchedule",
+        "params": ["workspaceId", "datasetId"],
+        "desc": "A dataset's configured refresh SCHEDULE (direct Power BI REST, read-only). Funnel stage: WHY - overlapping schedules are the refresh-contention signal."},
+    "fabric_list_datasets": {
+        "base": "pbi",
+        "path": "/groups/{workspaceId}/datasets",
+        "params": ["workspaceId"],
+        "desc": "Datasets in a workspace (direct Power BI REST, read-only). Funnel stage: ATTRIBUTE - map an item name to its dataset id."},
 }
 
 # Shape-only secret scrub: mask a JWT or a connection-string secret IF one ever appears in a response.
@@ -74,13 +89,13 @@ def _safe_json(resp):
         return {"raw": getattr(resp, "text", "")}
 
 
-def _acquire_token(env, http):
+def _acquire_token(env, http, scope):
     url = _TOKEN_URL.format(tenant=urllib.parse.quote(str(env["FABRIC_TENANT_ID"]), safe=""))
     resp = http.post(url, data={
         "grant_type": "client_credentials",
         "client_id": env["FABRIC_CLIENT_ID"],
         "client_secret": env["FABRIC_CLIENT_SECRET"],
-        "scope": _SCOPE,
+        "scope": scope,
     }, timeout=_TIMEOUT)
     resp.raise_for_status()
     body = resp.json()
@@ -113,20 +128,24 @@ def direct_tools_and_dispatch(env=None, *, http=None):
 
     real = http is None
     http = http if http is not None else _default_http()
-    base = (env.get("FABRIC_API_BASE") or _DEFAULT_BASE).rstrip("/")
-    token_box = {"token": None, "exp": 0.0}
+    bases = {"fabric": (env.get("FABRIC_API_BASE") or _DEFAULT_BASE).rstrip("/"),
+             "pbi": _PBI_BASE}
+    token_boxes = {k: {"token": None, "exp": 0.0} for k in _SCOPES}
 
-    def _token():
-        if not token_box["token"] or time.monotonic() >= token_box["exp"]:
-            token_box["token"], token_box["exp"] = _acquire_token(env, http)
-        return token_box["token"]
+    def _token(base_key):
+        box = token_boxes[base_key]
+        if not box["token"] or time.monotonic() >= box["exp"]:
+            box["token"], box["exp"] = _acquire_token(env, http, _SCOPES[base_key])
+        return box["token"]
 
     def _get_sync(name, inp):
         spec = _ENDPOINTS[name]
         path, err = _build_path(spec, inp)
         if err:
             return {"error": err}
-        resp = http.get(base + path, headers={"Authorization": f"Bearer {_token()}"}, timeout=_TIMEOUT)
+        base_key = spec.get("base", "fabric")
+        resp = http.get(bases[base_key] + path,
+                        headers={"Authorization": f"Bearer {_token(base_key)}"}, timeout=_TIMEOUT)
         status = getattr(resp, "status_code", 200)
         if status >= 400:
             return {"error": f"Fabric REST {status}", "detail": _scrub(_safe_json(resp))}
