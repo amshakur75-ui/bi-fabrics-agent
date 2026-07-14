@@ -606,6 +606,8 @@ _PROGRESS_PHRASES = {
     "fabric_list_items": "checking what's in that workspace",
     "fabric_list_capacities": "listing the capacities",
     "fabric_dataset_refresh_history": "checking the refresh history",
+    "fabric_refresh_schedule": "checking the refresh schedule",
+    "fabric_list_datasets": "looking up datasets in that workspace",
 }
 _PROGRESS_DEFAULT = "working on it…"
 

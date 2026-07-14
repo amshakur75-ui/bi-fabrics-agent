@@ -186,5 +186,25 @@ class TestHostileScopeValues(unittest.TestCase):
         )
 
 
+_DIRECT_FABRIC_PHRASE_CASES = [
+    ("fabric_list_workspaces", "listing the workspaces"),
+    ("fabric_list_items", "checking what's in that workspace"),
+    ("fabric_list_capacities", "listing the capacities"),
+    ("fabric_dataset_refresh_history", "checking the refresh history"),
+    ("fabric_refresh_schedule", "checking the refresh schedule"),
+    ("fabric_list_datasets", "looking up datasets in that workspace"),
+]
+
+
+class TestDirectFabricPhraseMap(unittest.TestCase):
+    def test_all_6_direct_fabric_tools_map_to_non_generic_phrase(self):
+        """Direct Fabric tools must have explicit phrases — not the generic fallback."""
+        for name, phrase in _DIRECT_FABRIC_PHRASE_CASES:
+            with self.subTest(name=name):
+                text = _progress_text(name, None)
+                self.assertEqual(text, f"\U0001F50E {phrase}", f"{name!r} mapped to wrong phrase")
+                self.assertNotIn("working on it", text, f"{name!r} fell through to generic fallback")
+
+
 if __name__ == "__main__":
     unittest.main()
