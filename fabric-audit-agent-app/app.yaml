@@ -17,17 +17,43 @@ env:
   - name: FABRIC_MCP_URL
     value: "https://mcp-bi-fabrics-auditor-7405609570261849.9.azure.databricksapps.com/mcp"
 
-  # --- Feature 2: direct read-only Fabric access (fabric_direct.py) ---
-  # INERT until all three SP secrets resolve — with them unset, the agent uses only the MCP path and
-  # nothing breaks. To ACTIVATE: bind these to the SAME secret resources the MCP app uses, then
-  # uncomment. Do NOT put real values here (this repo is public). Referencing an unbound resource makes
-  # the app fail to start, so only uncomment AFTER the resources are bound.
+  # SP credentials + tenant/client identity — secret-backed app resources (never inline in git)
   - name: FABRIC_TENANT_ID
     valueFrom: tenant_id
   - name: FABRIC_CLIENT_ID
     valueFrom: client_id
   - name: FABRIC_CLIENT_SECRET
     valueFrom: client_secret
-  # Optional: override the Fabric REST base (defaults to https://api.fabric.microsoft.com/v1)
-  # - name: FABRIC_API_BASE
-  #   value: "https://api.fabric.microsoft.com/v1"
+
+  # Fabric REST API (public endpoint — safe inline)
+  - name: FABRIC_CAPACITIES_URL
+    value: "https://api.fabric.microsoft.com/v1/capacities"
+
+  # Per-user attribution via Log Analytics (the 30% "who") — workspace GUID via resource
+  - name: FABRIC_LA_WORKSPACE_ID
+    valueFrom: la_workspace_id
+
+  # Capacity Events Eventhouse (live CU%) — cluster/db via resources; KQL is non-sensitive query logic
+  - name: FABRIC_CAPACITY_EVENTS_CLUSTER
+    valueFrom: capacity_events_cluster
+  - name: FABRIC_CAPACITY_EVENTS_DB
+    valueFrom: capacity_events_db
+  # {window} is substituted by the collector with the threaded lookback (tool `days` arg, or the
+  # configured window) so a tool asking for 7d isn't silently served a hardcoded 1d.
+  - name: FABRIC_CAPACITY_EVENTS_KQL
+    value: "Monitoring_Eventhouse"
+
+  # Top-level operations allowlist (drops VertiPaqSE* sub-query children that double-count cost
+  # and pollute timelines). Live-verified op names on this tenant (2026-07-08): QueryEnd /
+  # CommandEnd / DiscoverEnd all carry genuine top-level cost — DiscoverEnd is deliberately
+  # INCLUDED (our biggest real spikes are expensive metadata discovers on large models; the
+  # recommended trio alone would hide them).
+  - name: FABRIC_EVENT_OPERATIONS
+    value: "QueryEnd,CommandEnd,ProgressReportEnd,DiscoverEnd"
+
+  # Interim history seam: each interactive run_audit appends its run record here, activating
+  # whats_changed + history enrichment. LOCAL container path (the App can't write /Volumes) —
+  # resets on redeploy; the scheduled Job (AUDIT_HISTORY_PATH, same contract) is the durable
+  # writer when it lands.
+  - name: FABRIC_HISTORY_PATH
+    value: "/tmp/fabric-audit/history.json"
