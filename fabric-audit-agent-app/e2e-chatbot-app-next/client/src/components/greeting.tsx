@@ -12,19 +12,24 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 
-// Quick, readable summary of everything Newell can do — shown in the "What can I do?" popup.
+// Quick, readable summary of what Newell focuses on -- shown in the "What can I do?" popup.
+// Narrowed 2026-07-14 to the two lanes Sowmya approved: (1) top CU consumers, (2) pattern
+// analysis. The "Beyond the focus" section makes it explicit the agent still handles the wider
+// capability set on demand -- the narrowing is about what we lead with, not what we can do.
 const CAPABILITY_SUMMARY: { title: string; desc: string }[] = [
-  { title: 'Capacity audit & verdict', desc: 'A full health check with a size-up vs. optimize recommendation.' },
-  { title: 'Spikes & unusual activity', desc: 'Find unusual CU spikes and what drove them.' },
-  { title: 'User activity', desc: 'What a specific user is running and their share of capacity CU.' },
-  { title: 'Query & DAX analysis', desc: 'Inspect a specific query or a DAX measure for anti-patterns.' },
-  { title: 'Model & workspace review', desc: 'Inspect a semantic model or review workspace usage.' },
-  { title: 'Refresh history', desc: 'Dataset / semantic-model refresh outcomes over time.' },
-  { title: 'Top consumers & concentration', desc: 'Who and what is driving the most CU (the noisy-neighbor check).' },
-  { title: 'What changed', desc: 'Diff the current state against the last audit.' },
-  { title: 'Diagnosis & forecast', desc: 'Root-cause a problem and forecast throttling risk.' },
-  { title: 'Audit-log summary', desc: 'Summarize recent activity and anything notable.' },
-  { title: 'Direct Fabric lookups', desc: 'List workspaces, items, and capacities directly.' },
+  { title: '🏆 Top CU consumers', desc: 'Who and what is driving the most capacity right now -- users, items, and the queries behind them.' },
+  { title: '📈 Pattern analysis', desc: 'Recurring spikes, day-of-week rhythms, and workloads that keep hitting the capacity the same way.' },
+  { title: '👤 Per-user investigation', desc: 'Deep dive on one user -- their timeline, query anatomy, and how they compare to peers on the same item.' },
+  { title: '⚡ Throttle root-cause', desc: 'When the capacity throttles, confirm it, attribute it to an item/user, and name the specific fix.' },
+  { title: '🔀 What changed', desc: 'Diff today\'s reading against yesterday -- new findings, resolved findings, and shifts in the top consumers.' },
+];
+
+const BEYOND_FOCUS: { title: string; desc: string }[] = [
+  { title: 'Full capacity audit', desc: 'Estate-wide health check with a size-up vs. optimize recommendation.' },
+  { title: 'Query & DAX analysis', desc: 'Inspect a specific query or DAX measure for anti-patterns.' },
+  { title: 'Refresh history & schedules', desc: 'Dataset refresh outcomes, schedules, and contention checks.' },
+  { title: 'Direct Fabric lookups', desc: 'List workspaces, items, capacities, and dataset schedules directly.' },
+  { title: 'Ad-hoc read-only KQL', desc: 'Run bespoke read-only Kusto queries against the capacity events store.' },
 ];
 
 export const Greeting = () => {
@@ -57,20 +62,36 @@ export const Greeting = () => {
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
           <AlertDialogHeader>
-            <AlertDialogTitle>What Newell can help with</AlertDialogTitle>
+            <AlertDialogTitle>What Newell focuses on</AlertDialogTitle>
             <AlertDialogDescription>
               I'm read-only — I investigate, explain, and advise, but I never change,
               refresh, scale, or delete anything.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <ul className="flex flex-col gap-3 py-2 text-sm">
-            {CAPABILITY_SUMMARY.map((cap) => (
-              <li key={cap.title}>
-                <span className="font-medium text-foreground">{cap.title}</span>
-                <span className="text-muted-foreground"> — {cap.desc}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="py-2 text-sm">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Primary focus
+            </p>
+            <ul className="flex flex-col gap-3">
+              {CAPABILITY_SUMMARY.map((cap) => (
+                <li key={cap.title}>
+                  <span className="font-medium text-foreground">{cap.title}</span>
+                  <span className="text-muted-foreground"> — {cap.desc}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-5 mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Beyond the focus (just ask)
+            </p>
+            <ul className="flex flex-col gap-3">
+              {BEYOND_FOCUS.map((cap) => (
+                <li key={cap.title}>
+                  <span className="font-medium text-foreground">{cap.title}</span>
+                  <span className="text-muted-foreground"> — {cap.desc}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Got it</AlertDialogCancel>
           </AlertDialogFooter>

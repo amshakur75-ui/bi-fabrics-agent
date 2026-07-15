@@ -13,24 +13,18 @@ interface SuggestedActionsProps {
   selectedVisibilityType: VisibilityType;
 }
 
-// CAMP capability bubbles. `label` is the chip text; `prompt` is what gets sent to the agent when
-// tapped. Prompts that need a specific (a user, a model, a query) send a lead-in so the agent asks
-// for it rather than guessing.
+// Narrowed to Sowmya's approved focus (2026-07-14 meeting): "top CU consumers and pattern
+// analysis." The chips lead with those two lanes and their natural follow-ups (per-user
+// investigation, throttle root-cause, weekly recurrence). The underlying agent still supports
+// every capability -- users can still ask any question freely; this only shapes the FIRST
+// nudge so the demo/onboarding matches the narrowed use case.
 const CAMP_CAPABILITIES: { label: string; prompt: string }[] = [
-  { label: '📊 Run a capacity audit', prompt: 'Run a Fabric capacity audit and give me the verdict.' },
-  { label: '⚡ Check for activity spikes', prompt: 'Check for unusual activity spikes on the capacity.' },
-  { label: '👤 Look into a user', prompt: "Look into a specific user's activity — ask me which user." },
-  { label: '🔎 Analyze a query', prompt: 'Analyze a specific query — ask me which query to look at.' },
-  { label: '🧩 Inspect a model', prompt: 'Inspect a specific semantic model — ask me which model.' },
-  { label: '🗂️ Review workspace usage', prompt: 'Review workspace usage across the capacity.' },
-  { label: '🔄 Dataset refresh history', prompt: 'Check dataset refresh history — ask me which dataset.' },
-  { label: '🏆 Top resource consumers', prompt: 'Identify the top resource consumers on the capacity.' },
-  { label: '📝 Summarize audit logs', prompt: 'Summarize the recent audit logs and anything notable.' },
-  { label: '🔀 What changed since last run', prompt: 'What changed on the capacity since the last audit?' },
-  { label: '🩺 Diagnose an issue', prompt: 'Diagnose a capacity issue — ask me for the symptom if you need it.' },
-  { label: '📈 Forecast throttling risk', prompt: 'Forecast whether and when the capacity is likely to throttle.' },
-  { label: '🧮 Analyze a DAX measure', prompt: 'Analyze a DAX measure for anti-patterns — ask me to paste it.' },
-  { label: '🗺️ List capacities & workspaces', prompt: 'List the Fabric capacities and workspaces you can see.' },
+  { label: '🏆 Top CU consumers right now', prompt: 'Show me the top CU consumers on the capacity right now — users and items — and what they were doing.' },
+  { label: '👤 Investigate a specific user', prompt: "Investigate a specific user's CU consumption in depth — ask me which user, then dig into their queries, timeline, and peers." },
+  { label: '📊 What\'s driving the current peak', prompt: 'What\'s driving the current CU peak? Attribute it to the item, then to the user, then to the query pattern.' },
+  { label: '📈 Recurring spike patterns', prompt: 'Look for recurring CU spike patterns over the last 14 days — same time of day, same day of week, same user, or same item.' },
+  { label: '🔀 What changed since yesterday', prompt: 'What changed on the capacity since yesterday\'s reading? Peak, top consumers, new findings, resolved findings.' },
+  { label: '⚡ Investigate throttle event', prompt: 'Investigate the most recent throttle event — confirm it, attribute it, identify the top offenders, and give me the fix.' },
 ];
 
 function PureSuggestedActions({ chatId, sendMessage }: SuggestedActionsProps) {
