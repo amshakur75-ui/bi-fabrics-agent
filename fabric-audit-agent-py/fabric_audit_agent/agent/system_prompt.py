@@ -116,6 +116,18 @@ about what they MEAN and what you'd chase next):
 - Run the differential before blaming: one item or distributed? one user or everyone on an expensive
   item? a scheduled-time pattern or chronic? interactive or background? started at a date (what
   changed then) or gradual growth? Name the competitor you ruled out and how.
+- "Unusual today" / spike questions require MULTIPLE LENSES, never a single ranking. A top-N single
+  events list captures ONE shape (the biggest bangs) and will miss others. Before you answer, scan
+  for each lens explicitly and merge the result: (a) largest single events (peak size), (b) BURST
+  SHAPE per user -- count of above-baseline events in a tight window, even if no single one cracks
+  the top-N -- 91 mid-size queries in 12 minutes is as anomalous as one giant query, (c) unusual
+  OPERATION types (backup/restore/XMLA admin/DDL) even when the CU cost is modest, (d) OFF-HOURS
+  activity outside the estate's normal business-hours pattern, (e) users whose share is CONCENTRATED
+  on one item vs. spread across many. Also cross-check: reconcile the "unusual" list against the
+  top-N daily-cumulative user list -- if a heavy-cumulative user does NOT appear in your spike list,
+  or a spike-list user is missing from the cumulative top-N, call that out and explain. When any
+  lens is skipped for cost/step-budget reasons, name the lens you skipped so the user knows what
+  was NOT checked -- silence reads as "nothing there."
 - Escalate data tiers only when the lead demands it: detector tools first; then the query library or
   ad-hoc read-only KQL (capacity events or Log Analytics) for joins and history the tools don't
   cover; deeper sources (long-term FUAM history, model internals) are gated or need a human -- say

@@ -33,14 +33,15 @@ env:
   - name: FABRIC_LA_WORKSPACE_ID
     valueFrom: la_workspace_id
 
-  # Capacity Events Eventhouse (live CU%) — cluster/db via resources; KQL is non-sensitive query logic
+  # Capacity Events Eventhouse (live CU%) — cluster/db via resources; table name is non-sensitive
   - name: FABRIC_CAPACITY_EVENTS_CLUSTER
     valueFrom: capacity_events_cluster
   - name: FABRIC_CAPACITY_EVENTS_DB
     valueFrom: capacity_events_db
-  # {window} is substituted by the collector with the threaded lookback (tool `days` arg, or the
-  # configured window) so a tool asking for 7d isn't silently served a hardcoded 1d.
-  - name: FABRIC_CAPACITY_EVENTS_KQL
+  # TABLE (not KQL): the collector auto-generates the schema-tolerant time-filtered query
+  # (`<table> | where ingestion_time() > ago({window})`). Setting FABRIC_CAPACITY_EVENTS_KQL
+  # to a bare table name was pulling ALL history and returning impossible peaks (e.g. 8,964%).
+  - name: FABRIC_CAPACITY_EVENTS_TABLE
     value: "Monitoring_Eventhouse"
 
   # Top-level operations allowlist (drops VertiPaqSE* sub-query children that double-count cost

@@ -83,6 +83,25 @@ def test_detective_posture_markers_locked_in_system_prompt():
         assert m in _agent._SYSTEM, f"detective-posture marker missing: {m!r}"
 
 
+# Lock-in for the multi-lens "unusual today" rule -- added after a live miss where the agent
+# ranked "unusual users" by top-N single-event size and missed Bryant Carlson's 91-query,
+# 12-minute burst because his largest single query sat below the top-N cutoff. Losing any of
+# these markers would let the same blind spot re-open.
+_MULTI_LENS_MARKERS = [
+    "MULTIPLE LENSES",                      # the rule name -- the whole bullet hangs off this
+    "91 mid-size queries in 12 minutes",    # lens (b) burst-shape -- the exact live-miss example
+    "unusual\n  OPERATION types",           # lens (c) -- backup/restore signal (wraps a line)
+    "OFF-HOURS",                            # lens (d)
+    "top-N daily-cumulative user list",     # cross-check between spike list and daily top-N
+    "silence reads as \"nothing there.\"",  # forces naming lenses that were skipped
+]
+
+
+def test_multi_lens_spike_scan_markers_locked_in_system_prompt():
+    for m in _MULTI_LENS_MARKERS:
+        assert m in _agent._SYSTEM, f"multi-lens spike-scan marker missing: {m!r}"
+
+
 def test_offer_skip_carve_out_still_present():
     # The offer is mandatory on substantive answers -- but not on refusals, false-premise
     # corrections, or pure clarifying questions. If we ever drop the carve-out the model would
