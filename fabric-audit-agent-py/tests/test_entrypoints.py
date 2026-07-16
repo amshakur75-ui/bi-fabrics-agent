@@ -124,9 +124,14 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
 
     assert set(tools) == {"run_audit", "list_workspaces", "user_activity", "investigate_user",
                           "investigate_capacity_spike", "user_spike_history", "spike_events",
-                          "raw_events", "capacity_patterns", "describe_source", "sample_events",
-                          "capacity_diagnostics", "analyze_dax", "diagnose", "whats_changed",
-                          "user_timeline", "run_kql", "query_library"}
+                          "capacity_peaks", "raw_events", "capacity_patterns", "describe_source",
+                          "sample_events", "capacity_diagnostics", "analyze_dax", "diagnose",
+                          "whats_changed", "user_timeline", "run_kql", "query_library"}
+
+    # capacity_peaks: calendar-day timepoint-peak lens -- date/threshold/scope, none required
+    assert set(tools["capacity_peaks"]["properties"]) == {
+        "date", "minPctBase", "topN", "user", "item", "includeRefresh"}
+    assert "required" not in tools["capacity_peaks"] or not tools["capacity_peaks"]["required"]
 
     # user_spike_history: user REQUIRED; window props + item optional -- no phantom topN/when
     ush = tools["user_spike_history"]

@@ -555,5 +555,29 @@
   ],
   "expectTool": "diagnose",
   "expectAbstain": false
+ },
+ {
+  "name": "top-peaks-today-timepoint-lens",
+  "messages": [
+   {
+    "role": "user",
+    "content": "who had the biggest moments of capacity usage today, with % of base capacity?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_peaks",
+    "input": {
+     "date": "today"
+    }
+   },
+   {
+    "type": "text",
+    "text": "The biggest timepoint peak today was a single MDX query on Ent-Reporting-Sales at 14:09 UTC (10:09 AM EDT) that hit about 1.6% of base capacity for its 30-second timepoint slice. Nothing today crossed into a high per-operation share -- the per-query load on this F1024 stays in the low single-digit percent of base, so the day's pressure is coming from many concurrent operations rather than any one user's query. Want me to check whether those concurrent moments pushed the capacity total over 100%?"
+   }
+  ],
+  "expectTool": "capacity_peaks",
+  "expectAbstain": false
  }
 ]

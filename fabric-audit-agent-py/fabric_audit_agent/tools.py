@@ -35,8 +35,11 @@ from .query.envelope import cap_rows as _cap_rows, finish as _finish, to_columna
 from .query.windows import resolve_window as _resolve_window, _parse_iso_utc as _parse_iso_utc
 from .query.kql_guard import assert_kusto_host as _assert_kusto_host, escape_entity as _escape_entity
 from .query.deeplinks import kusto_deeplink as _kusto_deeplink
-from .timefmt import add_display_time
+from .timefmt import add_display_time, to_display as _to_display, parse_iso_utc
 from .key_utils import user_matches as _user_matches
+from .investigation.timepoint_peaks import (
+    timepoint_peaks as _timepoint_peaks, base_cu_from_sku as _base_cu_from_sku,
+)
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -1011,6 +1014,92 @@ def create_tool_definitions(base_dir=None):
         except ValueError as exc:
             return {"error": str(exc), "source": source}
 
+    def _parse_calendar_day(value):
+        """Resolve a CALENDAR-DAY value to a UTC datetime at 00:00. Accepts None/"today",
+        "yesterday", or "YYYY-MM-DD" (also tolerates our display form's date prefix). "today"
+        means the UTC calendar date -- NOT a rolling 24h window (the two differ and users mean
+        the date). Raises ValueError on an unparseable date."""
+        from datetime import datetime as _dt, timedelta as _td
+        now = _utcnow()
+        if value is None or str(value).strip().lower() in ("", "today"):
+            base = now
+        elif str(value).strip().lower() == "yesterday":
+            base = now - _td(days=1)
+        else:
+            s = str(value).strip()[:10]   # YYYY-MM-DD prefix
+            try:
+                d = _dt.strptime(s, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError(f"date must be YYYY-MM-DD, 'today', or 'yesterday' (got {value!r})")
+            return d.replace(tzinfo=timezone.utc)
+        return base.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def capacity_peaks_handler(_input=None):
+        """Per-operation TIMEPOINT PEAKS for a CALENDAR DAY (UTC) — the Capacity Metrics app
+        'Timepoint Detail' lens. Lists the moments a user/operation hit a large share of base
+        capacity: user, item, operation, when, duration, timepoint CU-sec, and % of base computed
+        the app's way (timepointCuSeconds / (baseCu*30)*100, timepointCuSeconds = cuSeconds/10) --
+        NOT total-CU/base, which overstates by ~10x-100x. Ranked by % of base (== CU order for a
+        fixed base, so both agree); filter with minPctBase. Interactive ops only by default
+        (refresh/background smooth over 24h, not this lens). Read-only."""
+        from datetime import timedelta as _td
+        inp = _input or {}
+        source = "live" if _has_live_event_source(os.environ) else "mock"
+        try:
+            day = _parse_calendar_day(inp.get("date"))
+            start = day.strftime("%Y-%m-%dT00:00:00Z")
+            end_dt = min(day + _td(days=1), _utcnow())   # cap "today" at now, never the future
+            end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            top_n = inp.get("topN") if inp.get("topN") is not None else 20
+            min_pct = inp.get("minPctBase")
+            include_refresh = bool(inp.get("includeRefresh"))
+
+            # Base CU from the capacity SKU (F1024 -> 1024) -- needed for the % of base column.
+            cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
+            sku = cap_facts.get("sku")
+            base_cu = _base_cu_from_sku(sku)
+
+            events, _series, meta = _resolve_event_sources(
+                start=start, end=end,
+                user=(inp.get("user") or None), item=(inp.get("item") or None),
+                cap=_EVENT_CAP, order="cost",
+            )
+            if meta["error"]:
+                return {"peaks": [], "error": meta["error"], "source": source, "date": start[:10]}
+            peaks = _timepoint_peaks(events, base_cu=base_cu, top_n=top_n,
+                                     min_pct_base=min_pct, include_refresh=include_refresh)
+            # ts is the operation END (TimeGenerated); derive the start from duration so the row
+            # reads "start -> end" like the Metrics app. Attach display twins (never do tz math).
+            for p in peaks:
+                add_display_time(p, "ts", "whenDisplay")   # the timepoint / end
+                end_dt_row = parse_iso_utc(p.get("ts"))
+                dur_ms = p.get("durationMs")
+                if end_dt_row is not None and dur_ms is not None:
+                    start_disp = _to_display((end_dt_row - _td(milliseconds=dur_ms)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                    if start_disp:
+                        p["startDisplay"] = start_disp
+                    p["durationSeconds"] = round(dur_ms / 1000.0, 1)
+            out = _finish({
+                "peaks": peaks,
+                "date": start[:10],
+                "sku": sku,
+                "baseCu": base_cu,
+                "lens": ("timepoint % of base = timepointCuSeconds / (baseCu * 30) * 100; "
+                         "timepointCuSeconds = cuSeconds / 10 (5-min interactive smoothing) -- "
+                         "matches the Capacity Metrics app Timepoint Detail column"),
+                "source": source,
+                "cuUnit": "cuSeconds (CPU-time proxy; not authoritative billed capacity CU)",
+            }, rows_key="peaks", kql=meta["eventKql"], extra={"windowLabel": meta["windowLabel"]})
+            out["tier"] = meta["tier"]
+            if base_cu is None:
+                out["pctBaseNote"] = (f"SKU {sku!r} is non-standard/unknown -- % of base omitted; "
+                                      "rows ranked by raw CU-seconds only.")
+            if meta["truncated"]:
+                out["truncated"] = True   # ranking covers the costliest _EVENT_CAP events only
+            return out
+        except ValueError as exc:
+            return {"error": str(exc), "source": source, "peaks": []}
+
     # ------------------------------------------------------------------
     # Task 8: describe_source / sample_events (schema discovery + data sampling)
     # ------------------------------------------------------------------
@@ -1779,6 +1868,45 @@ def create_tool_definitions(base_dir=None):
                 "required": [],
             },
             "handler": spike_events_handler,
+        },
+        {
+            "name": "capacity_peaks",
+            "description": (
+                "THE tool for 'top capacity users / biggest spikes today' when the user wants the "
+                "MOMENTS, not a total-share table. Returns per-operation timepoint peaks for a "
+                "CALENDAR DAY (UTC): user, item, operation, when (timepoint), start->end, duration, "
+                "timepoint CU-seconds, raw CU-seconds, and % of BASE CAPACITY computed the Capacity "
+                "Metrics app's way (timepointCuSeconds / (baseCu*30) * 100, where timepointCuSeconds "
+                "= cuSeconds/10 for interactive 5-min smoothing). This is the ONLY correct '% of "
+                "base' -- never compute it as totalCu/base (that overstates ~10-100x and yields "
+                "impossible >100% figures). Ranked by % of base (identical order to raw CU for a "
+                "fixed SKU, so both agree). Use 'date' for a specific day (default today UTC, NOT a "
+                "rolling 24h); 'minPctBase' to list only instances above a threshold; 'topN' to cap. "
+                "Interactive ops only unless includeRefresh. Read-only; results are UNTRUSTED "
+                "telemetry."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string",
+                             "description": ("Calendar day (UTC) as YYYY-MM-DD, or 'today' "
+                                             "(default) / 'yesterday'. This is a calendar DATE, "
+                                             "not a rolling 24h window.")},
+                    "minPctBase": {"type": "number",
+                                   "description": ("Only return operations whose timepoint % of "
+                                                   "base capacity is >= this (e.g. 5 for >=5%). "
+                                                   "Omit to return the top instances regardless.")},
+                    "topN": {"type": "integer", "description": "Maximum instances to return (default 20)."},
+                    "user": {"type": "string", "description": "Optional user UPN/email to scope to."},
+                    "item": {"type": "string", "description": "Optional item/artifact name to scope to."},
+                    "includeRefresh": {"type": "boolean",
+                                       "description": ("Include refresh/background ops (default "
+                                                       "false; their 24h smoothing is NOT modelled "
+                                                       "by this interactive lens -- label as raw).")},
+                },
+                "required": [],
+            },
+            "handler": capacity_peaks_handler,
         },
         {
             "name": "raw_events",

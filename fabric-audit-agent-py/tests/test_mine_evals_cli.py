@@ -231,4 +231,4 @@ def test_main_dispatch_mine_evals_preview_does_not_touch_real_agent_cases(tmp_pa
 
 
 def test_tool_count_unaffected_by_mine_evals(tmp_path):
-    assert len(create_tool_definitions(base_dir=str(tmp_path))) == 18
+    assert len(create_tool_definitions(base_dir=str(tmp_path))) == 19

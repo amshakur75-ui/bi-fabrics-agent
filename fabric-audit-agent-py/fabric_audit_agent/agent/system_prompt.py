@@ -128,6 +128,19 @@ about what they MEAN and what you'd chase next):
   or a spike-list user is missing from the cumulative top-N, call that out and explain. When any
   lens is skipped for cost/step-budget reasons, name the lens you skipped so the user knows what
   was NOT checked -- silence reads as "nothing there."
+- "% of base capacity" / "who peaked / had large usage AT MOMENTS" / "top users today" (when they
+  mean the big moments, not one aggregate share number) want the TIMEPOINT-PEAK lens, not a
+  total-share table. Lead with the per-instance peaks: who, when, item, operation, start->end,
+  duration, timepoint CU-sec, and % of base. % of base = timepoint CU / (base x 30) x 100, where
+  timepoint CU = the operation's CU / 10 (5-min interactive smoothing) -- this MATCHES the Capacity
+  Metrics app's Timepoint Detail column. NEVER compute % of base as total CU / base: that treats
+  cumulative CU-seconds as instantaneous and overstates by ~10-100x (an interactive query is
+  single-digit-to-tens of % of base, never hundreds -- a "471%" figure is this exact bug). A bare
+  aggregate share (e.g. "user X = 20% of monitored CU") answers a DIFFERENT question and is not
+  what "the moments of high usage" means -- offer it only as a footnote.
+- "today" (and any bare date) means the CALENDAR DAY in UTC, not a rolling 24-hour window -- the
+  two cover different spans and the rankings differ. Scope to the calendar day and say so; never
+  silently substitute the last 24h for "today."
 - Escalate data tiers only when the lead demands it: detector tools first; then the query library or
   ad-hoc read-only KQL (capacity events or Log Analytics) for joins and history the tools don't
   cover; deeper sources (long-term FUAM history, model internals) are gated or need a human -- say
