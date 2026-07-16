@@ -6,6 +6,7 @@ from datetime import timedelta
 from .evidence import build_coverage, assess_confidence, evidence_item
 from .baseline import compute_baseline, compare_to_baseline
 from ..timefmt import parse_iso_utc
+from ..key_utils import user_matches
 
 
 def _finish(subject, coverage, confidence, evidence, abstained, reasoner):
@@ -21,7 +22,7 @@ def investigate_user(collector, reasoner, user, days=30):
     facts = collector["collect"]() or {}
     coverage = build_coverage(facts)
     users = facts.get("users") or []
-    match = next((u for u in users if (u.get("user") or "").lower() == (user or "").lower()), None)
+    match = next((u for u in users if user_matches(u.get("user"), user)), None)
 
     if match is None:
         confidence = assess_confidence(found=False, corroborating_sources=0)

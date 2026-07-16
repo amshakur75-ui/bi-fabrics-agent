@@ -36,6 +36,7 @@ from .query.windows import resolve_window as _resolve_window, _parse_iso_utc as 
 from .query.kql_guard import assert_kusto_host as _assert_kusto_host, escape_entity as _escape_entity
 from .query.deeplinks import kusto_deeplink as _kusto_deeplink
 from .timefmt import add_display_time
+from .key_utils import user_matches as _user_matches
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -378,7 +379,7 @@ def create_tool_definitions(base_dir=None):
         cu_unit = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
         denominator = "monitored user-attributable activity"
         if who:
-            u = next((x for x in users if (x.get("user") or "").lower() == who.lower()), None)
+            u = next((x for x in users if _user_matches(x.get("user"), who)), None)
             return {"user": who, "found": u is not None, "detail": u,
                     "source": source, "coverage": cov,
                     "cuUnit": cu_unit, "denominator": denominator}

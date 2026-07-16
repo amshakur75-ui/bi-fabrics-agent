@@ -7,6 +7,7 @@ stream — ViewReport / RefreshDataset / ExecuteNotebook / ... — with ``cuSeco
 Read-only; http injected (swaps to ``clients.EntraHttp`` at deploy).
 """
 from .collector_activity import fetch_activity_events
+from ..key_utils import user_matches
 
 
 def _to_event(a):
@@ -33,7 +34,7 @@ def create_activity_event_collector(http, config=None):
         events = [_to_event(a) for a in fetch_activity_events(http, start, end)]
         user = cfg.get("user")
         if user is not None:
-            events = [e for e in events if (e.get("user") or "").lower() == str(user).lower()]
+            events = [e for e in events if user_matches(e.get("user"), str(user))]
         item = cfg.get("item")
         if item is not None:
             events = [e for e in events if e.get("item") == item]
