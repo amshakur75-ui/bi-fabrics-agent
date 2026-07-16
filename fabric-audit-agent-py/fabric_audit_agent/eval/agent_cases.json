@@ -579,5 +579,30 @@
   ],
   "expectTool": "capacity_peaks",
   "expectAbstain": false
+ },
+ {
+  "name": "capacity-overload-with-contributors",
+  "messages": [
+   {
+    "role": "user",
+    "content": "when did total CU go over 100% today and who contributed?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_overloads",
+    "input": {
+     "date": "today",
+     "minCuPct": 100
+    }
+   },
+   {
+    "type": "text",
+    "text": "The capacity crossed 100% in a sustained block this afternoon, peaking at 141.6% at 20:26 UTC (4:26 PM EDT). That block was almost entirely interactive (background stayed ~9%), and the contributor was Paul.Sugarman -- two long MDX queries on Ent-Reporting-Sales running through the window. Separately, one 30-second window hit an extreme total driven almost entirely by background work, not user queries -- that one is a system/refresh workload to chase, not a user. Want me to pull Sugarman's two queries to see what made them so heavy?"
+   }
+  ],
+  "expectTool": "capacity_overloads",
+  "expectAbstain": false
  }
 ]

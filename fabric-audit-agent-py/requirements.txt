@@ -6,7 +6,7 @@
 # below installs by version, so bumping pyproject version alone is NOT enough --
 # this file must also change to force a reinstall. Bump the marker below in lockstep
 # with the pyproject version whenever the package code changes.
-# code version: 1.9.3
+# code version: 1.9.4
 .[mcp]
 openai>=1.0
 databricks-sdk>=0.28  # get_open_ai_client added in 0.28

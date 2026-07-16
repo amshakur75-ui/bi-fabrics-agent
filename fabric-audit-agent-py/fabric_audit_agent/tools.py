@@ -40,6 +40,7 @@ from .key_utils import user_matches as _user_matches
 from .investigation.timepoint_peaks import (
     timepoint_peaks as _timepoint_peaks, base_cu_from_sku as _base_cu_from_sku,
 )
+from .investigation.overloads import overload_windows as _overload_windows
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -1108,6 +1109,84 @@ def create_tool_definitions(base_dir=None):
         except ValueError as exc:
             return {"error": str(exc), "source": source, "peaks": []}
 
+    def capacity_overloads_handler(_input=None):
+        """Capacity-LEVEL over-threshold windows for a CALENDAR DAY (UTC): every 30-second window
+        whose TOTAL CU% crossed the threshold, each decomposed into interactive vs background and
+        with the contributing user operations. Answers 'when did the capacity go over 100%/1000%
+        and who contributed'. Total CU% is the capacity utilization stream; interactive% is
+        estimated from attributed user ops (CpuTimeMs spread across 30s windows); background% is the
+        residual (system/refresh/dataflow -- not user queries). Read-only."""
+        from datetime import timedelta as _td, datetime as _dtm
+        inp = _input or {}
+        source = "live" if _has_live_event_source(os.environ) else "mock"
+        try:
+            day = _parse_calendar_day(inp.get("date"))
+            start = day.strftime("%Y-%m-%dT00:00:00Z")
+            end_dt = min(day + _td(days=1), _utcnow())
+            end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            min_cu_pct = inp.get("minCuPct") if inp.get("minCuPct") is not None else 100.0
+            top_windows = inp.get("topWindows") if inp.get("topWindows") is not None else 50
+
+            cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
+            sku = cap_facts.get("sku")
+            base_cu = _base_cu_from_sku(sku)
+
+            series_raw, series_meta = _capacity_series_only(None, None, start, end)
+            events, _s, meta = _resolve_event_sources(start=start, end=end, cap=_EVENT_CAP,
+                                                       order="cost")
+
+            series = []
+            for pt in series_raw or []:
+                dt = parse_iso_utc(pt.get("ts"))
+                if dt is not None and pt.get("cuPct") is not None:
+                    series.append({"epoch": dt.timestamp(), "cuPct": pt["cuPct"]})
+            ops = []
+            for e in events or []:
+                e_end = parse_iso_utc(e.get("ts"))
+                if e_end is None:
+                    continue
+                end_ep = e_end.timestamp()
+                dur_ms = e.get("durationMs") or 0
+                ops.append({"startEpoch": end_ep - dur_ms / 1000.0, "endEpoch": end_ep,
+                            "cuSeconds": e.get("cuSeconds"), "user": e.get("user"),
+                            "item": e.get("item"), "operation": e.get("operation")})
+
+            windows = _overload_windows(series, ops, base_cu=base_cu, min_cu_pct=min_cu_pct,
+                                        top_windows=top_windows)
+            for w in windows:
+                ep = w.pop("windowEpoch", None)
+                if ep is not None:
+                    iso = _dtm.fromtimestamp(ep, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    w["windowStart"] = iso
+                    disp = _to_display(iso)
+                    if disp:
+                        w["windowStartDisplay"] = disp
+            out = {
+                "overloads": windows,
+                "date": start[:10],
+                "sku": sku,
+                "baseCu": base_cu,
+                "thresholdCuPct": min_cu_pct,
+                "rowCount": len(windows),
+                "source": source,
+                "windowLabel": meta.get("windowLabel"),
+                "note": ("totalCuPct is the capacity utilization stream; interactiveCuPct is "
+                         "estimated from attributed user ops (monitored CpuTimeMs, a CPU-time proxy, "
+                         "spread linearly across 30-second windows); backgroundCuPct = total - "
+                         "interactive and covers system/refresh/dataflow/OneLake/ML work, NOT user "
+                         "queries -- do not blame a user for a background-dominated window"),
+            }
+            if base_cu is None:
+                out["splitNote"] = (f"SKU {sku!r} unknown -- interactive/background split omitted; "
+                                    "total CU% still shown.")
+            if series_meta.get("seriesError"):
+                out["seriesError"] = series_meta["seriesError"]   # no total series -> no windows
+            if meta.get("error"):
+                out["contributorsError"] = meta["error"]   # windows valid; contributors unavailable
+            return out
+        except ValueError as exc:
+            return {"error": str(exc), "source": source, "overloads": []}
+
     # ------------------------------------------------------------------
     # Task 8: describe_source / sample_events (schema discovery + data sampling)
     # ------------------------------------------------------------------
@@ -1922,6 +2001,36 @@ def create_tool_definitions(base_dir=None):
                 "required": [],
             },
             "handler": capacity_peaks_handler,
+        },
+        {
+            "name": "capacity_overloads",
+            "description": (
+                "THE tool for 'when did the capacity go over 100% / 1000%, and who contributed'. "
+                "For a CALENDAR DAY (UTC), returns each 30-second window whose TOTAL CU% crossed "
+                "minCuPct, decomposed into totalCuPct (capacity utilization stream), interactiveCuPct "
+                "(estimated from attributed user ops), and backgroundCuPct (residual = total - "
+                "interactive: system/refresh/dataflow/OneLake/ML work, NOT user queries), plus the "
+                "top contributing user operations in that window. This is a CAPACITY-LEVEL question, "
+                "different from any single operation's % of base (use capacity_peaks for that). A "
+                "window with high total but low interactive is background-driven -- do NOT blame a "
+                "user for it. Use 'date' (default today UTC, not rolling 24h) and 'minCuPct' "
+                "(default 100; pass 1000 for the extreme overages). Read-only; UNTRUSTED telemetry."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string",
+                             "description": ("Calendar day (UTC) as YYYY-MM-DD, or 'today' "
+                                             "(default) / 'yesterday'. A calendar DATE, not rolling 24h.")},
+                    "minCuPct": {"type": "number",
+                                 "description": ("Only return windows whose TOTAL CU% is >= this "
+                                                 "(default 100; use 1000 for extreme overages).")},
+                    "topWindows": {"type": "integer",
+                                   "description": "Maximum over-threshold windows to return (default 50)."},
+                },
+                "required": [],
+            },
+            "handler": capacity_overloads_handler,
         },
         {
             "name": "raw_events",

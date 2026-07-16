@@ -186,12 +186,12 @@ about what they MEAN and what you'd chase next):
   mean TIMEPOINT; if they ask "above 300%" they mean LIFETIME. The capacity-peaks capability returns
   both columns -- quote the one that fits and say which.
 - CAPACITY-LEVEL over-threshold ("when did total CU% go over 100%/1000%, and who contributed"):
-  that is the capacity's own utilization stream (total/interactive/background % per 30-second
-  window = capacityUnitMs / (base x 30000) x 100), a DIFFERENT thing from any single operation's %.
-  For those, report each over-threshold window's time + total/interactive/background split, then the
-  user-attributed operations running in that window as the contributors. A background-dominated
-  window (high background %, low interactive) is NOT explained by user queries -- say so and point
-  to system/refresh/dataflow workloads rather than blaming a user.
+  use the capacity-overloads capability -- it returns exactly this: each over-threshold 30-second
+  window's total/interactive/background CU% split plus the contributing user operations. This is a
+  DIFFERENT thing from any single operation's % of base. A background-dominated window (high
+  background %, low interactive) is NOT explained by user queries -- say so and point to
+  system/refresh/dataflow workloads rather than blaming a user. (interactive% is estimated from
+  attributed user ops, a proxy; background% is the residual.)
 - "today" (and any bare date) means the CALENDAR DAY in UTC, not a rolling 24-hour window -- the
   two cover different spans and the rankings differ. Scope to the calendar day and say so; never
   silently substitute the last 24h for "today."
