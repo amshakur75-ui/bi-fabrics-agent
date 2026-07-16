@@ -128,9 +128,9 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
                           "sample_events", "capacity_diagnostics", "analyze_dax", "diagnose",
                           "whats_changed", "user_timeline", "run_kql", "query_library"}
 
-    # capacity_peaks: calendar-day timepoint-peak lens -- date/threshold/scope, none required
+    # capacity_peaks: calendar-day peaks, two lenses -- date/threshold/lens/scope, none required
     assert set(tools["capacity_peaks"]["properties"]) == {
-        "date", "minPctBase", "topN", "user", "item", "includeRefresh"}
+        "date", "minPctBase", "lens", "topN", "user", "item", "includeRefresh"}
     assert "required" not in tools["capacity_peaks"] or not tools["capacity_peaks"]["required"]
 
     # user_spike_history: user REQUIRED; window props + item optional -- no phantom topN/when

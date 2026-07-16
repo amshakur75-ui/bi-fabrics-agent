@@ -1052,6 +1052,10 @@ def create_tool_definitions(base_dir=None):
             end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             top_n = inp.get("topN") if inp.get("topN") is not None else 20
             min_pct = inp.get("minPctBase")
+            lens = inp.get("lens") if inp.get("lens") is not None else "lifetime"
+            if lens not in ("lifetime", "timepoint"):
+                return {"error": f"lens must be 'lifetime' or 'timepoint', got {lens!r}",
+                        "peaks": [], "source": source}
             include_refresh = bool(inp.get("includeRefresh"))
 
             # Base CU from the capacity SKU (F1024 -> 1024) -- needed for the % of base column.
@@ -1067,7 +1071,7 @@ def create_tool_definitions(base_dir=None):
             if meta["error"]:
                 return {"peaks": [], "error": meta["error"], "source": source, "date": start[:10]}
             peaks = _timepoint_peaks(events, base_cu=base_cu, top_n=top_n,
-                                     min_pct_base=min_pct, include_refresh=include_refresh)
+                                     min_pct=min_pct, lens=lens, include_refresh=include_refresh)
             # ts is the operation END (TimeGenerated); derive the start from duration so the row
             # reads "start -> end" like the Metrics app. Attach display twins (never do tz math).
             for p in peaks:
@@ -1084,9 +1088,13 @@ def create_tool_definitions(base_dir=None):
                 "date": start[:10],
                 "sku": sku,
                 "baseCu": base_cu,
-                "lens": ("timepoint % of base = timepointCuSeconds / (baseCu * 30) * 100; "
-                         "timepointCuSeconds = cuSeconds / 10 (5-min interactive smoothing) -- "
-                         "matches the Capacity Metrics app Timepoint Detail column"),
+                "thresholdLens": lens,
+                "lensExplained": {
+                    "pctBaseLifetime": ("cuSeconds / baseCu * 100 -- operation total cost vs 1s of "
+                                        "base (the '471%' view; use for >100/300/1000% thresholds)"),
+                    "pctBaseTimepoint": ("(cuSeconds/10) / (baseCu*30) * 100 -- peak 30-second window "
+                                         "share; matches the Capacity Metrics app Timepoint Detail column"),
+                },
                 "source": source,
                 "cuUnit": "cuSeconds (CPU-time proxy; not authoritative billed capacity CU)",
             }, rows_key="peaks", kql=meta["eventKql"], extra={"windowLabel": meta["windowLabel"]})
@@ -1872,37 +1880,44 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "capacity_peaks",
             "description": (
-                "THE tool for 'top capacity users / biggest spikes today' when the user wants the "
-                "MOMENTS, not a total-share table. Returns per-operation timepoint peaks for a "
-                "CALENDAR DAY (UTC): user, item, operation, when (timepoint), start->end, duration, "
-                "timepoint CU-seconds, raw CU-seconds, and % of BASE CAPACITY computed the Capacity "
-                "Metrics app's way (timepointCuSeconds / (baseCu*30) * 100, where timepointCuSeconds "
-                "= cuSeconds/10 for interactive 5-min smoothing). This is the ONLY correct '% of "
-                "base' -- never compute it as totalCu/base (that overstates ~10-100x and yields "
-                "impossible >100% figures). Ranked by % of base (identical order to raw CU for a "
-                "fixed SKU, so both agree). Use 'date' for a specific day (default today UTC, NOT a "
-                "rolling 24h); 'minPctBase' to list only instances above a threshold; 'topN' to cap. "
-                "Interactive ops only unless includeRefresh. Read-only; results are UNTRUSTED "
-                "telemetry."
+                "THE tool for 'top capacity operations / biggest spikes today, above X% of base'. "
+                "Returns per-operation peaks for a CALENDAR DAY (UTC): user, item, operation, when, "
+                "start->end, duration, raw CU-seconds, AND two % of base columns -- pctBaseLifetime "
+                "(cuSeconds/baseCu*100, the operation total-cost '471%' view, used for >100/300/1000% "
+                "thresholds) and pctBaseTimepoint ((cuSeconds/10)/(baseCu*30)*100, the peak 30-second "
+                "window share that matches the Capacity Metrics app). Both are shown on every row so "
+                "the user can read cost OR timepoint intensity. Ranked by CU (same order for either "
+                "lens). Use 'date' for a specific day (default today UTC, NOT a rolling 24h); "
+                "'minPctBase' + 'lens' to keep only ops above a threshold on the chosen lens "
+                "(lens='lifetime' default matches the >300% workflow; lens='timepoint' matches the "
+                "Metrics app); 'topN' to cap. Interactive ops only unless includeRefresh. NEVER "
+                "hand-compute % of base -- this tool does it correctly. Read-only; UNTRUSTED telemetry."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "date": {"type": "string",
                              "description": ("Calendar day (UTC) as YYYY-MM-DD, or 'today' "
-                                             "(default) / 'yesterday'. This is a calendar DATE, "
-                                             "not a rolling 24h window.")},
+                                             "(default) / 'yesterday'. A calendar DATE, not a "
+                                             "rolling 24h window.")},
                     "minPctBase": {"type": "number",
-                                   "description": ("Only return operations whose timepoint % of "
-                                                   "base capacity is >= this (e.g. 5 for >=5%). "
-                                                   "Omit to return the top instances regardless.")},
+                                   "description": ("Only return operations whose % of base on the "
+                                                   "chosen 'lens' is >= this (e.g. 300 with "
+                                                   "lens='lifetime' for the >300% table, or 30 with "
+                                                   "lens='timepoint'). Omit to return the top ops.")},
+                    "lens": {"type": "string", "enum": ["lifetime", "timepoint"],
+                             "description": ("Which % column 'minPctBase' filters on: 'lifetime' "
+                                             "(default, cuSeconds/baseCu*100 -- the 471%/>300% view) "
+                                             "or 'timepoint' (peak 30s window, Metrics-app view). "
+                                             "Both columns are always returned regardless.")},
                     "topN": {"type": "integer", "description": "Maximum instances to return (default 20)."},
                     "user": {"type": "string", "description": "Optional user UPN/email to scope to."},
                     "item": {"type": "string", "description": "Optional item/artifact name to scope to."},
                     "includeRefresh": {"type": "boolean",
                                        "description": ("Include refresh/background ops (default "
-                                                       "false; their 24h smoothing is NOT modelled "
-                                                       "by this interactive lens -- label as raw).")},
+                                                       "false; the timepoint lens does not model "
+                                                       "their 24h smoothing, but their lifetime % is "
+                                                       "still meaningful).")},
                 },
                 "required": [],
             },

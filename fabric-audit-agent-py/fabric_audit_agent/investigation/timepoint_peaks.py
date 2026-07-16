@@ -1,21 +1,27 @@
-"""Per-operation timepoint peak intensity — the Capacity Metrics app "Timepoint Detail" lens.
+"""Per-operation capacity-peak intensity — TWO lenses, both surfaced on every row.
 
-The Metrics app spreads an INTERACTIVE operation's CU over a 5-minute (10 x 30-second) smoothing
-window, then reports, per timepoint, that slice against the 30-second base budget:
+A single operation's cost can be read two legitimate ways, and users want both:
 
-    timepointCuSeconds = totalCuSeconds / 10             # 5-min interactive smoothing (10 timepoints)
-    pctBase = timepointCuSeconds / (baseCu * 30) * 100   # share of a 30-second timepoint budget
+1. LIFETIME lens (a.k.a. operation cost):   pctBaseLifetime = cuSeconds / baseCu * 100
+   "CPU-seconds this operation burned, as a multiple of one second of full base capacity."
+   A 6-minute MDX query burning 4,825 CU-sec on F1024 reads 471% -- it consumed ~4.7 seconds of
+   full-capacity compute over its life. This is the lens for "which operations are expensive" and
+   for thresholding (>100% / >300% / >1000%). It is NOT a moment-in-time utilization; a long query
+   is spread over its whole duration.
 
-Validated against the app's Timepoint Detail on an F1024 capacity: an operation with 54,302.75
-total CU-sec shows 5,430.2752 timepoint CU-sec and 17.68% of base — exactly this formula
-(5,430.2752 / (1024 * 30) * 100 = 17.68). This is the lens a user means by "who hit a large % of
-base capacity AT A MOMENT". It is NOT totalCu/base, which treats cumulative CU-seconds as if they
-were instantaneous and yields impossible >100% figures for every long-running query.
+2. TIMEPOINT lens (matches the Capacity Metrics app "Timepoint Detail" column):
+       timepointCuSeconds = cuSeconds / 10              # 5-min interactive smoothing (10 timepoints)
+       pctBaseTimepoint   = timepointCuSeconds / (baseCu * 30) * 100
+   Validated against a real F1024 Timepoint Detail screenshot: 54,302.75 total CU-sec ->
+   5,430.2752 timepoint -> 17.68% of base, exact. This is the lens for "what share of a 30-second
+   window did this hold" and for reconciling against the Metrics app.
 
-Background/refresh operations smooth over 24h, not 5 minutes, so this interactive lens does not
-apply to them — they are excluded by default (pass ``include_refresh=True`` to fold them in, but
-their pctBase under this formula is not app-accurate and callers must label it).
+Both are monotonic in cuSeconds, so a ranking by either yields the SAME order -- only the threshold
+cutoff differs (300% lifetime is a big query; 30% timepoint is a big 30-second slice). Callers show
+both columns and threshold on whichever lens the question implies (default: lifetime, the "expensive
+operations" workflow).
 
+base_cu_from_sku maps a SKU to base capacity units; None for trial/unknown (both pcts omitted).
 Pure/stdlib.
 """
 import re as _re
@@ -31,8 +37,8 @@ def base_cu_from_sku(sku):
     """Base capacity units for a SKU name.
 
     F-SKU: the integer in the name (``F1024`` -> 1024). P-SKU: ``P1``..``P5`` -> 64..1024.
-    Returns ``None`` for trial / unknown / empty names (the caller then omits pctBase and says so),
-    so a trial capacity like ``FTL64`` never silently produces a bogus percentage.
+    Returns ``None`` for trial / unknown / empty names (the caller then omits the % columns and says
+    so), so a trial capacity like ``FTL64`` never silently produces a bogus percentage.
     """
     if not sku or not isinstance(sku, str):
         return None
@@ -43,29 +49,41 @@ def base_cu_from_sku(sku):
     return _P_SKU_BASE_CU.get(s)
 
 
+def lifetime_pct_base(cu_seconds, base_cu):
+    """Operation-lifetime % of base: cuSeconds / baseCu * 100 (the '471%' operation-cost lens).
+    Returns ``None`` when base is unknown/non-positive."""
+    if base_cu is None or base_cu <= 0 or cu_seconds is None:
+        return None
+    return cu_seconds / base_cu * 100
+
+
 def timepoint_pct_base(cu_seconds, base_cu):
-    """The Metrics-app timepoint % of base for one interactive operation's total CU-seconds.
-    Returns ``None`` when ``base_cu`` is unknown/non-positive."""
+    """Metrics-app timepoint % of base for one interactive op: (cuSeconds/10) / (baseCu*30) * 100.
+    Returns ``None`` when base is unknown/non-positive."""
     if base_cu is None or base_cu <= 0 or cu_seconds is None:
         return None
     tp_cu = cu_seconds / _INTERACTIVE_SMOOTHING_TIMEPOINTS
     return tp_cu / (base_cu * _TIMEPOINT_SECONDS) * 100
 
 
-def timepoint_peaks(events, *, base_cu, top_n=20, min_pct_base=None, include_refresh=False):
-    """Rank operations by timepoint % of base capacity (the Metrics-app lens).
+def timepoint_peaks(events, *, base_cu, top_n=20, min_pct=None, lens="lifetime",
+                    include_refresh=False):
+    """Rank operations by cost and surface BOTH the lifetime and timepoint % of base per row.
 
     ``events`` are normalized events (see ``investigation.events.normalize_event``): each carries
     ``ts``/``user``/``item``/``operation``/``kind``/``cuSeconds``/``durationMs``.
 
-    Returns ``[{ts, user, item, operation, kind, durationMs, cuSeconds, timepointCuSeconds,
-    pctBase}]`` sorted by pctBase descending (identical order to cuSeconds for a fixed base, so
-    BOTH the "intensity" and the "size" ranking agree), truncated to ``top_n``, filtered to
-    ``pctBase >= min_pct_base`` when that is set. ``pctBase``/``timepointCuSeconds`` are ``None``
-    when ``base_cu`` is unknown (rows still returned, ranked by raw cuSeconds, so the caller can
-    show sizes and say the % is unavailable). Refresh/background ops are excluded unless
-    ``include_refresh`` — the interactive smoothing does not model their 24h spread.
+    Returns ``[{ts, user, item, operation, kind, durationMs, cuSeconds, pctBaseLifetime,
+    timepointCuSeconds, pctBaseTimepoint}]`` sorted by ``cuSeconds`` descending (identical order to
+    either % column), truncated to ``top_n``. When ``min_pct`` is set, keeps only rows whose
+    ``lens`` percentage ('lifetime' -> pctBaseLifetime, 'timepoint' -> pctBaseTimepoint) is
+    >= ``min_pct``. Percentages are ``None`` when ``base_cu`` is unknown (rows still returned,
+    ranked by raw cuSeconds, so the caller can show sizes and say the % is unavailable). Refresh/
+    background ops are excluded unless ``include_refresh`` (the timepoint smoothing does not model
+    their 24h spread; their lifetime % is still meaningful, so a caller wanting them passes True).
     """
+    if lens not in ("lifetime", "timepoint"):
+        raise ValueError(f"lens must be 'lifetime' or 'timepoint', got {lens!r}")
     rows = []
     for e in events or []:
         if not isinstance(e, dict):
@@ -75,10 +93,11 @@ def timepoint_peaks(events, *, base_cu, top_n=20, min_pct_base=None, include_ref
         cu = e.get("cuSeconds")
         if cu is None:
             continue
-        pct = timepoint_pct_base(cu, base_cu)
-        if min_pct_base is not None and (pct is None or pct < min_pct_base):
+        pct_life = lifetime_pct_base(cu, base_cu)
+        pct_tp = timepoint_pct_base(cu, base_cu)
+        chosen = pct_life if lens == "lifetime" else pct_tp
+        if min_pct is not None and (chosen is None or chosen < min_pct):
             continue
-        tp_cu = (cu / _INTERACTIVE_SMOOTHING_TIMEPOINTS) if base_cu else None
         rows.append({
             "ts": e.get("ts"),
             "user": e.get("user"),
@@ -87,10 +106,9 @@ def timepoint_peaks(events, *, base_cu, top_n=20, min_pct_base=None, include_ref
             "kind": e.get("kind"),
             "durationMs": e.get("durationMs"),
             "cuSeconds": round(cu, 4),
-            "timepointCuSeconds": round(tp_cu, 4) if tp_cu is not None else None,
-            "pctBase": round(pct, 2) if pct is not None else None,
+            "pctBaseLifetime": round(pct_life, 1) if pct_life is not None else None,
+            "timepointCuSeconds": round(cu / _INTERACTIVE_SMOOTHING_TIMEPOINTS, 4) if base_cu else None,
+            "pctBaseTimepoint": round(pct_tp, 2) if pct_tp is not None else None,
         })
-    # Rank by pctBase when available, else by raw cuSeconds — both give the same order for a fixed
-    # base, so "biggest % of base" and "biggest CU" never disagree within one call.
-    rows.sort(key=lambda r: r["pctBase"] if r["pctBase"] is not None else r["cuSeconds"], reverse=True)
+    rows.sort(key=lambda r: r["cuSeconds"], reverse=True)
     return rows[:top_n]

@@ -128,16 +128,32 @@ about what they MEAN and what you'd chase next):
   or a spike-list user is missing from the cumulative top-N, call that out and explain. When any
   lens is skipped for cost/step-budget reasons, name the lens you skipped so the user knows what
   was NOT checked -- silence reads as "nothing there."
-- "% of base capacity" / "who peaked / had large usage AT MOMENTS" / "top users today" (when they
-  mean the big moments, not one aggregate share number) want the TIMEPOINT-PEAK lens, not a
-  total-share table. Lead with the per-instance peaks: who, when, item, operation, start->end,
-  duration, timepoint CU-sec, and % of base. % of base = timepoint CU / (base x 30) x 100, where
-  timepoint CU = the operation's CU / 10 (5-min interactive smoothing) -- this MATCHES the Capacity
-  Metrics app's Timepoint Detail column. NEVER compute % of base as total CU / base: that treats
-  cumulative CU-seconds as instantaneous and overstates by ~10-100x (an interactive query is
-  single-digit-to-tens of % of base, never hundreds -- a "471%" figure is this exact bug). A bare
-  aggregate share (e.g. "user X = 20% of monitored CU") answers a DIFFERENT question and is not
-  what "the moments of high usage" means -- offer it only as a footnote.
+- "top capacity users/operations today", "biggest spikes", "who went above X% of base" want the
+  per-operation PEAKS (the moments), NOT a single aggregate-share number. Use the capacity-peaks
+  capability (calendar-day scoped) and lead with the instance list: who, when, item, operation,
+  start->end, duration, CU-seconds, and % of base. A bare aggregate share ("user X = 20% of
+  monitored CU") answers a DIFFERENT question -- offer it only as a footnote.
+- There are TWO valid "% of base" lenses and they answer different questions -- name which you used,
+  and show both when it helps:
+  * LIFETIME (operation cost) = CU-seconds / base x 100. A 6-min query at 4,825 CU-sec on F1024
+    reads 471%: it burned ~4.7 seconds of full-capacity compute over its life. THIS is the lens for
+    "expensive operations" and the >100% / >300% / >1000% thresholds. It is NOT an instantaneous
+    utilization -- a long query's cost is spread across its whole duration, so >100% here is normal
+    and expected, not a throttle.
+  * TIMEPOINT (Metrics-app) = (CU-seconds / 10) / (base x 30) x 100. Same 4,825 CU-sec op reads
+    ~1.6%: its share of a single 30-second window after 5-min interactive smoothing. THIS is the
+    lens that matches the Capacity Metrics app Timepoint Detail column (e.g. 17.68%). Per-op
+    timepoint % is single-digit-to-tens, never hundreds.
+  Never silently mislabel one as the other: if the user cites a Metrics-app "% of base" figure they
+  mean TIMEPOINT; if they ask "above 300%" they mean LIFETIME. The capacity-peaks capability returns
+  both columns -- quote the one that fits and say which.
+- CAPACITY-LEVEL over-threshold ("when did total CU% go over 100%/1000%, and who contributed"):
+  that is the capacity's own utilization stream (total/interactive/background % per 30-second
+  window = capacityUnitMs / (base x 30000) x 100), a DIFFERENT thing from any single operation's %.
+  For those, report each over-threshold window's time + total/interactive/background split, then the
+  user-attributed operations running in that window as the contributors. A background-dominated
+  window (high background %, low interactive) is NOT explained by user queries -- say so and point
+  to system/refresh/dataflow workloads rather than blaming a user.
 - "today" (and any bare date) means the CALENDAR DAY in UTC, not a rolling 24-hour window -- the
   two cover different spans and the rankings differ. Scope to the calendar day and say so; never
   silently substitute the last 24h for "today."

@@ -1,13 +1,13 @@
-"""timepoint_peaks — the Capacity Metrics app "% of base capacity" lens.
+"""timepoint_peaks — the two capacity-peak lenses.
 
-Ground-truth numbers are taken from a real F1024 Timepoint Detail screenshot, so these tests
-pin the formula to what the app actually shows (not the totalCu/base miscalculation that produced
-impossible 471% figures in the field).
+LIFETIME lens (cuSeconds/base*100) is the "471% / above 300%" operation-cost view the field
+relies on for thresholding. TIMEPOINT lens (cuSeconds/10/(base*30)*100) matches the Capacity
+Metrics app's Timepoint Detail column; its numbers are pinned to a real F1024 screenshot.
 """
 import unittest
 
 from fabric_audit_agent.investigation.timepoint_peaks import (
-    base_cu_from_sku, timepoint_pct_base, timepoint_peaks,
+    base_cu_from_sku, lifetime_pct_base, timepoint_pct_base, timepoint_peaks,
 )
 
 
@@ -27,18 +27,20 @@ class TestBaseCuFromSku(unittest.TestCase):
         self.assertIsNone(base_cu_from_sku(None))
 
 
-class TestTimepointPctBase(unittest.TestCase):
-    def test_matches_metrics_app_screenshot_rows_F1024(self):
+class TestLenses(unittest.TestCase):
+    def test_lifetime_lens_matches_the_471_style_figures(self):
+        # F1024: 4,825.28 CU-sec -> 471.2% (the field's beloved "above 300%" table)
+        self.assertAlmostEqual(lifetime_pct_base(4825.28, 1024), 471.2, places=1)
+        self.assertAlmostEqual(lifetime_pct_base(1048.29, 1024), 102.4, places=1)
+
+    def test_timepoint_lens_matches_metrics_app_screenshot_F1024(self):
         # Ground truth from the app's Timepoint Detail (F1024, base 1024):
-        #   total 54,302.75 -> timepoint 5,430.2752 -> 17.68% of base
         self.assertAlmostEqual(timepoint_pct_base(54302.75, 1024), 17.68, places=2)
-        #   total 17,400.00 -> 5.66%
         self.assertAlmostEqual(timepoint_pct_base(17400.00, 1024), 5.66, places=2)
-        #   total 13,616.75 -> 4.43%
         self.assertAlmostEqual(timepoint_pct_base(13616.75, 1024), 4.43, places=2)
 
     def test_none_when_base_unknown(self):
-        self.assertIsNone(timepoint_pct_base(50000, None))
+        self.assertIsNone(lifetime_pct_base(50000, None))
         self.assertIsNone(timepoint_pct_base(50000, 0))
 
 
@@ -47,41 +49,52 @@ class TestTimepointPeaks(unittest.TestCase):
         return {"ts": "2026-07-16T14:09:30Z", "user": user, "item": item, "operation": op,
                 "kind": kind, "cuSeconds": cu, "durationMs": 368000}
 
-    def test_ranks_by_pct_base_and_reports_both_columns(self):
-        events = [self._ev(4825.28, user="paul"), self._ev(4606.81, user="damian"),
-                  self._ev(4063.75, user="marc")]
-        peaks = timepoint_peaks(events, base_cu=1024, top_n=10)
-        self.assertEqual([p["user"] for p in peaks], ["paul", "damian", "marc"])
+    def test_row_carries_both_lenses(self):
+        peaks = timepoint_peaks([self._ev(4825.28, user="paul")], base_cu=1024)
         top = peaks[0]
-        # both the "size" (cuSeconds) and the "intensity" (pctBase) columns are present
         self.assertEqual(top["cuSeconds"], 4825.28)
-        # timepoint lens: total/10 smoothing, over the 30-sec base budget
-        self.assertAlmostEqual(top["pctBase"], 4825.28 / 10 / (1024 * 30) * 100, places=2)
-        self.assertAlmostEqual(top["pctBase"], 1.57, places=2)   # ~1.57%, NOT the 471% the agent reported
+        self.assertAlmostEqual(top["pctBaseLifetime"], 471.2, places=1)     # the 471% view
+        self.assertAlmostEqual(top["pctBaseTimepoint"], 1.57, places=2)     # the timepoint view
         self.assertEqual(top["timepointCuSeconds"], round(4825.28 / 10, 4))
 
-    def test_min_pct_base_filter(self):
-        events = [self._ev(60000), self._ev(1000)]   # ~1.95% and ~0.03%
-        peaks = timepoint_peaks(events, base_cu=1024, min_pct_base=1.0)
+    def test_lifetime_threshold_reproduces_above_300_table(self):
+        events = [self._ev(4825.28, user="paul"), self._ev(2000.0, user="small")]
+        # >300% lifetime keeps only the 471% op, drops the 195% one
+        peaks = timepoint_peaks(events, base_cu=1024, min_pct=300, lens="lifetime")
+        self.assertEqual([p["user"] for p in peaks], ["paul"])
+
+    def test_timepoint_threshold_uses_timepoint_pct(self):
+        # 60,000 CU-sec -> ~19.5% timepoint; 1,000 -> ~0.3%. >=10% timepoint keeps only the first.
+        events = [self._ev(60000), self._ev(1000)]
+        peaks = timepoint_peaks(events, base_cu=1024, min_pct=10, lens="timepoint")
         self.assertEqual(len(peaks), 1)
         self.assertEqual(peaks[0]["cuSeconds"], 60000)
 
+    def test_ranks_by_cu_regardless_of_lens(self):
+        events = [self._ev(4063.75, user="marc"), self._ev(4825.28, user="paul"),
+                  self._ev(4606.81, user="damian")]
+        for lens in ("lifetime", "timepoint"):
+            peaks = timepoint_peaks(events, base_cu=1024, lens=lens)
+            self.assertEqual([p["user"] for p in peaks], ["paul", "damian", "marc"])
+
     def test_refresh_excluded_by_default(self):
         events = [self._ev(9999, kind="refresh"), self._ev(100, kind="interactive")]
-        peaks = timepoint_peaks(events, base_cu=1024)
-        self.assertEqual([p["kind"] for p in peaks], ["interactive"])
-        peaks_incl = timepoint_peaks(events, base_cu=1024, include_refresh=True)
-        self.assertEqual(len(peaks_incl), 2)
+        self.assertEqual([p["kind"] for p in timepoint_peaks(events, base_cu=1024)], ["interactive"])
+        self.assertEqual(len(timepoint_peaks(events, base_cu=1024, include_refresh=True)), 2)
 
     def test_top_n_caps_rows(self):
         events = [self._ev(1000 + i, user=f"u{i}") for i in range(30)]
         self.assertEqual(len(timepoint_peaks(events, base_cu=1024, top_n=5)), 5)
 
-    def test_unknown_base_still_ranks_by_cu_with_null_pct(self):
-        events = [self._ev(4000), self._ev(9000)]
-        peaks = timepoint_peaks(events, base_cu=None)
+    def test_unknown_base_ranks_by_cu_with_null_pcts(self):
+        peaks = timepoint_peaks([self._ev(4000), self._ev(9000)], base_cu=None)
         self.assertEqual([p["cuSeconds"] for p in peaks], [9000, 4000])
-        self.assertIsNone(peaks[0]["pctBase"])
+        self.assertIsNone(peaks[0]["pctBaseLifetime"])
+        self.assertIsNone(peaks[0]["pctBaseTimepoint"])
+
+    def test_bad_lens_raises(self):
+        with self.assertRaises(ValueError):
+            timepoint_peaks([self._ev(100)], base_cu=1024, lens="bogus")
 
 
 if __name__ == "__main__":
