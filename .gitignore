@@ -16,3 +16,7 @@ dist/
 
 # scratch / tooling (subagent-driven-development ledger, etc.)
 .superpowers/
+
+# Databricks App runtime config — managed only in the workspace (has env-var wiring
+# that the workspace UI edits directly; committing it here caused sync conflicts).
+fabric-audit-agent-app/app.yaml
