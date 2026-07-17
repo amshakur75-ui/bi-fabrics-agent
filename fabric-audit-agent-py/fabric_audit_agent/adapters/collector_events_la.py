@@ -29,23 +29,35 @@ from ..query.kql_guard import escape_string, first_statement
 _RECOMMENDED_TOP_LEVEL_OPS = ("QueryEnd", "CommandEnd", "ProgressReportEnd")
 
 
-def _kql(window, user, item, cap, operations=None, order="cost"):
+def _kql(window, user, item, cap, operations=None, order="cost", exclude_prefixes=None):
     """``window`` is a full KQL WHERE-clause string (e.g. ``"| where TimeGenerated > ago(1d)"``
     or a ``between (...)`` clause), as built by ``query.windows.resolve_window`` -- NOT a bare
     lookback like ``"1d"``. Spliced in verbatim as its own line. Absolute windows (spike
     investigation around a named moment, where a relative ago() lookback + row cap could truncate
     the very slice asked about) are produced by ``resolve_window(start=, end=)`` as a
-    ``between (...)`` clause and passed in AS ``window`` -- so this needs no start/end params."""
+    ``between (...)`` clause and passed in AS ``window`` -- so this needs no start/end params.
+
+    ``operations`` = OperationName ALLOWLIST (``in (...)``). ``exclude_prefixes`` = a DENYLIST of
+    OperationName prefixes to drop (e.g. ``["VertiPaqSE"]`` -- the storage-engine sub-query children
+    that double-count a QueryEnd). Use the denylist when the caller wants EVERY top-level op type
+    (QueryEnd/CommandEnd/DiscoverEnd + XMLA reads + anything else) minus only the SE noise, instead
+    of a fixed allowlist that silently hides op types like XMLA Read Operations."""
     lines = ["PowerBIDatasetsWorkspace",
              window,
              "| where isnotempty(ExecutingUser)"]
     if user:
-        lines.append('| where ExecutingUser =~ "{}"'.format(escape_string(user)))
+        # Match a full UPN exactly OR a short display name against the local part
+        # (bryant.carlson -> bryant.carlson@newellco.com), so a scoped pull never misses a user
+        # just because the caller passed the short name the UI shows. =~ is case-insensitive.
+        u = escape_string(user)
+        lines.append('| where ExecutingUser =~ "{0}" or ExecutingUser startswith "{0}@"'.format(u))
     if item:
         lines.append('| where ArtifactName =~ "{}"'.format(escape_string(item)))
     if operations:
         ops = ", ".join('"{}"'.format(escape_string(o)) for o in operations)
         lines.append(f"| where OperationName in ({ops})")
+    for pref in (exclude_prefixes or []):
+        lines.append('| where not(OperationName startswith "{}")'.format(escape_string(pref)))
     lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
                  "OperationName, OperationDetailName, CpuTimeMs, DurationMs, EventText")
     # Deterministic + complete-for-cost: a bare ``take`` returns an ARBITRARY, non-repeatable subset
@@ -76,6 +88,7 @@ def create_event_collector(query, config=None):
     built = _kql(
         cfg.get("window", "| where TimeGenerated > ago(1d)"), cfg.get("user"), cfg.get("item"),
         cfg.get("cap", 5000), cfg.get("operations"), cfg.get("order", "cost"),
+        cfg.get("excludePrefixes"),
     )
     # A cfg["kql"] override is trusted (e.g. FABRIC_CAPACITY_EVENTS_KQL, a multi-line/`let`
     # flatten) and passed through UNMODIFIED -- first_statement() would wrongly truncate it.

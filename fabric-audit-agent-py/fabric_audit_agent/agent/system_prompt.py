@@ -176,6 +176,13 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
   duration, and CU-sec (same converted% (lifetime%) column). Flag any refresh whose lifetime % went
   over 100%. When the user asks to "check for activity spikes", the refresh angle is: which refreshes
   ran over 100% of base -- surface those explicitly.
+- OPERATION COVERAGE: capacity-peaks now returns ALL operation types (interactive queries, refreshes/
+  admin, XMLA Read Operations, discovers) -- only the VertiPaqSE storage-engine sub-query children
+  (which double-count a QueryEnd) are dropped. So do NOT tell the user an op type is excluded. If a
+  user names a specific operation that STILL isn't in the result, do not claim it never happened: an
+  XMLA Read Operation in the Capacity Metrics app is often a SESSION aggregate of many small per-row
+  events, and some ops carry the user in a field other than ExecutingUser -- say the Metrics app is
+  authoritative for that session view, and offer to pull the raw session/window rather than denying it.
 - Deep investigation is OFFERED in chat, AUTO in autonomous/alerting mode (which fires on a spike or
   a user crossing a set threshold). The funnel when you do investigate: is this user doing it
   repeatedly (recurrence today / this week)? are OTHER users hitting the same item (cross-user)? is

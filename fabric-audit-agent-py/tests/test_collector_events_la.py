@@ -169,3 +169,20 @@ def test_operations_allowlist_filters_when_given_but_not_by_default():
     # When set: restrict to the allowlist (drops VertiPaq SE sub-query events).
     kql = _kql(_CLAUSE_1D, None, None, 5000, operations=("QueryEnd", "CommandEnd", "ProgressReportEnd"))
     assert 'OperationName in ("QueryEnd", "CommandEnd", "ProgressReportEnd")' in kql
+
+
+def test_user_filter_matches_short_name_or_full_upn():
+    # A scoped pull with the SHORT display name must still catch the full UPN in the data --
+    # otherwise an XMLA-read lookup for "bryant.carlson" misses bryant.carlson@newellco.com.
+    kql = _kql(_CLAUSE_1D, "bryant.carlson", None, 5000)
+    assert 'ExecutingUser =~ "bryant.carlson"' in kql
+    assert 'ExecutingUser startswith "bryant.carlson@"' in kql
+
+
+def test_exclude_prefixes_denylist_drops_se_children_shows_all_else():
+    # The denylist path (capacity_peaks: all_operations) keeps EVERY op type and drops only the
+    # VertiPaqSE storage-engine sub-query children that double-count -- so XMLA reads / discovers
+    # / any other op survive, unlike the fixed allowlist that hid them.
+    kql = _kql(_CLAUSE_1D, None, None, 5000, exclude_prefixes=["VertiPaqSE"])
+    assert 'where not(OperationName startswith "VertiPaqSE")' in kql
+    assert "OperationName in (" not in kql   # denylist, not allowlist

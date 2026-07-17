@@ -565,7 +565,7 @@ def create_tool_definitions(base_dir=None):
         return "30d"
 
     def _events_or_mock(*, days=None, hours=None, start=None, end=None, user=None, item=None,
-                         cap=None, order=None):
+                         cap=None, order=None, all_operations=False):
         """Yield ``(events, capacity_series, meta)``. Live LA event collector + capacity CU% series
         when ``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID`` are configured; else the small
         offline mock. Live requests are bounded (window from ``days``/``hours``/``start``+``end``,
@@ -621,13 +621,19 @@ def create_tool_definitions(base_dir=None):
             event_cfg["user"] = user
         if item:
             event_cfg["item"] = item
-        # Optional OperationName allowlist (comma-separated env) — restrict to top-level ops
-        # (QueryEnd/CommandEnd/ProgressReportEnd) AFTER verifying live op names, to drop VertiPaq
-        # SE sub-query children that double-count cost. Off by default: an unverified allowlist
-        # on a tenant with different op names would silently return nothing.
-        ops = env.get("FABRIC_EVENT_OPERATIONS")
-        if ops:
-            event_cfg["operations"] = [o.strip() for o in ops.split(",") if o.strip()]
+        # Operation-type filtering. Two modes:
+        #  - all_operations=True (capacity_peaks): show EVERY op type -- QueryEnd/CommandEnd/
+        #    DiscoverEnd + XMLA reads + anything else -- and drop ONLY the VertiPaqSE storage-engine
+        #    sub-query children that double-count a QueryEnd (denylist). This is why an XMLA Read
+        #    Operation, previously hidden by the fixed allowlist, now surfaces.
+        #  - default (other tools): the FABRIC_EVENT_OPERATIONS allowlist restricts to the verified
+        #    top-level op names, off unless the env is set.
+        if all_operations:
+            event_cfg["excludePrefixes"] = ["VertiPaqSE"]
+        else:
+            ops = env.get("FABRIC_EVENT_OPERATIONS")
+            if ops:
+                event_cfg["operations"] = [o.strip() for o in ops.split(",") if o.strip()]
         collector = create_event_collector(la_query, event_cfg)
         try:
             events = collector["collect"]()
@@ -704,11 +710,13 @@ def create_tool_definitions(base_dir=None):
         return (anchor - span).strftime(fmt), anchor.strftime(fmt)
 
     def _resolve_event_sources(*, days=None, hours=None, start=None, end=None,
-                                user=None, item=None, cap=None, order=None, now=None):
+                                user=None, item=None, cap=None, order=None, now=None,
+                                all_operations=False):
         """Tiered event acquisition (spec: graceful degradation). Returns (events, series, meta)
         with meta extended by tier + coverageNote + hasRealCost. Tier-2 (per-query) when
         eventDepth is configured; Tier-1 (operation-level, cuSeconds=None) from Activity Events
-        when only attribution is configured; else the offline mock."""
+        when only attribution is configured; else the offline mock. ``all_operations`` (used by
+        capacity_peaks) shows every op type minus VertiPaqSE noise instead of the env allowlist."""
         cov = _resolve_sources_registry(os.environ)["coverage"]
         # Defense-in-depth (final review F1): a descriptor claiming eventDepth is not enough --
         # this seam only actually HAS a live per-query source when _has_live_event_source (LA)
@@ -717,7 +725,8 @@ def create_tool_definitions(base_dir=None):
         # mislabeling mock data as "perQuery"/hasRealCost=True.
         if cov["byCapability"]["eventDepth"] is not None and _has_live_event_source(os.environ):
             events, series, meta = _events_or_mock(days=days, hours=hours, start=start, end=end,
-                                                    user=user, item=item, cap=cap, order=order)
+                                                    user=user, item=item, cap=cap, order=order,
+                                                    all_operations=all_operations)
             return events, series, {**meta, "tier": "perQuery", "coverageNote": None,
                                      "hasRealCost": True}
         if cov["byCapability"]["userAttribution"] is not None:
@@ -1129,7 +1138,7 @@ def create_tool_definitions(base_dir=None):
             events, _series, meta = _resolve_event_sources(
                 start=start, end=end,
                 user=(inp.get("user") or None), item=(inp.get("item") or None),
-                cap=_EVENT_CAP, order="cost",
+                cap=_EVENT_CAP, order="cost", all_operations=True,
             )
             if meta["error"]:
                 return {"peaks": [], "error": meta["error"], "source": source, "date": date_label}
