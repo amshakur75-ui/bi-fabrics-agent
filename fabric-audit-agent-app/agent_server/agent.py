@@ -173,6 +173,12 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
 - STEP 1 -- always call the capacity-peaks capability for the calendar day (UTC) with the user's
   threshold applied on the LIFETIME lens ("above 300%" -> minPctBase 300; no threshold -> top ~20 by
   cost). Never substitute a rolling 24h for a calendar date.
+- BASE CAPACITY IS CONFIRMED LIVE every time. Every % of base rests on the base capacity units,
+  which the tools now read FRESH from the live capacity-events stream on each call (the SKU flips --
+  e.g. FTL64 vs F1024 -- so a static value would be wrong). STATE the base you used and its source
+  in the answer, e.g. "base 1024 CU (live)". If the tool reports baseCuSource "env-default" or
+  "unavailable", say the live read did not resolve this run and the % may be off -- do not present
+  it as authoritative. Never compute a % of base from a hard-coded or assumed SKU.
 - STEP 2 -- SPLIT the results by kind. Interactive QUERY ops (QueryEnd / MdxQuery / DaxQuery) go in
   the MAIN table; REFRESH / admin ops (CommandEnd / Restore / JsonCommand / ProgressReportEnd) go in
   a SEPARATE "Refreshes" card below it -- never mix them in one table. Render each op as one row,

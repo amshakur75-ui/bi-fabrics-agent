@@ -13,18 +13,18 @@ interface SuggestedActionsProps {
   selectedVisibilityType: VisibilityType;
 }
 
-// Narrowed to Sowmya's approved focus (2026-07-14 meeting): "top CU consumers and pattern
-// analysis." The chips lead with those two lanes and their natural follow-ups (per-user
-// investigation, throttle root-cause, weekly recurrence). The underlying agent still supports
-// every capability -- users can still ask any question freely; this only shapes the FIRST
-// nudge so the demo/onboarding matches the narrowed use case.
+// Narrowed (2026-07-17) to the focused capability set the user asked for: the capacity-peaks
+// lens (spikes / top operations), per-user investigation, query analysis, and issue diagnosis.
+// `label` is the chip text; `prompt` is what gets sent to the agent when tapped. Prompts that need
+// a specific target (a user, a query, a symptom) send a lead-in so the agent asks rather than
+// guessing. The agent still supports every other capability if the user just asks; this only
+// shapes the first-click surface.
 const CAMP_CAPABILITIES: { label: string; prompt: string }[] = [
-  { label: '🏆 Top CU consumers right now', prompt: 'Show me the top CU consumers on the capacity right now — users and items — and what they were doing.' },
-  { label: '👤 Investigate a specific user', prompt: "Investigate a specific user's CU consumption in depth — ask me which user, then dig into their queries, timeline, and peers." },
-  { label: '📊 What\'s driving the current peak', prompt: 'What\'s driving the current CU peak? Attribute it to the item, then to the user, then to the query pattern.' },
-  { label: '📈 Recurring spike patterns', prompt: 'Look for recurring CU spike patterns over the last 14 days — same time of day, same day of week, same user, or same item.' },
-  { label: '🔀 What changed since yesterday', prompt: 'What changed on the capacity since yesterday\'s reading? Peak, top consumers, new findings, resolved findings.' },
-  { label: '⚡ Investigate throttle event', prompt: 'Investigate the most recent throttle event — confirm it, attribute it, identify the top offenders, and give me the fix.' },
+  { label: '⚡ Check for activity spikes', prompt: 'Check for activity spikes today — the top capacity operations above 250% of base, plus any refreshes that ran over 100%.' },
+  { label: '🏆 Top capacity operations today', prompt: 'Show me the top capacity operations today above 250% of base — user, item, operation, duration, and % of base.' },
+  { label: '👤 Look into a user', prompt: 'Look into a specific user — ask me which user, then show their operations, how often they recur, and whether other users hit the same item.' },
+  { label: '🔎 Analyze a query', prompt: 'Analyze a specific expensive query — ask me which one, then explain what makes it costly and the fix.' },
+  { label: '🩺 Diagnose an issue', prompt: 'Diagnose a capacity issue — ask me the symptom (slowness, refresh failures, or throttling), then run the decision tree.' },
 ];
 
 function PureSuggestedActions({ chatId, sendMessage }: SuggestedActionsProps) {

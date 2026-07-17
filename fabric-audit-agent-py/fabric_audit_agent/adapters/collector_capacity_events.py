@@ -125,6 +125,24 @@ def create_capacity_events_collector(query, config=None):
     return {"collect": collect}
 
 
+def capacity_base_cu(query, config=None):
+    """Return the LIVE base capacity units (e.g. 1024 for F1024) read fresh from the capacity-events
+    stream's ``baseCapacityUnits`` -- the authoritative base AT QUERY TIME. This is correct even when
+    the registered SKU *name* is a trial/non-standard string (e.g. "FTL64") or the capacity was
+    resized/autoscaled, so % of base never rests on a stale name. Returns the MAX positive base seen
+    in the window (the real prod capacity dominates a small trial capacity if both appear); None when
+    no positive base is present. Read-only; shares ``_resolve_kql`` with the other collectors."""
+    rows = query(_resolve_kql(config or {})) or []
+    bases = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        base = _num(_row(r, "baseCapacityUnits", "BaseCapacityUnits"))
+        if base is not None and base > 0:
+            bases.append(base)
+    return max(bases) if bases else None
+
+
 def capacity_series(query, config=None):
     """Return per-window ``[{ts, cuPct}]`` sorted by ``ts`` — the full series, NOT reduced to the
     peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``

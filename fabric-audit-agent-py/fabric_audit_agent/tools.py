@@ -163,6 +163,26 @@ def _capacity_kusto_query(env):
     )
 
 
+def _live_base_cu(env):
+    """The AUTHORITATIVE live base capacity units, read fresh from the capacity-events stream's
+    ``baseCapacityUnits`` every call -- so a changing / trial / resized SKU is always reflected
+    (the user reported the SKU name flips, e.g. FTL64 vs F1024). Returns None when the capacity-
+    events source isn't configured or the query fails, so callers fall back to the SKU name / env."""
+    if not (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
+            and env.get("FABRIC_CLIENT_ID")):
+        return None
+    try:
+        from .adapters.collector_capacity_events import capacity_base_cu
+        cfg = {"window": env.get("FABRIC_CAPACITY_EVENTS_WINDOW", "1d")}
+        if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
+            cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
+        if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
+            cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
+        return capacity_base_cu(_capacity_kusto_query(env), cfg)
+    except Exception:
+        return None
+
+
 def _queryplan_estimate(kql, *, query=None):
     """Read-only pre-flight cost estimate: retrieve the execution plan WITHOUT running the query.
     Adapted from fabric-rti-mcp's ``kusto_show_queryplan`` (MIT; see
@@ -1043,20 +1063,35 @@ def create_tool_definitions(base_dir=None):
         return start_utc, end_utc, start_utc.strftime("%Y-%m-%d")
 
     def _resolve_base_cu(explicit, sku):
-        """Base capacity units, most-trusted first: explicit ``baseCu`` arg > ``FABRIC_BASE_CU`` env
-        > parsed from the SKU name. The env override exists because this tenant's capacity reports a
-        non-standard SKU string (e.g. a trial name) even though its real base is known -- without it
-        the % of base columns silently drop out. Returns None only when all three fail."""
-        for candidate in (explicit, os.environ.get("FABRIC_BASE_CU")):
-            if candidate is None or candidate == "":
-                continue
+        """Resolve base capacity units and say WHERE it came from -> ``(base_cu, source)``.
+
+        Order, most-authoritative first (the user requires a LIVE check because the SKU changes):
+        explicit ``baseCu`` arg -> LIVE ``baseCapacityUnits`` from the capacity-events stream ->
+        parsed from the SKU name -> ``FABRIC_BASE_CU`` env (last-resort static default). The live
+        read is done fresh every call so a flipped/resized SKU is always reflected. Returns
+        ``(None, "unavailable")`` only when all four fail."""
+        if explicit not in (None, ""):
             try:
-                v = int(float(candidate))
+                v = int(float(explicit))
+                if v > 0:
+                    return v, "explicit-arg"
             except (TypeError, ValueError):
-                continue
-            if v > 0:
-                return v
-        return _base_cu_from_sku(sku)
+                pass
+        live = _live_base_cu(os.environ)
+        if live and live > 0:
+            return int(live), "live-capacity-events"
+        from_sku = _base_cu_from_sku(sku)
+        if from_sku:
+            return from_sku, "sku-name"
+        env_base = os.environ.get("FABRIC_BASE_CU")
+        if env_base:
+            try:
+                v = int(float(env_base))
+                if v > 0:
+                    return v, "env-default"
+            except (TypeError, ValueError):
+                pass
+        return None, "unavailable"
 
     def capacity_peaks_handler(_input=None):
         """Per-operation TIMEPOINT PEAKS for a CALENDAR DAY (UTC) — the Capacity Metrics app
@@ -1085,10 +1120,11 @@ def create_tool_definitions(base_dir=None):
             include_refresh = inp.get("includeRefresh")
             include_refresh = True if include_refresh is None else bool(include_refresh)
 
-            # Base CU: explicit arg > FABRIC_BASE_CU env > SKU parse (SKU can be a trial name).
+            # Base CU: explicit arg > LIVE capacity-events baseCapacityUnits > SKU parse > env.
+            # Resolved fresh every call so a changing/trial SKU is always reflected.
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
             sku = cap_facts.get("sku")
-            base_cu = _resolve_base_cu(inp.get("baseCu"), sku)
+            base_cu, base_src = _resolve_base_cu(inp.get("baseCu"), sku)
 
             events, _series, meta = _resolve_event_sources(
                 start=start, end=end,
@@ -1116,6 +1152,7 @@ def create_tool_definitions(base_dir=None):
                 "windowUtc": f"{start} .. {end}",
                 "sku": sku,
                 "baseCu": base_cu,
+                "baseCuSource": base_src,   # live-capacity-events / sku-name / env-default / explicit-arg
                 "thresholdLens": lens,
                 "lensExplained": {
                     "pctBaseLifetime": ("cuSeconds / baseCu * 100 -- operation total cost vs 1s of "
@@ -1157,7 +1194,7 @@ def create_tool_definitions(base_dir=None):
 
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
             sku = cap_facts.get("sku")
-            base_cu = _resolve_base_cu(inp.get("baseCu"), sku)
+            base_cu, base_src = _resolve_base_cu(inp.get("baseCu"), sku)
 
             series_raw, series_meta = _capacity_series_only(None, None, start, end)
             events, _s, meta = _resolve_event_sources(start=start, end=end, cap=_EVENT_CAP,
@@ -1195,6 +1232,7 @@ def create_tool_definitions(base_dir=None):
                 "windowUtc": f"{start} .. {end}",
                 "sku": sku,
                 "baseCu": base_cu,
+                "baseCuSource": base_src,   # live-capacity-events / sku-name / env-default / explicit-arg
                 "thresholdCuPct": min_cu_pct,
                 "rowCount": len(windows),
                 "source": source,
