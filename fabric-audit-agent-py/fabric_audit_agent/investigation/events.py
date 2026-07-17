@@ -13,6 +13,7 @@ def normalize_event(row):
     dur = row.get("DurationMs")
     ms = cpu if cpu is not None else dur
     op = row.get("OperationName") or row.get("operation") or ""
+    op_detail = row.get("OperationDetailName") or row.get("operationDetail")
     raw_text = row.get("EventText") if row.get("EventText") is not None else row.get("queryText")
     return {
         "ts": row.get("TimeGenerated") or row.get("Timestamp") or row.get("ts") or "",
@@ -20,6 +21,7 @@ def normalize_event(row):
         "item": row.get("ArtifactName") or row.get("ItemName") or row.get("item"),
         "workspace": row.get("PowerBIWorkspaceName") or row.get("WorkspaceName") or row.get("workspace"),
         "operation": op,
+        "operationDetail": op_detail,   # MdxQuery / DaxQuery / Restore / ... (distinguishes MDX vs DAX vs admin)
         "kind": "refresh" if op in _REFRESH_OPS else "interactive",
         "cuSeconds": round((ms or 0) / 1000.0, 3),
         "durationMs": dur,

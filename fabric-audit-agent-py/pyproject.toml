@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent"
-version = "1.9.5"
+version = "1.9.6"
 description = "Read-only Microsoft Fabric / Power BI capacity & performance audit agent (Python, Databricks-ready)."
 requires-python = ">=3.10"
 dependencies = []   # anthropic / msal / databricks-sdk added as their adapters are ported

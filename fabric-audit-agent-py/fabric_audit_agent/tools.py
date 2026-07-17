@@ -1016,38 +1016,31 @@ def create_tool_definitions(base_dir=None):
             return {"error": str(exc), "source": source}
 
     def _calendar_day_bounds(value):
-        """Resolve a CALENDAR DAY to a ``(start_utc, end_utc, date_label)`` triple.
+        """Resolve a CALENDAR DAY to a ``(start_utc, end_utc, date_label)`` triple, in UTC.
 
-        The day is resolved in the DISPLAY timezone (``FABRIC_DISPLAY_TZ``, default
-        America/New_York) -- so "today" means the user's wall-clock day, NOT a 51-minute-old UTC
-        day right after UTC midnight (the exact trap that returned a near-empty window). Accepts
-        None/"today", "yesterday", or "YYYY-MM-DD" (interpreted in the display tz). ``end`` is
-        capped at now so "today" never queries into the future. Falls back to UTC if the tz
-        database is unavailable. Raises ValueError on an unparseable date."""
+        The day is the UTC calendar date -- matching the canonical hand-verified query
+        (``TimeGenerated >= datetime(<date>T00:00:00Z) and < next day``) and the Capacity Metrics
+        app's UTC day labelling, so the agent's tables reconcile against both. Accepts None/"today",
+        "yesterday", or "YYYY-MM-DD". ``end`` is capped at now so "today" never queries the future
+        (early in the UTC day this is a short window -- that is correct, not a bug; say so). Raises
+        ValueError on an unparseable date."""
         from datetime import datetime as _dt, timedelta as _td
-        tzname = os.environ.get("FABRIC_DISPLAY_TZ") or "America/New_York"
-        try:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(tzname)
-        except Exception:
-            tz = timezone.utc
-        now_local = _utcnow().astimezone(tz)
+        now = _utcnow()
         v = str(value).strip().lower() if value is not None else ""
         if v in ("", "today"):
-            day_local = now_local
+            base = now
         elif v == "yesterday":
-            day_local = now_local - _td(days=1)
+            base = now - _td(days=1)
         else:
             s = str(value).strip()[:10]   # YYYY-MM-DD prefix
             try:
                 d = _dt.strptime(s, "%Y-%m-%d")
             except ValueError:
                 raise ValueError(f"date must be YYYY-MM-DD, 'today', or 'yesterday' (got {value!r})")
-            day_local = d.replace(tzinfo=tz)
-        start_local = day_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_utc = start_local.astimezone(timezone.utc)
-        end_utc = min(start_utc + _td(days=1), _utcnow())
-        return start_utc, end_utc, start_local.strftime("%Y-%m-%d")
+            base = d.replace(tzinfo=timezone.utc)
+        start_utc = base.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_utc = min(start_utc + _td(days=1), now)
+        return start_utc, end_utc, start_utc.strftime("%Y-%m-%d")
 
     def _resolve_base_cu(explicit, sku):
         """Base capacity units, most-trusted first: explicit ``baseCu`` arg > ``FABRIC_BASE_CU`` env
@@ -1086,7 +1079,11 @@ def create_tool_definitions(base_dir=None):
             if lens not in ("lifetime", "timepoint"):
                 return {"error": f"lens must be 'lifetime' or 'timepoint', got {lens!r}",
                         "peaks": [], "source": source}
-            include_refresh = bool(inp.get("includeRefresh"))
+            # Default: include ALL user-attributed ops (matches the canonical query's
+            # `isnotempty(ExecutingUser)` filter -- admin ops like a Restore/CommandEnd must appear).
+            # Pass includeRefresh=false to restrict to interactive query ops only.
+            include_refresh = inp.get("includeRefresh")
+            include_refresh = True if include_refresh is None else bool(include_refresh)
 
             # Base CU: explicit arg > FABRIC_BASE_CU env > SKU parse (SKU can be a trial name).
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}

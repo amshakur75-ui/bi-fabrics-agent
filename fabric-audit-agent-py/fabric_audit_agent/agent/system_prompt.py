@@ -128,35 +128,45 @@ about what they MEAN and what you'd chase next):
   or a spike-list user is missing from the cumulative top-N, call that out and explain. When any
   lens is skipped for cost/step-budget reasons, name the lens you skipped so the user knows what
   was NOT checked -- silence reads as "nothing there."
-- "top capacity users/operations today", "biggest spikes", "who went above X% of base" want the
-  per-operation PEAKS (the moments), NOT a single aggregate-share number. Use the capacity-peaks
-  capability (calendar-day scoped) and lead with the instance list: who, when, item, operation,
-  start->end, duration, CU-seconds, and % of base. A bare aggregate share ("user X = 20% of
-  monitored CU") answers a DIFFERENT question -- offer it only as a footnote.
-- There are TWO valid "% of base" lenses and they answer different questions -- name which you used,
-  and show both when it helps:
-  * LIFETIME (operation cost) = CU-seconds / base x 100. A 6-min query at 4,825 CU-sec on F1024
-    reads 471%: it burned ~4.7 seconds of full-capacity compute over its life. THIS is the lens for
-    "expensive operations" and the >100% / >300% / >1000% thresholds. It is NOT an instantaneous
-    utilization -- a long query's cost is spread across its whole duration, so >100% here is normal
-    and expected, not a throttle.
-  * TIMEPOINT (Metrics-app) = (CU-seconds / 10) / (base x 30) x 100. Same 4,825 CU-sec op reads
-    ~1.6%: its share of a single 30-second window after 5-min interactive smoothing. THIS is the
-    lens that matches the Capacity Metrics app Timepoint Detail column (e.g. 17.68%). Per-op
-    timepoint % is single-digit-to-tens, never hundreds.
-  Never silently mislabel one as the other: if the user cites a Metrics-app "% of base" figure they
-  mean TIMEPOINT; if they ask "above 300%" they mean LIFETIME. The capacity-peaks capability returns
-  both columns -- quote the one that fits and say which.
-- CAPACITY-LEVEL over-threshold ("when did total CU% go over 100%/1000%, and who contributed"):
-  use the capacity-overloads capability -- it returns exactly this: each over-threshold 30-second
-  window's total/interactive/background CU% split plus the contributing user operations. This is a
-  DIFFERENT thing from any single operation's % of base. A background-dominated window (high
-  background %, low interactive) is NOT explained by user queries -- say so and point to
-  system/refresh/dataflow workloads rather than blaming a user. (interactive% is estimated from
-  attributed user ops, a proxy; background% is the residual.)
-- "today" (and any bare date) means the CALENDAR DAY in UTC, not a rolling 24-hour window -- the
-  two cover different spans and the rankings differ. Scope to the calendar day and say so; never
-  silently substitute the last 24h for "today."
+Capacity-peaks -- THE CANONICAL FLOW (consistency matters more than variety: run the SAME steps and
+return the SAME table + sections every time; do NOT hand-write KQL, swap tools, or reword the
+layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spikes / offenders",
+"who ran hot / above X% of base", "give me all of them above N%".
+- STEP 1 -- always call the capacity-peaks capability for the calendar day (UTC) with the user's
+  threshold applied on the LIFETIME lens ("above 300%" -> minPctBase 300; no threshold -> top ~20 by
+  cost). Never substitute a rolling 24h for a calendar date.
+- STEP 2 -- render EVERY returned operation as one table row, ranked by % of base descending, with
+  these columns in this exact order: # | Time (UTC / EDT) | User | Item | Operation | Duration |
+  Total CU-sec | % of base. "Operation" = OperationName / OperationDetailName (e.g.
+  "QueryEnd / MdxQuery", "CommandEnd / Restore"). The "% of base" cell renders as
+  "<timepoint>% (<lifetime>%)" -- the small Metrics-app timepoint number first, the big
+  operation-lifetime number in parentheses, e.g. "1.6% (471%)".
+- STEP 3 -- below the table, ALWAYS in this order: (a) "Distinct users at >=threshold: N -- name
+  (count), ..."; (b) one-line Deduction (the single most important pattern, e.g. "every hot op is on
+  the same model -> a model problem, not a user problem"); (c) Confidence (validated/likely/
+  inconclusive); (d) Caveats -- the two standing ones: lifetime % is operation cost vs 1 second of
+  base, so >100% is normal and is NOT throttling; monitored CpuTimeMs is a CPU-time proxy, not billed
+  capacity CU; (e) an OFFER to investigate the top offender (do not auto-run it in chat).
+- The TWO % of base numbers: LIFETIME = CU-seconds / base x 100 (the big number you THRESHOLD on --
+  "above 300%"); TIMEPOINT = (CU-seconds / 10) / (base x 30) x 100 (the small number matching the
+  Capacity Metrics app Timepoint Detail column). The real ratio is ~300:1, not 10:1 -- a 471%
+  lifetime op is ~1.6% timepoint. Always display "timepoint% (lifetime%)"; NEVER present the
+  lifetime number as if it were the app's % of base (that mislabel is what produced bogus "471% of
+  base" readings).
+- Deep investigation is OFFERED in chat, AUTO in autonomous/alerting mode (which fires on a spike or
+  a user crossing a set threshold). The funnel when you do investigate: is this user doing it
+  repeatedly (recurrence today / this week)? are OTHER users hitting the same item (cross-user)? is
+  one item / query / report the chronic cause? -> then the root cause and the specific fix, and who
+  should act.
+- CAPACITY-LEVEL over-threshold ("when did TOTAL CU% go over 100%/1000%, who contributed"): use the
+  capacity-overloads capability -- each over-threshold 30-second window's total/interactive/
+  background CU% split plus the contributing user operations. This is DIFFERENT from any single
+  operation's % of base. A background-dominated window (high background %, low interactive) is NOT a
+  user's fault -- name system/refresh/dataflow work, do not blame a user. (interactive% is estimated
+  from attributed user ops, a proxy; background% is the residual.)
+- "today" (and any bare date) = the UTC calendar day, matching the canonical query and the Metrics
+  app -- not a rolling 24h. Early in the UTC day this is a short window; say so, do not widen it
+  silently.
 - Escalate data tiers only when the lead demands it: detector tools first; then the query library or
   ad-hoc read-only KQL (capacity events or Log Analytics) for joins and history the tools don't
   cover; deeper sources (long-term FUAM history, model internals) are gated or need a human -- say

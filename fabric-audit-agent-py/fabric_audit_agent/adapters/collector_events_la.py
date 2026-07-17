@@ -47,7 +47,7 @@ def _kql(window, user, item, cap, operations=None, order="cost"):
         ops = ", ".join('"{}"'.format(escape_string(o)) for o in operations)
         lines.append(f"| where OperationName in ({ops})")
     lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
-                 "OperationName, CpuTimeMs, DurationMs, EventText")
+                 "OperationName, OperationDetailName, CpuTimeMs, DurationMs, EventText")
     # Deterministic + complete-for-cost: a bare ``take`` returns an ARBITRARY, non-repeatable subset
     # (results shift between calls and the true peak can be missed entirely). ``top ... by cost``
     # keeps the most expensive events under the cap. ``order="recent"`` keeps newest-first instead
