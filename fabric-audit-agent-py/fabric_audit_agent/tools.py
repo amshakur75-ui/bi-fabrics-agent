@@ -1135,6 +1135,23 @@ def create_tool_definitions(base_dir=None):
                 return {"peaks": [], "error": meta["error"], "source": source, "date": date_label}
             peaks = _timepoint_peaks(events, base_cu=base_cu, top_n=top_n,
                                      min_pct=min_pct, lens=lens, include_refresh=include_refresh)
+            # LOUD empty signal + explicit anti-fabrication instruction in the payload. A date
+            # outside Log Analytics retention returns zero rows; the model MUST report that, never
+            # invent a table or reuse another date's rows (a real field incident -- a fabricated
+            # top-10 was posted for an out-of-retention date).
+            if not peaks:
+                return {
+                    "peaks": [], "rowCount": 0, "noData": True,
+                    "date": date_label, "windowUtc": f"{start} .. {end}",
+                    "sku": sku, "baseCu": base_cu, "baseCuSource": base_src, "source": source,
+                    "queryKql": meta.get("eventKql"),
+                    "noDataMessage": (
+                        f"ZERO operations returned for {date_label} UTC ({start} .. {end}). There "
+                        "is NOTHING to rank or tabulate. DO NOT fabricate rows and DO NOT reuse any "
+                        "other date's results -- report the empty finding. Likely cause: the date "
+                        "is outside Log Analytics retention, diagnostic logging was off that day, or "
+                        "the day was genuinely quiet."),
+                }
             # ts is the operation END (TimeGenerated); derive the start from duration so the row
             # reads "start -> end" like the Metrics app. Attach display twins (never do tz math).
             for p in peaks:
@@ -1146,8 +1163,29 @@ def create_tool_definitions(base_dir=None):
                     if start_disp:
                         p["startDisplay"] = start_disp
                     p["durationSeconds"] = round(dur_ms / 1000.0, 1)
+            # Deterministic distinct-user rollup so the agent NEVER hand-counts "users over X%" in
+            # prose (that produced visible recount fumbling). One entry per user among the returned
+            # ops, ranked by their peak lifetime %. The agent renders this verbatim.
+            _users = {}
+            for p in peaks:
+                u = p.get("user") or "(unattributed)"
+                agg = _users.setdefault(u, {"user": u, "ops": 0, "peakPctBaseLifetime": None,
+                                            "peakPctBaseConverted": None, "topItem": p.get("item")})
+                agg["ops"] += 1
+                pl = p.get("pctBaseLifetime")
+                if pl is not None and (agg["peakPctBaseLifetime"] is None
+                                       or pl > agg["peakPctBaseLifetime"]):
+                    agg["peakPctBaseLifetime"] = pl
+                    agg["peakPctBaseConverted"] = p.get("pctBaseConverted")
+                    agg["topItem"] = p.get("item")
+            distinct_users = sorted(
+                _users.values(),
+                key=lambda x: x["peakPctBaseLifetime"] if x["peakPctBaseLifetime"] is not None else 0,
+                reverse=True)
             out = _finish({
                 "peaks": peaks,
+                "distinctUsers": distinct_users,
+                "distinctUserCount": len(distinct_users),
                 "date": date_label,
                 "windowUtc": f"{start} .. {end}",
                 "sku": sku,

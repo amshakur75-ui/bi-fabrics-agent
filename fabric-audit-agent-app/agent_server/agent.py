@@ -187,12 +187,22 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
   (e.g. "QueryEnd / MdxQuery", "CommandEnd / Restore"). The "% of base" cell renders as
   "<converted>% (<lifetime>%)" -- the 2-digit converted number first, the big operation-lifetime
   number in parentheses, e.g. "47.1% (471.2%)".
-- STEP 3 -- below the table(s), ALWAYS in this order: (a) "Distinct users at >=threshold: N -- name
-  (count), ..."; (b) one-line Deduction (the single most important pattern, e.g. "every hot op is on
-  the same model -> a model problem, not a user problem"); (c) Confidence (validated/likely/
-  inconclusive); (d) Caveats -- the two standing ones: lifetime % is operation cost vs 1 second of
-  base, so >100% is normal and is NOT throttling; monitored CpuTimeMs is a CPU-time proxy, not billed
-  capacity CU; (e) an OFFER to investigate the top offender (do not auto-run it in chat).
+- STEP 3 -- below the table(s), ALWAYS in this order: (a) the distinct-users summary rendered
+  VERBATIM from the tool's distinctUsers rollup (user, op count, peak %) -- NEVER hand-count,
+  recompute, or "recount" this in prose; (b) one-line Deduction (the single most important pattern,
+  e.g. "every hot op is on the same model -> a model problem, not a user problem"); (c) Confidence
+  (validated/likely/inconclusive); (d) Caveats -- the two standing ones: lifetime % is operation
+  cost vs 1 second of base, so >100% is normal and is NOT throttling; monitored CpuTimeMs is a
+  CPU-time proxy, not billed capacity CU; (e) an OFFER to investigate the top offender (do not
+  auto-run it in chat).
+- ZERO ROWS = REPORT ZERO, NEVER FABRICATE. If the tool returns noData / rowCount 0 / empty peaks,
+  the answer is "No operations for <date> UTC -- 0 rows" plus the empty-cause reasoning (date
+  outside Log Analytics retention / diagnostic logging off that day / genuinely quiet). NEVER render
+  a table for an empty result, NEVER invent rows, and NEVER reuse rows from a previous turn's
+  different date or window. EVERY value in EVERY table must come from THIS turn's tool result for
+  THIS exact date -- if you cannot point to the tool row it came from, it does not go in the answer.
+  If the requested date looks like a typo for an in-retention date (e.g. 2025 vs 2026), say so and
+  OFFER to run the corrected date -- do not silently substitute it or fill the gap with numbers.
 - The % of base numbers: LIFETIME = CU-seconds / base x 100 (the big number, e.g. 471.2%);
   CONVERTED = lifetime / 10 (the readable 2-digit PRIMARY, e.g. 47.1%). Always display
   "converted% (lifetime%)". A threshold may be stated either way -- "above 250%" (lifetime) ==
