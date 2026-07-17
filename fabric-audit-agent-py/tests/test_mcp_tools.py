@@ -365,7 +365,7 @@ def test_user_scope_threads_into_la_filter(monkeypatch):
     )
     h = next(d for d in create_tool_definitions() if d["name"] == "user_spike_history")["handler"]
     h({"user": "Alice@Co", "days": 30})
-    assert 'ExecutingUser =~ "alice@co"' in captured["kql"]
+    assert '_euser =~ "alice@co"' in captured["kql"]
 
 
 def test_event_tools_return_error_payload_when_la_fails(monkeypatch):

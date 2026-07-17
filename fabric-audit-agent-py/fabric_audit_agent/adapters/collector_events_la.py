@@ -42,15 +42,24 @@ def _kql(window, user, item, cap, operations=None, order="cost", exclude_prefixe
     that double-count a QueryEnd). Use the denylist when the caller wants EVERY top-level op type
     (QueryEnd/CommandEnd/DiscoverEnd + XMLA reads + anything else) minus only the SE noise, instead
     of a fixed allowlist that silently hides op types like XMLA Read Operations."""
-    lines = ["PowerBIDatasetsWorkspace",
-             window,
-             "| where isnotempty(ExecutingUser)"]
+    lines = [
+        "PowerBIDatasetsWorkspace",
+        window,
+        # Resolve the user from ExecutingUser, else EffectiveUsername. XMLA Read sessions (schema
+        # discovers from Tabular Editor / SSMS / Analyze-in-Excel / scripts) frequently leave
+        # ExecutingUser EMPTY and carry the caller in EffectiveUsername -- filtering on ExecutingUser
+        # alone dropped those ops entirely (a real miss: an XMLA read at 18.44% of base never showed).
+        # column_ifexists keeps this safe if the tenant's table lacks the column (returns '').
+        "| extend _euser = iff(isnotempty(ExecutingUser), tostring(ExecutingUser), "
+        "tostring(column_ifexists('EffectiveUsername', '')))",
+        "| where isnotempty(_euser)",
+    ]
     if user:
         # Match a full UPN exactly OR a short display name against the local part
         # (bryant.carlson -> bryant.carlson@newellco.com), so a scoped pull never misses a user
         # just because the caller passed the short name the UI shows. =~ is case-insensitive.
         u = escape_string(user)
-        lines.append('| where ExecutingUser =~ "{0}" or ExecutingUser startswith "{0}@"'.format(u))
+        lines.append('| where _euser =~ "{0}" or _euser startswith "{0}@"'.format(u))
     if item:
         lines.append('| where ArtifactName =~ "{}"'.format(escape_string(item)))
     if operations:
@@ -58,7 +67,7 @@ def _kql(window, user, item, cap, operations=None, order="cost", exclude_prefixe
         lines.append(f"| where OperationName in ({ops})")
     for pref in (exclude_prefixes or []):
         lines.append('| where not(OperationName startswith "{}")'.format(escape_string(pref)))
-    lines.append("| project TimeGenerated, ExecutingUser, ArtifactName, PowerBIWorkspaceName, "
+    lines.append("| project TimeGenerated, ExecutingUser=_euser, ArtifactName, PowerBIWorkspaceName, "
                  "OperationName, OperationDetailName, CpuTimeMs, DurationMs, EventText")
     # Deterministic + complete-for-cost: a bare ``take`` returns an ARBITRARY, non-repeatable subset
     # (results shift between calls and the true peak can be missed entirely). ``top ... by cost``

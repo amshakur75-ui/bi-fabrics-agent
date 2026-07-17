@@ -57,7 +57,7 @@ def test_kql_scopes_to_user_and_item_when_given():
         seen["kql"] = kql
         return []
     create_event_collector(capture, {"user": "alice@co", "item": "Sales", "cap": 100})["collect"]()
-    assert 'ExecutingUser =~ "alice@co"' in seen["kql"]
+    assert '_euser =~ "alice@co"' in seen["kql"]
     assert 'ArtifactName =~ "Sales"' in seen["kql"]
     assert "top 100 by coalesce(CpuTimeMs, DurationMs) desc" in seen["kql"]
 
@@ -68,7 +68,7 @@ def test_kql_escapes_quotes_from_user_and_item_preserving_content_no_breakout():
         seen["kql"] = kql
         return []
     create_event_collector(capture, {"user": 'a"; drop | take 1', "item": 'b"c'})["collect"]()
-    assert 'ExecutingUser =~ "a\\"; drop | take 1"' in seen["kql"]
+    assert '_euser =~ "a\\"; drop | take 1"' in seen["kql"]
     assert 'ArtifactName =~ "b\\"c"' in seen["kql"]
 
 
@@ -83,7 +83,7 @@ def test_kql_escapes_backslashes_too():
         return []
     create_event_collector(capture, {"user": "trailing\\", "item": "mid\\dle"})["collect"]()
     # escape_string doubles each backslash; the closing quote stays intact (no breakout).
-    assert 'ExecutingUser =~ "trailing\\\\"' in seen["kql"]
+    assert '_euser =~ "trailing\\\\"' in seen["kql"]
     assert 'ArtifactName =~ "mid\\\\dle"' in seen["kql"]
 
 
@@ -175,8 +175,8 @@ def test_user_filter_matches_short_name_or_full_upn():
     # A scoped pull with the SHORT display name must still catch the full UPN in the data --
     # otherwise an XMLA-read lookup for "bryant.carlson" misses bryant.carlson@newellco.com.
     kql = _kql(_CLAUSE_1D, "bryant.carlson", None, 5000)
-    assert 'ExecutingUser =~ "bryant.carlson"' in kql
-    assert 'ExecutingUser startswith "bryant.carlson@"' in kql
+    assert '_euser =~ "bryant.carlson"' in kql
+    assert '_euser startswith "bryant.carlson@"' in kql
 
 
 def test_exclude_prefixes_denylist_drops_se_children_shows_all_else():
