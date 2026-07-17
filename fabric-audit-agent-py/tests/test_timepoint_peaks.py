@@ -49,12 +49,13 @@ class TestTimepointPeaks(unittest.TestCase):
         return {"ts": "2026-07-16T14:09:30Z", "user": user, "item": item, "operation": op,
                 "kind": kind, "cuSeconds": cu, "durationMs": 368000}
 
-    def test_row_carries_both_lenses(self):
+    def test_row_carries_all_three_views(self):
         peaks = timepoint_peaks([self._ev(4825.28, user="paul")], base_cu=1024)
         top = peaks[0]
         self.assertEqual(top["cuSeconds"], 4825.28)
-        self.assertAlmostEqual(top["pctBaseLifetime"], 471.2, places=1)     # the 471% view
-        self.assertAlmostEqual(top["pctBaseTimepoint"], 1.57, places=2)     # the timepoint view
+        self.assertAlmostEqual(top["pctBaseLifetime"], 471.2, places=1)     # the 471% lifetime view
+        self.assertAlmostEqual(top["pctBaseConverted"], 47.1, places=1)     # the 2-digit "converted" primary
+        self.assertAlmostEqual(top["pctBaseTimepoint"], 1.57, places=2)     # the true app timepoint cell
         self.assertEqual(top["timepointCuSeconds"], round(4825.28 / 10, 4))
 
     def test_lifetime_threshold_reproduces_above_300_table(self):

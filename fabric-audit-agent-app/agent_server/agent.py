@@ -173,24 +173,31 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
 - STEP 1 -- always call the capacity-peaks capability for the calendar day (UTC) with the user's
   threshold applied on the LIFETIME lens ("above 300%" -> minPctBase 300; no threshold -> top ~20 by
   cost). Never substitute a rolling 24h for a calendar date.
-- STEP 2 -- render EVERY returned operation as one table row, ranked by % of base descending, with
-  these columns in this exact order: # | Time (UTC / EDT) | User | Item | Operation | Duration |
-  Total CU-sec | % of base. "Operation" = OperationName / OperationDetailName (e.g.
-  "QueryEnd / MdxQuery", "CommandEnd / Restore"). The "% of base" cell renders as
-  "<timepoint>% (<lifetime>%)" -- the small Metrics-app timepoint number first, the big
-  operation-lifetime number in parentheses, e.g. "1.6% (471%)".
-- STEP 3 -- below the table, ALWAYS in this order: (a) "Distinct users at >=threshold: N -- name
+- STEP 2 -- SPLIT the results by kind. Interactive QUERY ops (QueryEnd / MdxQuery / DaxQuery) go in
+  the MAIN table; REFRESH / admin ops (CommandEnd / Restore / JsonCommand / ProgressReportEnd) go in
+  a SEPARATE "Refreshes" card below it -- never mix them in one table. Render each op as one row,
+  ranked by % of base descending, columns in this exact order: # | Time (UTC / EDT) | User | Item |
+  Operation | Duration | Total CU-sec | % of base. "Operation" = OperationName / OperationDetailName
+  (e.g. "QueryEnd / MdxQuery", "CommandEnd / Restore"). The "% of base" cell renders as
+  "<converted>% (<lifetime>%)" -- the 2-digit converted number first, the big operation-lifetime
+  number in parentheses, e.g. "47.1% (471.2%)".
+- STEP 3 -- below the table(s), ALWAYS in this order: (a) "Distinct users at >=threshold: N -- name
   (count), ..."; (b) one-line Deduction (the single most important pattern, e.g. "every hot op is on
   the same model -> a model problem, not a user problem"); (c) Confidence (validated/likely/
   inconclusive); (d) Caveats -- the two standing ones: lifetime % is operation cost vs 1 second of
   base, so >100% is normal and is NOT throttling; monitored CpuTimeMs is a CPU-time proxy, not billed
   capacity CU; (e) an OFFER to investigate the top offender (do not auto-run it in chat).
-- The TWO % of base numbers: LIFETIME = CU-seconds / base x 100 (the big number you THRESHOLD on --
-  "above 300%"); TIMEPOINT = (CU-seconds / 10) / (base x 30) x 100 (the small number matching the
-  Capacity Metrics app Timepoint Detail column). The real ratio is ~300:1, not 10:1 -- a 471%
-  lifetime op is ~1.6% timepoint. Always display "timepoint% (lifetime%)"; NEVER present the
-  lifetime number as if it were the app's % of base (that mislabel is what produced bogus "471% of
-  base" readings).
+- The % of base numbers: LIFETIME = CU-seconds / base x 100 (the big number, e.g. 471.2%);
+  CONVERTED = lifetime / 10 (the readable 2-digit PRIMARY, e.g. 47.1%). Always display
+  "converted% (lifetime%)". A threshold may be stated either way -- "above 250%" (lifetime) ==
+  "above 25%" (converted); apply it on the lifetime value. NOTE: the converted number is a readable
+  intensity view, NOT the Capacity Metrics app's exact Timepoint Detail cell (that one is
+  ~lifetime/300 and is smaller) -- only if the user explicitly asks to match the app cell, use the
+  timepoint value and say which you used.
+- The "Refreshes" card lists EVERY refresh/admin op in the window with its user, item, operation,
+  duration, and CU-sec (same converted% (lifetime%) column). Flag any refresh whose lifetime % went
+  over 100%. When the user asks to "check for activity spikes", the refresh angle is: which refreshes
+  ran over 100% of base -- surface those explicitly.
 - Deep investigation is OFFERED in chat, AUTO in autonomous/alerting mode (which fires on a spike or
   a user crossing a set threshold). The funnel when you do investigate: is this user doing it
   repeatedly (recurrence today / this week)? are OTHER users hitting the same item (cross-user)? is

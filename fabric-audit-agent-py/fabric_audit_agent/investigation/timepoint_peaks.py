@@ -108,6 +108,11 @@ def timepoint_peaks(events, *, base_cu, top_n=20, min_pct=None, lens="lifetime",
             "durationMs": e.get("durationMs"),
             "cuSeconds": round(cu, 4),
             "pctBaseLifetime": round(pct_life, 1) if pct_life is not None else None,
+            # The user-facing "converted" 2-digit number = lifetime / 10 (e.g. 471.2% -> 47.1%).
+            # This is the display primary, shown as "converted% (lifetime%)". NOTE: this is NOT the
+            # Capacity Metrics app's exact Timepoint Detail cell (that is pctBaseTimepoint, ~/300) --
+            # it is a readable intensity view the user asked for; label it as converted, not "app".
+            "pctBaseConverted": round(pct_life / 10, 1) if pct_life is not None else None,
             "timepointCuSeconds": round(cu / _INTERACTIVE_SMOOTHING_TIMEPOINTS, 4) if base_cu else None,
             "pctBaseTimepoint": round(pct_tp, 2) if pct_tp is not None else None,
         })
