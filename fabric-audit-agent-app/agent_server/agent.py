@@ -643,6 +643,8 @@ _PROGRESS_PHRASES = {
     "user_spike_history": "looking into that user's activity",
     "investigate_capacity_spike": "checking events with unusual spikes",
     "spike_events": "checking events with unusual spikes",
+    "capacity_peaks": "finding the biggest usage moments",
+    "capacity_overloads": "finding when the capacity went over",
     "raw_events": "pulling the raw event stream",
     "capacity_patterns": "analyzing capacity patterns",
     "capacity_diagnostics": "analyzing capacity patterns",

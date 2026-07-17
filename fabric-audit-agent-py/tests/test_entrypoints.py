@@ -128,12 +128,13 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
                           "describe_source", "sample_events", "capacity_diagnostics", "analyze_dax",
                           "diagnose", "whats_changed", "user_timeline", "run_kql", "query_library"}
 
-    # capacity_peaks: calendar-day peaks, two lenses -- date/threshold/lens/scope, none required
+    # capacity_peaks: calendar-day peaks, two lenses -- date/threshold/lens/scope/baseCu, none required
     assert set(tools["capacity_peaks"]["properties"]) == {
-        "date", "minPctBase", "lens", "topN", "user", "item", "includeRefresh"}
+        "date", "minPctBase", "lens", "topN", "user", "item", "includeRefresh", "baseCu"}
 
-    # capacity_overloads: capacity-level over-threshold windows -- date/threshold/cap, none required
-    assert set(tools["capacity_overloads"]["properties"]) == {"date", "minCuPct", "topWindows"}
+    # capacity_overloads: capacity-level over-threshold windows -- date/threshold/cap/baseCu, none required
+    assert set(tools["capacity_overloads"]["properties"]) == {
+        "date", "minCuPct", "topWindows", "baseCu"}
     assert "required" not in tools["capacity_peaks"] or not tools["capacity_peaks"]["required"]
 
     # user_spike_history: user REQUIRED; window props + item optional -- no phantom topN/when

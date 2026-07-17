@@ -1015,25 +1015,55 @@ def create_tool_definitions(base_dir=None):
         except ValueError as exc:
             return {"error": str(exc), "source": source}
 
-    def _parse_calendar_day(value):
-        """Resolve a CALENDAR-DAY value to a UTC datetime at 00:00. Accepts None/"today",
-        "yesterday", or "YYYY-MM-DD" (also tolerates our display form's date prefix). "today"
-        means the UTC calendar date -- NOT a rolling 24h window (the two differ and users mean
-        the date). Raises ValueError on an unparseable date."""
+    def _calendar_day_bounds(value):
+        """Resolve a CALENDAR DAY to a ``(start_utc, end_utc, date_label)`` triple.
+
+        The day is resolved in the DISPLAY timezone (``FABRIC_DISPLAY_TZ``, default
+        America/New_York) -- so "today" means the user's wall-clock day, NOT a 51-minute-old UTC
+        day right after UTC midnight (the exact trap that returned a near-empty window). Accepts
+        None/"today", "yesterday", or "YYYY-MM-DD" (interpreted in the display tz). ``end`` is
+        capped at now so "today" never queries into the future. Falls back to UTC if the tz
+        database is unavailable. Raises ValueError on an unparseable date."""
         from datetime import datetime as _dt, timedelta as _td
-        now = _utcnow()
-        if value is None or str(value).strip().lower() in ("", "today"):
-            base = now
-        elif str(value).strip().lower() == "yesterday":
-            base = now - _td(days=1)
+        tzname = os.environ.get("FABRIC_DISPLAY_TZ") or "America/New_York"
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tzname)
+        except Exception:
+            tz = timezone.utc
+        now_local = _utcnow().astimezone(tz)
+        v = str(value).strip().lower() if value is not None else ""
+        if v in ("", "today"):
+            day_local = now_local
+        elif v == "yesterday":
+            day_local = now_local - _td(days=1)
         else:
             s = str(value).strip()[:10]   # YYYY-MM-DD prefix
             try:
                 d = _dt.strptime(s, "%Y-%m-%d")
             except ValueError:
                 raise ValueError(f"date must be YYYY-MM-DD, 'today', or 'yesterday' (got {value!r})")
-            return d.replace(tzinfo=timezone.utc)
-        return base.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_local = d.replace(tzinfo=tz)
+        start_local = day_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = start_local.astimezone(timezone.utc)
+        end_utc = min(start_utc + _td(days=1), _utcnow())
+        return start_utc, end_utc, start_local.strftime("%Y-%m-%d")
+
+    def _resolve_base_cu(explicit, sku):
+        """Base capacity units, most-trusted first: explicit ``baseCu`` arg > ``FABRIC_BASE_CU`` env
+        > parsed from the SKU name. The env override exists because this tenant's capacity reports a
+        non-standard SKU string (e.g. a trial name) even though its real base is known -- without it
+        the % of base columns silently drop out. Returns None only when all three fail."""
+        for candidate in (explicit, os.environ.get("FABRIC_BASE_CU")):
+            if candidate is None or candidate == "":
+                continue
+            try:
+                v = int(float(candidate))
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                return v
+        return _base_cu_from_sku(sku)
 
     def capacity_peaks_handler(_input=None):
         """Per-operation TIMEPOINT PEAKS for a CALENDAR DAY (UTC) — the Capacity Metrics app
@@ -1047,9 +1077,8 @@ def create_tool_definitions(base_dir=None):
         inp = _input or {}
         source = "live" if _has_live_event_source(os.environ) else "mock"
         try:
-            day = _parse_calendar_day(inp.get("date"))
-            start = day.strftime("%Y-%m-%dT00:00:00Z")
-            end_dt = min(day + _td(days=1), _utcnow())   # cap "today" at now, never the future
+            start_dt, end_dt, date_label = _calendar_day_bounds(inp.get("date"))
+            start = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             top_n = inp.get("topN") if inp.get("topN") is not None else 20
             min_pct = inp.get("minPctBase")
@@ -1059,10 +1088,10 @@ def create_tool_definitions(base_dir=None):
                         "peaks": [], "source": source}
             include_refresh = bool(inp.get("includeRefresh"))
 
-            # Base CU from the capacity SKU (F1024 -> 1024) -- needed for the % of base column.
+            # Base CU: explicit arg > FABRIC_BASE_CU env > SKU parse (SKU can be a trial name).
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
             sku = cap_facts.get("sku")
-            base_cu = _base_cu_from_sku(sku)
+            base_cu = _resolve_base_cu(inp.get("baseCu"), sku)
 
             events, _series, meta = _resolve_event_sources(
                 start=start, end=end,
@@ -1070,7 +1099,7 @@ def create_tool_definitions(base_dir=None):
                 cap=_EVENT_CAP, order="cost",
             )
             if meta["error"]:
-                return {"peaks": [], "error": meta["error"], "source": source, "date": start[:10]}
+                return {"peaks": [], "error": meta["error"], "source": source, "date": date_label}
             peaks = _timepoint_peaks(events, base_cu=base_cu, top_n=top_n,
                                      min_pct=min_pct, lens=lens, include_refresh=include_refresh)
             # ts is the operation END (TimeGenerated); derive the start from duration so the row
@@ -1086,7 +1115,8 @@ def create_tool_definitions(base_dir=None):
                     p["durationSeconds"] = round(dur_ms / 1000.0, 1)
             out = _finish({
                 "peaks": peaks,
-                "date": start[:10],
+                "date": date_label,
+                "windowUtc": f"{start} .. {end}",
                 "sku": sku,
                 "baseCu": base_cu,
                 "thresholdLens": lens,
@@ -1101,8 +1131,10 @@ def create_tool_definitions(base_dir=None):
             }, rows_key="peaks", kql=meta["eventKql"], extra={"windowLabel": meta["windowLabel"]})
             out["tier"] = meta["tier"]
             if base_cu is None:
-                out["pctBaseNote"] = (f"SKU {sku!r} is non-standard/unknown -- % of base omitted; "
-                                      "rows ranked by raw CU-seconds only.")
+                out["pctBaseNote"] = (f"Base capacity unknown -- SKU came back as {sku!r} (non-standard, "
+                                      "e.g. a trial name), no FABRIC_BASE_CU env is set, and no baseCu "
+                                      "arg was passed. % of base omitted; rows ranked by raw CU-seconds. "
+                                      "Pass baseCu (e.g. 1024 for F1024) or set FABRIC_BASE_CU to fix.")
             if meta["truncated"]:
                 out["truncated"] = True   # ranking covers the costliest _EVENT_CAP events only
             return out
@@ -1116,20 +1148,19 @@ def create_tool_definitions(base_dir=None):
         and who contributed'. Total CU% is the capacity utilization stream; interactive% is
         estimated from attributed user ops (CpuTimeMs spread across 30s windows); background% is the
         residual (system/refresh/dataflow -- not user queries). Read-only."""
-        from datetime import timedelta as _td, datetime as _dtm
+        from datetime import datetime as _dtm
         inp = _input or {}
         source = "live" if _has_live_event_source(os.environ) else "mock"
         try:
-            day = _parse_calendar_day(inp.get("date"))
-            start = day.strftime("%Y-%m-%dT00:00:00Z")
-            end_dt = min(day + _td(days=1), _utcnow())
+            start_dt, end_dt, date_label = _calendar_day_bounds(inp.get("date"))
+            start = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             min_cu_pct = inp.get("minCuPct") if inp.get("minCuPct") is not None else 100.0
             top_windows = inp.get("topWindows") if inp.get("topWindows") is not None else 50
 
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
             sku = cap_facts.get("sku")
-            base_cu = _base_cu_from_sku(sku)
+            base_cu = _resolve_base_cu(inp.get("baseCu"), sku)
 
             series_raw, series_meta = _capacity_series_only(None, None, start, end)
             events, _s, meta = _resolve_event_sources(start=start, end=end, cap=_EVENT_CAP,
@@ -1163,7 +1194,8 @@ def create_tool_definitions(base_dir=None):
                         w["windowStartDisplay"] = disp
             out = {
                 "overloads": windows,
-                "date": start[:10],
+                "date": date_label,
+                "windowUtc": f"{start} .. {end}",
                 "sku": sku,
                 "baseCu": base_cu,
                 "thresholdCuPct": min_cu_pct,
@@ -1997,6 +2029,10 @@ def create_tool_definitions(base_dir=None):
                                                        "false; the timepoint lens does not model "
                                                        "their 24h smoothing, but their lifetime % is "
                                                        "still meaningful).")},
+                    "baseCu": {"type": "integer",
+                               "description": ("Override base capacity units (e.g. 1024 for F1024) when "
+                                               "the SKU name doesn't resolve to a base. Falls back to "
+                                               "FABRIC_BASE_CU env, then the SKU name.")},
                 },
                 "required": [],
             },
@@ -2027,6 +2063,10 @@ def create_tool_definitions(base_dir=None):
                                                  "(default 100; use 1000 for extreme overages).")},
                     "topWindows": {"type": "integer",
                                    "description": "Maximum over-threshold windows to return (default 50)."},
+                    "baseCu": {"type": "integer",
+                               "description": ("Override base capacity units (e.g. 1024 for F1024) when "
+                                               "the SKU name doesn't resolve. Falls back to FABRIC_BASE_CU "
+                                               "env, then the SKU. Needed for the interactive/background split.")},
                 },
                 "required": [],
             },

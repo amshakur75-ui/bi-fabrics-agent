@@ -32,6 +32,13 @@ env:
   - name: FABRIC_CAPACITIES_URL
     value: "https://api.fabric.microsoft.com/v1/capacities"
 
+  # Base capacity units for the % of base columns. The capacity's SKU string resolves as a
+  # non-standard/trial name (e.g. FTL64) even though the real capacity is F1024, which left the
+  # % of base uncomputable. This override is authoritative; capacity_peaks/overloads prefer an
+  # explicit baseCu arg, then this, then the SKU name.
+  - name: FABRIC_BASE_CU
+    value: "1024"
+
   # Per-user attribution via Log Analytics (the 30% "who") — workspace GUID via resource
   - name: FABRIC_LA_WORKSPACE_ID
     valueFrom: la_workspace_id
