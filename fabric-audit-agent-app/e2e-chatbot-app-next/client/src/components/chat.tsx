@@ -282,6 +282,56 @@ export function Chat({
     }
   }, [query, sendMessage, hasAppendedQuery, id, chatHistoryEnabled]);
 
+  // Teams alert deep-link: `?context=<urlsafe-base64 JSON>` from the "Yes, let's dig in" button.
+  // Seeds the CONTINUED conversation the user just read in Teams -- the opening question plus the
+  // agent's briefing -- so they land mid-investigation and keep going (no re-run, no blank screen).
+  const context = searchParams.get('context');
+  const [hasSeededContext, setHasSeededContext] = useState(false);
+
+  useEffect(() => {
+    if (!context || hasSeededContext || messages.length > 0) {
+      return;
+    }
+    try {
+      const b64 = context.replace(/-/g, '+').replace(/_/g, '/');
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const decoded = JSON.parse(new TextDecoder().decode(bytes)) as {
+        question?: string;
+        briefing?: string;
+      };
+      const seeded: ChatMessage[] = [];
+      if (decoded.question) {
+        seeded.push({
+          id: generateUUID(),
+          role: 'user',
+          parts: [{ type: 'text', text: decoded.question }],
+        } as ChatMessage);
+      }
+      if (decoded.briefing) {
+        seeded.push({
+          id: generateUUID(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: decoded.briefing }],
+        } as ChatMessage);
+      }
+      if (seeded.length > 0) {
+        setMessages(seeded);
+      }
+      setHasSeededContext(true);
+      softNavigateToChatId(id, chatHistoryEnabled);
+    } catch {
+      // Malformed context — open a normal empty chat rather than erroring.
+      setHasSeededContext(true);
+    }
+  }, [
+    context,
+    hasSeededContext,
+    messages.length,
+    setMessages,
+    id,
+    chatHistoryEnabled,
+  ]);
+
   const [attachments, setAttachments] = useState<Array<Attachment>>([]);
 
   const inputElement = <MultimodalInput

@@ -75,20 +75,34 @@ class TestPlanWatch(unittest.TestCase):
 
 
 class TestAdaptiveCard(unittest.TestCase):
-    def test_two_way_card_shape(self):
+    def test_yes_no_card_with_deeplink(self):
         inc = evaluate_incidents([], [_peak(47.1, 471.2)], base_cu=1024)[0]
-        msg = build_watch_adaptive_card(inc)
+        msg = build_watch_adaptive_card(inc, app_base_url="https://app.example.com")
         self.assertEqual(msg["type"], "message")
         att = msg["attachments"][0]
         self.assertEqual(att["contentType"], "application/vnd.microsoft.card.adaptive")
         card = att["content"]
         self.assertEqual(card["type"], "AdaptiveCard")
-        # has the Input.ChoiceSet with the three responses + a Submit action
-        choiceset = next(b for b in card["body"] if b.get("type") == "Input.ChoiceSet")
-        self.assertEqual([c["value"] for c in choiceset["choices"]],
-                         ["acknowledge", "snooze", "explain"])
-        self.assertEqual(card["actions"][0]["type"], "Action.Submit")
-        self.assertEqual(card["actions"][0]["data"]["incidentId"], inc["id"])
+        yes, no = card["actions"][0], card["actions"][1]
+        self.assertEqual(yes["type"], "Action.OpenUrl")
+        self.assertIn("context=", yes["url"])                 # deep-link carries the incident
+        self.assertTrue(yes["url"].startswith("https://app.example.com?context="))
+        self.assertEqual(no["type"], "Action.Submit")
+        self.assertEqual(no["data"]["response"], "no")        # drives the flow's dismiss branch
+
+    def test_no_only_card_when_no_app_url(self):
+        inc = evaluate_incidents([], [_peak(47.1, 471.2)], base_cu=1024)[0]
+        card = build_watch_adaptive_card(inc)["attachments"][0]["content"]
+        self.assertEqual([a["type"] for a in card["actions"]], ["Action.Submit"])
+
+    def test_deeplink_context_roundtrips(self):
+        import base64 as _b64, json as _json
+        inc = evaluate_incidents([], [_peak(47.1, 471.2)], base_cu=1024)[0]
+        card = build_watch_adaptive_card(inc, app_base_url="https://app.example.com")["attachments"][0]["content"]
+        enc = card["actions"][0]["url"].split("context=", 1)[1]
+        ctx = _json.loads(_b64.urlsafe_b64decode(enc).decode())
+        self.assertEqual(ctx["kind"], "operation")
+        self.assertEqual(ctx["item"], "Ent-Reporting-Sales")
 
 
 if __name__ == "__main__":

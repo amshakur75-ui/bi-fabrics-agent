@@ -107,6 +107,7 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     env = os.environ
     webhook = env.get("FABRIC_WATCH_WEBHOOK_URL")
+    app_url = env.get("FABRIC_APP_URL")   # chat app root for the "Yes, show me more" deep-link
 
     def _deliver(incident):
         if not webhook:
@@ -115,7 +116,7 @@ def main(argv=None):
             return
         from .adapters.clients import PlainJsonHttp
         from .adapters.delivery_teams import create_watch_delivery
-        delivery = create_watch_delivery(PlainJsonHttp(), webhook)
+        delivery = create_watch_delivery(PlainJsonHttp(), webhook, app_base_url=app_url)
         delivery["deliverIncident"](incident)
 
     # --test-card: deliver a single sample card and exit (webhook proof).

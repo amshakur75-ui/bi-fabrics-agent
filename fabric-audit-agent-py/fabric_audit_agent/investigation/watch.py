@@ -84,10 +84,18 @@ def evaluate_incidents(windows, peaks, *, base_cu, cu_pct=100.0, op_pct_converte
         if top and top.get("user"):
             facts.append({"title": "Top contributor",
                           "value": f"{top['user']} — {top.get('item')} ({top.get('cuInWindow')} CU-s)"})
+        cap_question = (f"Explain this capacity alert: {summary}. What happened, why does it "
+                        "matter, and what should we do?")
         incidents.append({
             "kind": "capacity", "id": f"capacity:{first_epoch}", "severity": severity,
             "emoji": emoji, "title": f"{emoji} {summary}", "summary": summary, "why": why,
             "facts": facts, "whenEpoch": peak_w.get("windowEpoch"),
+            # context carries the opening question + the briefing the user just read, so the app
+            # opens on a CONTINUED conversation (not a fresh re-run).
+            "context": {"kind": "capacity", "summary": summary,
+                        "user": (top.get("user") if top else None),
+                        "item": (top.get("item") if top else None),
+                        "question": cap_question, "briefing": why},
         })
 
     # ---- Heavy operations (each over the converted threshold) ----
@@ -120,6 +128,12 @@ def evaluate_incidents(windows, peaks, *, base_cu, cu_pct=100.0, op_pct_converte
                 {"title": "CU-seconds", "value": str(p.get("cuSeconds"))},
             ],
             "whenEpoch": None, "when": p.get("ts"),
+            "context": {"kind": "operation", "user": user, "item": item,
+                        "detectedAt": p.get("ts"),
+                        "question": (f"Explain the heavy-operation alert for {user} on {item} "
+                                     f"detected at {p.get('ts')}. What happened, why does it "
+                                     "matter, and what should we do?"),
+                        "briefing": why},
         })
 
     return incidents

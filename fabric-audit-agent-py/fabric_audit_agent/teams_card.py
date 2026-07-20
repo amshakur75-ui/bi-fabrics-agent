@@ -46,18 +46,42 @@ def build_teams_card(envelope):
 _SEVERITY_COLOR = {"warn": "Attention", "info": "Good"}
 
 
-def build_watch_adaptive_card(incident):
-    """Build the two-way Adaptive Card (message envelope) for a single watcher incident.
+def _context_deeplink(app_base_url, context):
+    """Encode the incident ``context`` dict as urlsafe-base64 and append as ``?context=`` to the
+    chat app URL. The React app decodes it and auto-fires the opening investigation question, so
+    'Yes, show me more' lands the user on a live conversation. Returns None if either is missing."""
+    if not app_base_url or context is None:
+        return None
+    import base64
+    import json
+    enc = base64.urlsafe_b64encode(
+        json.dumps(context, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    sep = "&" if "?" in app_base_url else "?"
+    return f"{app_base_url}{sep}context={enc}"
 
-    ``incident``: {emoji, title, summary, why, severity, facts:[{title,value}], id,
-    whenDisplay?}. Returns the ``type:"message"`` + ``attachments[]`` payload POSTed to the
-    Workflows webhook.
+
+def build_watch_adaptive_card(incident, *, app_base_url=None):
+    """Build the alert Adaptive Card (message envelope) for one watcher incident.
+
+    UX (approved 2026-07-19): a friendly heading, the finding + why, then two actions --
+    **"Yes, show me more →"** (Action.OpenUrl deep-linking into the chat app with the encoded
+    incident context, so the conversation is already running) and **"No, dismiss"** (Action.Submit
+    with ``{response:"no"}``, which the Power Automate flow answers with "Dismissed..."). Shape is
+    ``type:"message"`` + ``attachments[]`` for "Post adaptive card and wait for a response".
+
+    ``incident``: {emoji, title, summary, why, severity, facts:[{title,value}], id, kind,
+    whenDisplay?, context?}. ``app_base_url``: the chat app root (e.g.
+    https://fabric-audit-agent-....azuredatabricksapps.com) -- when present with a context, the
+    Yes button deep-links; otherwise Yes is omitted (No-only card).
     """
     inc = incident or {}
     color = _SEVERITY_COLOR.get(inc.get("severity"), "Default")
     body = [
-        {"type": "TextBlock", "size": "Large", "weight": "Bolder", "wrap": True,
-         "color": color, "text": _js_str(inc.get("title") or inc.get("summary"))},
+        {"type": "TextBlock", "size": "Medium", "weight": "Bolder", "wrap": True,
+         "text": "👋 Just flagged something worth your attention."},
+        {"type": "TextBlock", "size": "Medium", "weight": "Bolder", "wrap": True,
+         "color": color, "text": _js_str(inc.get("summary") or inc.get("title"))},
     ]
     if inc.get("whenDisplay"):
         body.append({"type": "TextBlock", "spacing": "None", "isSubtle": True, "wrap": True,
@@ -68,21 +92,19 @@ def build_watch_adaptive_card(incident):
         body.append({"type": "FactSet", "facts": facts})
     if inc.get("why"):
         body.append({"type": "TextBlock", "wrap": True, "text": _js_str(inc.get("why"))})
-    body.append({
-        "type": "Input.ChoiceSet", "id": "response", "label": "What do you want to do?",
-        "value": "acknowledge",
-        "choices": [
-            {"title": "Acknowledge", "value": "acknowledge"},
-            {"title": "Snooze 1 hour", "value": "snooze"},
-            {"title": "Explain in more detail", "value": "explain"},
-        ],
-    })
+    body.append({"type": "TextBlock", "wrap": True, "weight": "Bolder", "spacing": "Medium",
+                 "text": "Would you like to explore or dig into this more?"})
+
+    actions = []
+    deeplink = _context_deeplink(app_base_url, inc.get("context"))
+    if deeplink:
+        actions.append({"type": "Action.OpenUrl", "title": "Yes, let's dig in →", "url": deeplink})
+    actions.append({"type": "Action.Submit", "title": "No, dismiss",
+                    "data": {"response": "no", "incidentId": _js_str(inc.get("id"))}})
+
     card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard", "version": "1.4", "body": body,
-        "actions": [{"type": "Action.Submit", "title": "Submit",
-                     "data": {"incidentId": _js_str(inc.get("id")),
-                              "incidentKind": _js_str(inc.get("kind"))}}],
+        "type": "AdaptiveCard", "version": "1.4", "body": body, "actions": actions,
     }
     return {
         "type": "message",

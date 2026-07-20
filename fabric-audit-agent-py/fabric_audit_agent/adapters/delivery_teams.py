@@ -16,13 +16,13 @@ def create_teams_delivery(http, webhook_url):
     return {"deliver": deliver}
 
 
-def create_watch_delivery(http, webhook_url):
-    """DeliveryPort for the autonomous watcher: POSTs a two-way Adaptive Card (Acknowledge /
-    Snooze / Explain) per incident to the Power Automate Workflows webhook. ``http.post_json`` is
-    injected (real client at deploy; a capture fake in tests). Returns a per-incident result so the
-    orchestrator can record what was actually delivered (for dedup + audit)."""
+def create_watch_delivery(http, webhook_url, app_base_url=None):
+    """DeliveryPort for the autonomous watcher: POSTs one alert Adaptive Card per incident to the
+    Power Automate Workflows webhook. The card carries "Yes, show me more →" (deep-links into the
+    chat app at ``app_base_url`` with the encoded incident context) and "No, dismiss".
+    ``http.post_json`` is injected (real client at deploy; a capture fake in tests)."""
     def deliver_incident(incident):
-        card = build_watch_adaptive_card(incident)
+        card = build_watch_adaptive_card(incident, app_base_url=app_base_url)
         http.post_json(webhook_url, card)
         return {"delivered": True, "id": (incident or {}).get("id"),
                 "severity": (incident or {}).get("severity")}
