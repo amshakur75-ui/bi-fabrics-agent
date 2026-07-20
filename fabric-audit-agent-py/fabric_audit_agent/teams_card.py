@@ -33,3 +33,61 @@ def build_teams_card(envelope):
         "items": [f"{_js_str(f.get('what'))} — Fix: {_fix0(f)}" for f in criticals[:10]],
     })
     return {"type": "message", "summary": summary if summary is not None else "Fabric audit", "sections": sections}
+
+
+# ---------------------------------------------------------------------------
+# Two-way Adaptive Card for the autonomous watcher (Power Automate "Post adaptive
+# card and wait for a response"). Shape: {type:"message", attachments:[{contentType:
+# "application/vnd.microsoft.card.adaptive", content:<AdaptiveCard>}]}. The card carries an
+# Input.ChoiceSet (Acknowledge / Snooze / Explain) + one Action.Submit -> the flow captures
+# who submitted and their choice and can call back to a Databricks Job trigger URL. Pure.
+# ---------------------------------------------------------------------------
+
+_SEVERITY_COLOR = {"warn": "Attention", "info": "Good"}
+
+
+def build_watch_adaptive_card(incident):
+    """Build the two-way Adaptive Card (message envelope) for a single watcher incident.
+
+    ``incident``: {emoji, title, summary, why, severity, facts:[{title,value}], id,
+    whenDisplay?}. Returns the ``type:"message"`` + ``attachments[]`` payload POSTed to the
+    Workflows webhook.
+    """
+    inc = incident or {}
+    color = _SEVERITY_COLOR.get(inc.get("severity"), "Default")
+    body = [
+        {"type": "TextBlock", "size": "Large", "weight": "Bolder", "wrap": True,
+         "color": color, "text": _js_str(inc.get("title") or inc.get("summary"))},
+    ]
+    if inc.get("whenDisplay"):
+        body.append({"type": "TextBlock", "spacing": "None", "isSubtle": True, "wrap": True,
+                     "text": _js_str(inc.get("whenDisplay"))})
+    facts = [{"title": _js_str(f.get("title")), "value": _js_str(f.get("value"))}
+             for f in (inc.get("facts") or [])]
+    if facts:
+        body.append({"type": "FactSet", "facts": facts})
+    if inc.get("why"):
+        body.append({"type": "TextBlock", "wrap": True, "text": _js_str(inc.get("why"))})
+    body.append({
+        "type": "Input.ChoiceSet", "id": "response", "label": "What do you want to do?",
+        "value": "acknowledge",
+        "choices": [
+            {"title": "Acknowledge", "value": "acknowledge"},
+            {"title": "Snooze 1 hour", "value": "snooze"},
+            {"title": "Explain in more detail", "value": "explain"},
+        ],
+    })
+    card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard", "version": "1.4", "body": body,
+        "actions": [{"type": "Action.Submit", "title": "Submit",
+                     "data": {"incidentId": _js_str(inc.get("id")),
+                              "incidentKind": _js_str(inc.get("kind"))}}],
+    }
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": card,
+        }],
+    }

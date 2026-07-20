@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent"
-version = "1.9.11"
+version = "1.9.12"
 description = "Read-only Microsoft Fabric / Power BI capacity & performance audit agent (Python, Databricks-ready)."
 requires-python = ">=3.10"
 dependencies = []   # anthropic / msal / databricks-sdk added as their adapters are ported
@@ -23,6 +23,7 @@ agent = [                                                   # Phase 2: agent app
 fabric-audit = "fabric_audit_agent.__main__:_console"
 fabric-audit-job = "fabric_audit_agent.job:job_main"   # Databricks wheel-task entry (unified sweep)
 fabric-audit-mcp = "fabric_audit_agent.mcp_server:main"   # Databricks App entry (MCP server at /mcp)
+fabric-audit-watch = "fabric_audit_agent.watch_run:main"  # autonomous 5-min watcher (Job entry; --test-card to prove Teams webhook)
 
 [build-system]
 requires = ["setuptools>=68"]
