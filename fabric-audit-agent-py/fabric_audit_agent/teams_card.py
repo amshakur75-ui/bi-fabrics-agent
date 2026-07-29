@@ -98,7 +98,7 @@ def build_watch_adaptive_card(incident, *, app_base_url=None):
     actions = []
     deeplink = _context_deeplink(app_base_url, inc.get("context"))
     if deeplink:
-        actions.append({"type": "Action.OpenUrl", "title": "Yes, let's dig in →", "url": deeplink})
+        actions.append({"type": "Action.OpenUrl", "title": "Yes, let's explore this issue →", "url": deeplink})
     actions.append({"type": "Action.Submit", "title": "No, dismiss",
                     "data": {"response": "no", "incidentId": _js_str(inc.get("id"))}})
 
