@@ -166,7 +166,19 @@ deeper budget more often.
 
 ---
 
-### Task 4: Fix N23 — date-filter bug in capacity-overloads/spike tool
+### Task 4: Fix N23 — date-filter bug in capacity-overloads/spike tool — **STATUS: DONE (2026-07-29 evening, Claude Code)**
+
+**All acceptance criteria satisfied.** Root cause: ``_series_window(start, end)`` in
+``fabric_audit_agent/tools.py`` uses ``ago(<lookback>)`` for the CU-series (KQL can't express
+``between(...)`` on that source) with lookback anchored at ``start``, so a single-day request N
+days in the past over-pulls up to N days. Consumer (``capacity_overloads_handler``) then never
+re-filtered before ``overload_windows`` iterated every point — that's the N-day spillover.
+Fix: new module-level ``_clip_series_to_window(series, start, end)`` helper called from
+``_capacity_series_only`` at the source when both start AND end are given. 5 regression tests
+in ``tests/test_capacity_overloads_date_filter.py`` — clip-helper unit tests + end-to-end
+combined with ``overload_windows`` that reproduces the 20-day-spillover scenario. Suite:
+1150 passed (was 1145).
+
 
 **Description:** The tool backing spike/overage queries doesn't honor a single-day filter
 server-side (confirmed via two live transcripts — 1-day and 20-day spillover). Locate the actual

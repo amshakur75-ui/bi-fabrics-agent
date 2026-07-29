@@ -864,9 +864,12 @@ def test_absolute_window_derives_proportional_series_lookback_not_30d(monkeypatc
     out = h({"start": "2026-07-05T12:45:00Z", "end": "2026-07-05T13:00:00Z"})   # 15-min window
 
     assert out["source"] == "live"
-    assert out["seriesWindowLabel"] == "last 15m"        # derived from span, NOT "last 30d"
-    assert out["seriesWindowLabel"] != "last 30d"
-    assert out["patternsDiagnostics"]["seriesWindowLabel"] == "last 15m"
+    # N23 (2026-07-29): the series label was expanded to include the clip window when both
+    # start+end are provided (e.g. "2026-07-05T12:45:00Z .. 2026-07-05T13:00:00Z (clipped from
+    # ago(15m))"), so pin on the ago(...) substring the label wraps rather than exact equality.
+    assert "ago(15m)" in out["seriesWindowLabel"]        # derived from span, NOT "ago(30d)"
+    assert "ago(30d)" not in out["seriesWindowLabel"]
+    assert "ago(15m)" in out["patternsDiagnostics"]["seriesWindowLabel"]
     assert "ago(15m)" in captured["kql"]                 # threaded into the capacity-series KQL
 
 
@@ -889,7 +892,9 @@ def test_absolute_multi_hour_window_derives_hour_lookback(monkeypatch):
                         lambda: datetime(2026, 7, 5, 12, 15, 0, tzinfo=timezone.utc))
     h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
     out = h({"start": "2026-07-05T10:00:00Z", "end": "2026-07-05T12:15:00Z"})   # 2h15m span
-    assert out["seriesWindowLabel"] == "last 3h"         # ceil(2.25h) -> 3h, covers >= the span
+    # N23 (2026-07-29): label was expanded to "<start> .. <end> (clipped from ago(<lookback>))"
+    # when start+end are absolute. Pin the ago(...) part inside the wrapper.
+    assert "ago(3h)" in out["seriesWindowLabel"]         # ceil(2.25h) -> 3h, covers >= the span
 
 
 def test_past_absolute_window_series_lookback_reaches_back_to_start(monkeypatch):
@@ -921,7 +926,9 @@ def test_past_absolute_window_series_lookback_reaches_back_to_start(monkeypatch)
     h = next(d for d in create_tool_definitions() if d["name"] == "capacity_patterns")["handler"]
     out = h({"start": "2026-07-05T12:00:00Z", "end": "2026-07-05T13:00:00Z"})
     # ceil((now-start)/86400) = ceil(2.02d) = 3d -- covers the window; span-only would be ago(1h).
-    assert out["seriesWindowLabel"] == "last 3d"
+    # N23 (2026-07-29): the label was expanded to include the clip window when start+end are
+    # absolute; the derived-lookback signature is now the ago(...) inside the wrapper.
+    assert "ago(3d)" in out["seriesWindowLabel"]
     assert "ago(3d)" in captured["kql"]
     assert "ago(1h)" not in captured["kql"]
 

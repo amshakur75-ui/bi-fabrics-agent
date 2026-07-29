@@ -163,6 +163,32 @@ def _capacity_kusto_query(env):
     )
 
 
+def _clip_series_to_window(series, start, end):
+    """N23 (2026-07-29): clip a CU-series (list of ``{"ts", "cuPct", ...}`` points as returned
+    by ``capacity_series``) to a half-open ``[start, end)`` window. ``start``/``end`` are ISO-8601
+    UTC strings (the same shape ``_calendar_day_bounds`` emits). Robust to malformed points and
+    unparseable timestamps: any point whose ``ts`` won't parse is DROPPED (safer than including
+    it in an unknown position). Returns a new list; ``series`` is not mutated.
+
+    Extracted from ``_capacity_series_only`` so the clip has a direct unit test and so future
+    consumers (spike playbooks, watch loops if they ever take absolute windows) can reuse it
+    without wrapping the whole live-fetch layer."""
+    start_dt = parse_iso_utc(start)
+    end_dt = parse_iso_utc(end)
+    if start_dt is None or end_dt is None:
+        return list(series or [])
+    clipped = []
+    for pt in series or []:
+        if not isinstance(pt, dict):
+            continue
+        pt_dt = parse_iso_utc(pt.get("ts"))
+        if pt_dt is None:
+            continue
+        if start_dt <= pt_dt < end_dt:
+            clipped.append(pt)
+    return clipped
+
+
 def _live_base_cu(env):
     """The AUTHORITATIVE live base capacity units, read fresh from the capacity-events stream's
     ``baseCapacityUnits`` every call -- so a changing / trial / resized SKU is always reflected
@@ -544,10 +570,15 @@ def create_tool_definitions(base_dir=None):
         the mere SPAN (``end - start``) only covers the window when it ends near now, so a spike
         investigated hours/days later silently lost its CU% corroboration. Anchor at ``start``
         instead: the lookback covers from ``start`` to now (floor: the span, in case of clock skew
-        or a future window). Over-pulling is harmless — every consumer (the spike playbook's
-        ±window filter, capacity_patterns' event-anchored buckets) re-filters points in Python.
-        Ceils to the enclosing unit so the lookback always covers >= the target. Mirrors
-        resolve_window's hours-over-days precedence otherwise; default 30d."""
+        or a future window). Ceils to the enclosing unit so the lookback always covers >= the
+        target. Mirrors resolve_window's hours-over-days precedence otherwise; default 30d.
+
+        Over-pulling is now safe by construction: ``_capacity_series_only`` CLIPS the returned
+        points to [start, end) before handing them to callers (N23 fix, 2026-07-29). Consumers
+        (the spike playbook's +/-window filter, capacity_patterns' event-anchored buckets, and
+        capacity_overloads which iterates every point) therefore see exactly the window they
+        asked for. Bug this closed: capacity_overloads for a date 20 days back returned 20 days
+        of over-100% windows, because it iterated the whole over-pulled series."""
         if start is not None and end is not None:
             start_dt = _parse_iso_utc(start, "start")
             span_seconds = max(1, math.ceil((_parse_iso_utc(end, "end") - start_dt).total_seconds()))
@@ -688,6 +719,19 @@ def create_tool_definitions(base_dir=None):
             if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
                 ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
             series = _capacity_cu_series(ce_query, ce_cfg)
+            # N23 fix (2026-07-29): for an ABSOLUTE [start, end] window the underlying KQL
+            # uses ago(<lookback>) -- the CU-series collector can't express between() -- with
+            # <lookback> derived from (now - start) so a single-day request N days in the past
+            # over-pulls up to N days of series. See _series_window docstring; clip helper is
+            # ``_clip_series_to_window`` (module-level, unit-tested against this exact scenario).
+            # Bug this closed: capacity_overloads for a date 20 days back returned 20 days of
+            # over-100% windows because overload_windows iterated the entire over-pulled series.
+            if start is not None and end is not None:
+                series = _clip_series_to_window(series, start, end)
+                result_meta["seriesWindowLabel"] = (
+                    f"{start} .. {end} (clipped from ago({series_window}))"
+                )
+                return series, result_meta
             result_meta["seriesWindowLabel"] = f"last {series_window}"
             return series, result_meta
         except Exception as exc:   # events are still good (Tier-2 caller); only patterns degrade

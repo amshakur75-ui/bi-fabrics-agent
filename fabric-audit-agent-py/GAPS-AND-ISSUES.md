@@ -940,8 +940,13 @@ or (c) deserves.
 
 ---
 
-### N23 — Confirmed, reproducible date-filter bug in the capacity-overloads/spike tool — the requested single-day window is not honored server-side
-**File:** unknown — the tool backing whatever capability answers "spikes/overages [date]" questions (likely `capacity_overloads` or `spike_events`; needs direct confirmation)
+### N23 — Confirmed, reproducible date-filter bug in the capacity-overloads/spike tool — the requested single-day window is not honored server-side — **STATUS: FIXED (2026-07-29 evening, Claude Code)**
+
+**Root cause identified + fix landed.** ``_series_window(start, end)`` in ``fabric_audit_agent/tools.py`` deliberately uses ``ago(<lookback>)`` for the CU-series (the CU-series collector can't express ``between(...)`` server-side) with lookback anchored at ``start`` to reach back from now — so for a single-day request N days in the past, the underlying KQL pulled up to N days of series. Its own docstring said "over-pulling is harmless — every consumer re-filters points in Python," but the consumer (``capacity_overloads_handler``) never actually re-filtered before handing the series to ``overload_windows``, which iterated every point. Result: N over-100% windows for a 1-day request. Matches both transcripts exactly (1-day and 20-day spillover proportional to how far back the request was).
+
+**Fix:** ``_capacity_series_only`` now calls a new module-level ``_clip_series_to_window(series, start, end)`` helper at the source when both start AND end are given (half-open ``[start, end)`` interval to match ``_calendar_day_bounds``). Every current and future consumer now gets a correctly-bounded series without needing to re-filter. Regression test at ``tests/test_capacity_overloads_date_filter.py`` (5 cases): direct clip-helper unit tests (window boundaries, malformed ts, empty inputs, unparseable bounds) plus an end-to-end assertion combining clip + ``overload_windows`` that would have failed with the exact 20-day-spillover shape.
+
+**File:** ``fabric_audit_agent/tools.py`` (``_clip_series_to_window`` new module-level helper + ``_capacity_series_only`` calls it + ``_series_window`` docstring updated to record the intent).
 **Discovered:** two independent live production transcripts, both showing the same class of bug at different severities
 
 Both uploaded transcripts asked for a single day's spikes/overages ("yesterday") and both got back
