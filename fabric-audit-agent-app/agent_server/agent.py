@@ -644,10 +644,23 @@ async def _run(request, on_tool=None):
         dispatch = {**dispatch, **direct_dispatch}
     messages = _messages_from_request(request)
     question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+    budget = _step_budget(question)
     result = await _run_tool_loop(
         _build_claude_client(ws), model=_MODEL, system=_SYSTEM,
         messages=messages, tools=tools, dispatch=dispatch,
-        max_steps=_step_budget(question), on_tool=on_tool)
+        max_steps=budget, on_tool=on_tool)
+    # N22 fix: the step budget is a silent, keyword-based classifier (see _INVESTIGATION_HINTS) --
+    # a two-part question phrased just differently enough to miss every keyword gets only 6 steps
+    # with zero indication anything was capped. Disclose ONLY when the shallow budget was actually
+    # exhausted (stoppedReason == "budget") -- a lookup that concludes cleanly within 6 steps has
+    # nothing hidden and doesn't need a disclosure tacked on (that would just be noise against the
+    # "lean, not a data dump" rule). The exhausted-budget case is the one that actually matters:
+    # something was cut short by a limit the user never knew existed.
+    if budget == _LOOKUP_BUDGET and result.get("stoppedReason") == "budget":
+        result["text"] = (result.get("text") or "") + (
+            "\n\n_That ran under a quick-lookup budget and hit its step limit before fully "
+            "concluding. Ask me to \"investigate\" or \"dig deeper\" for a fuller multi-step pass._"
+        )
     # Plain-language investigation trail (no tool names/inputs) — surfaced via custom_outputs.
     result["trail"] = _plain_trail(result.get("trajectory"))
     try:

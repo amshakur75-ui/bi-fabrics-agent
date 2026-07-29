@@ -16,8 +16,7 @@ Tolerance (why this exists):
 
 CPU/duration time is a **proxy** for CU (engine time, AS-only scope): it ranks the driving users
 correctly but is not the authoritative capacity CU share. That share comes from Capacity
-Metrics / Capacity Events and wins on merge. ``attributionMode`` is stamped ``"cost"`` so downstream
-labelling can say "monitored CU" rather than implying a true capacity share.
+Metrics / Capacity Events and wins on merge.
 """
 
 
@@ -42,9 +41,19 @@ def _row(r, *names):
 
 
 def rollup_attribution(rows, top_n=3, ws_label=""):
-    """rows -> ``{"items": [...], "users": [...]}``. Pure; safe on empty/malformed input."""
+    """rows -> ``{"items": [...], "users": [...]}``. Pure; safe on empty/malformed input.
+
+    N7 fix: ``attributionMode`` now distinguishes ``"cost-cpu"`` (true ``CpuTimeMs``) from
+    ``"cost-duration"`` (the weaker ``DurationMs`` wall-clock fallback) rather than collapsing
+    both into a single ``"cost"`` label — downstream code (and the agent's own wording) can now
+    tell which proxy actually backs a given number instead of treating both as equally grounded.
+
+    A3 fix: each item/user now carries ``truncated`` (bool) — True when more distinct
+    users/items existed than ``top_n`` kept, so downstream logic and responses can say
+    "showing top N of possibly more" instead of silently implying the list is complete.
+    """
     groups = {}
-    by_user = {}   # user -> {cpu, items{name: cpu}} — the per-user rollup (who, and via what)
+    by_user = {}   # user -> {cpu, items{name: cpu}, hasCpuTime} — the per-user rollup (who, and via what)
     for r in rows or []:
         if not isinstance(r, dict):
             continue   # defensive: never crash on a stray non-dict row from a real query
@@ -56,16 +65,22 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
         # Cost column is milliseconds (CpuTimeMs / DurationMs) -> convert to CU-seconds so this
         # matches ``normalize_event``'s scale (this rollup previously emitted MILLISECONDS labelled
         # as cuSeconds, ~1000x off from the event path). ``cuSeconds`` input is already seconds.
-        raw_ms = _row(r, "cpuMs", "CpuTimeMs", "DurationMs")
+        # N7: track whether THIS row's cost came from true CpuTimeMs or the DurationMs fallback,
+        # so the group-level mode can reflect what actually backed the numbers.
+        cpu_time_ms = _row(r, "CpuTimeMs")
+        raw_ms = cpu_time_ms if cpu_time_ms is not None else _row(r, "cpuMs", "DurationMs")
         cs = r.get("cuSeconds")
         cpu = (raw_ms / 1000.0) if raw_ms is not None else (cs if cs is not None else 0)
+        is_true_cpu = cpu_time_ms is not None
         g = groups.setdefault((str(ws).lower(), str(name).lower()),
-                              {"workspace": ws, "name": name, "users": {}, "cpu": 0})
+                              {"workspace": ws, "name": name, "users": {}, "cpu": 0, "hasCpuTime": False})
         g["cpu"] += cpu
+        g["hasCpuTime"] = g["hasCpuTime"] or is_true_cpu
         if user:
             g["users"][user] = g["users"].get(user, 0) + cpu
-            u = by_user.setdefault(user, {"user": user, "cpu": 0, "items": {}})
+            u = by_user.setdefault(user, {"user": user, "cpu": 0, "items": {}, "hasCpuTime": False})
             u["cpu"] += cpu
+            u["hasCpuTime"] = u["hasCpuTime"] or is_true_cpu
             u["items"][name] = u["items"].get(name, 0) + cpu
 
     total = sum(g["cpu"] for g in groups.values())
@@ -74,20 +89,26 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
     for g in groups.values():
         ranked = sorted(({"user": u, "cuSeconds": round(c, 3)} for u, c in g["users"].items()),
                         key=lambda x: -x["cuSeconds"])
+        user_count = len(ranked)
         items.append({
             "workspace": g["workspace"], "name": g["name"], "cuSeconds": round(g["cpu"], 3),
             "sharePct": (g["cpu"] / total * 100) if total else 0,
-            "topUsers": ranked[:top_n], "userCount": len(ranked), "attributionMode": "cost",
+            "topUsers": ranked[:top_n], "userCount": user_count,
+            "attributionMode": "cost-cpu" if g["hasCpuTime"] else "cost-duration",
+            "truncated": user_count > top_n,
         })
 
     users = []
     for u in by_user.values():
         top_items = sorted(({"name": n, "cuSeconds": round(c, 3)} for n, c in u["items"].items()),
                            key=lambda x: -x["cuSeconds"])
+        item_count = len(top_items)
         users.append({
             "user": u["user"], "cuSeconds": round(u["cpu"], 3),
             "sharePct": (u["cpu"] / total * 100) if total else 0,
-            "topItems": top_items[:top_n], "itemCount": len(top_items),
+            "topItems": top_items[:top_n], "itemCount": item_count,
+            "attributionMode": "cost-cpu" if u["hasCpuTime"] else "cost-duration",
+            "truncated": item_count > top_n,
         })
     users.sort(key=lambda x: -x["cuSeconds"])
 

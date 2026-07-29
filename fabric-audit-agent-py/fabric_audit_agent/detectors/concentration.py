@@ -34,7 +34,12 @@ def detect_concentration(facts, config=None):
         # Honest label: Log Analytics / Eventhouse give a CPU-time PROXY over only the MONITORED
         # subset (the workspaces feeding telemetry), not a true capacity-wide CU share. Only
         # authoritative sources (CSV / Capacity Metrics) earn the words "capacity CU".
-        label = "monitored CU" if it.get("attributionMode") == "cost" else "capacity CU"
+        # N3 fix: default to the HEDGED label ("monitored CU") for anything that isn't explicitly
+        # unattributed -- covers "cost-cpu"/"cost-duration" (N7's split) AND the weaker
+        # "frequency" mode (op-count only, no cost signal at all), which previously fell through
+        # to the MOST authoritative label ("capacity CU") purely because it wasn't literally
+        # the string "cost". Only a missing/None attributionMode gets "capacity CU" now.
+        label = "capacity CU" if it.get("attributionMode") is None else "monitored CU"
         tu = it.get("topUsers")
         named = tu if isinstance(tu, list) and tu else None
         total_users = it.get("userCount")

@@ -1,5 +1,10 @@
 """Tests for the capacity-events collector (CU% / throttle from Real-Time Hub Capacity Overview Events)."""
-from fabric_audit_agent.adapters.collector_capacity_events import create_capacity_events_collector, capacity_series
+import pytest
+from fabric_audit_agent.adapters.collector_capacity_events import (
+    create_capacity_events_collector,
+    capacity_series,
+    capacity_burndown_chain,
+)
 
 # FT64 -> baseCapacityUnits 64 CU/sec -> 30s budget = 64 * 1000 * 30 = 1,920,000 CU-ms.
 
@@ -163,3 +168,190 @@ def test_default_kql_escapes_table_name_via_escape_entity():
         return []
     create_capacity_events_collector(capture, {"table": "Cap'Events"})["collect"]()
     assert "['Cap\\'Events']" in seen["kql"]
+
+
+# ---------------------------------------------------------------------------
+# A1 — Throttle threshold signal fields (scale x100 from raw 0-1 API fraction)
+# ---------------------------------------------------------------------------
+
+def test_series_includes_threshold_signals_scaled_x100():
+    """Raw API = 0-1 fraction; series must deliver values in percentage points (e.g. 123.71,
+    not 1.2371) so throttle.py's max(vals) > 100.0 gate fires correctly."""
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 960000,
+        "interactiveDelayThresholdPercentage": 1.2371,
+        "interactiveRejectionThresholdPercentage": 1.0,
+        "backgroundRejectionThresholdPercentage": 1.0,
+    }]
+    pt = capacity_series(lambda kql: rows)[0]
+    assert abs(pt["interactiveDelayPct"] - 123.71) < 0.01
+    assert abs(pt["interactiveRejectionPct"] - 100.0) < 0.01
+    assert abs(pt["backgroundRejectionPct"] - 100.0) < 0.01
+
+
+def test_series_omits_threshold_fields_when_absent():
+    """No threshold fields in payload -> nothing injected into the series point."""
+    rows = [{"capacityId": "c", "windowStartTime": "t1",
+             "baseCapacityUnits": 64, "capacityUnitMs": 960000}]
+    pt = capacity_series(lambda kql: rows)[0]
+    assert "interactiveDelayPct" not in pt
+    assert "interactiveRejectionPct" not in pt
+    assert "backgroundRejectionPct" not in pt
+
+
+def test_series_threshold_fields_accepted_via_data_envelope():
+    """Fields nested under the 'data' envelope (live Capacity Overview Events format) are resolved."""
+    rows = [{"data": {
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 960000,
+        "interactiveDelayThresholdPercentage": 1.05,
+    }}]
+    pt = capacity_series(lambda kql: rows)[0]
+    assert abs(pt["interactiveDelayPct"] - 105.0) < 0.01
+
+
+def test_threshold_fields_unblock_throttle_stage2():
+    """End-to-end: after the A1 fix, decompose_throttle stage-2 fires when threshold > 100."""
+    from fabric_audit_agent.investigation.throttle import decompose_throttle
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 2016000,   # ~105% CU
+        "interactiveDelayThresholdPercentage": 1.05,           # 105% after x100 -> gate fires
+        "interactiveRejectionThresholdPercentage": 1.0,
+        "backgroundRejectionThresholdPercentage": 1.0,
+    }]
+    series = capacity_series(lambda kql: rows)
+    result = decompose_throttle(series, [])
+    assert result["stage2"]["available"] is True
+    assert result["stage2"]["interactiveDelay"]["fired"] is True
+    assert result["conclusion"] == "throttling-confirmed"
+
+
+def test_threshold_below_100_does_not_fire_stage2():
+    """Threshold < 100% (raw fraction < 1.0) after scaling should NOT fire the gate."""
+    from fabric_audit_agent.investigation.throttle import decompose_throttle
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 2016000,  # ~105% CU, over-utilized
+        "interactiveDelayThresholdPercentage": 0.80,          # 80% after x100 -> below 100 -> not fired
+        "interactiveRejectionThresholdPercentage": 0.80,
+        "backgroundRejectionThresholdPercentage": 0.80,
+    }]
+    series = capacity_series(lambda kql: rows)
+    result = decompose_throttle(series, [])
+    assert result["stage2"]["interactiveDelay"]["fired"] is False
+    assert result["conclusion"] == "over-utilized-unconfirmed"
+
+
+# ---------------------------------------------------------------------------
+# A2 — Overage / carry-forward chain fields + minutesToBurndown derivation
+# ---------------------------------------------------------------------------
+
+def test_series_includes_overage_fields():
+    """All three overage fields extracted from the row and forwarded in the series point."""
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 2016000,
+        "overageAddCapacityUnitMs": 180000,
+        "overageBurndownCapacityUnitMs": -90000,
+        "overageTotalCapacityUnitMs": 960000,
+    }]
+    pt = capacity_series(lambda kql: rows)[0]
+    assert pt["overageAddMs"] == 180000
+    assert pt["overageBurndownMs"] == -90000
+    assert pt["overageTotalMs"] == 960000
+
+
+def test_series_derives_minutes_to_burndown_from_overage_total():
+    """minutesToBurndown = (overageTotal / budget * 100) / 200 -- proven exact, GAPS Section 12.3.
+    F64: budget = 64*1000*30 = 1,920,000 ms.
+    overageTotal = 960,000 ms -> cumulativePct = 50.0% -> minutesToBurndown = 0.25 min."""
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 2016000,
+        "overageTotalCapacityUnitMs": 960_000,
+    }]
+    pt = capacity_series(lambda kql: rows)[0]
+    assert abs(pt["overageCumulativePct"] - 50.0) < 0.01
+    assert abs(pt["minutesToBurndown"] - 0.25) < 0.001
+
+
+def test_series_omits_overage_fields_when_absent():
+    rows = [{"capacityId": "c", "windowStartTime": "t1",
+             "baseCapacityUnits": 64, "capacityUnitMs": 960000}]
+    pt = capacity_series(lambda kql: rows)[0]
+    assert "overageAddMs" not in pt
+    assert "overageTotalMs" not in pt
+    assert "minutesToBurndown" not in pt
+
+
+def test_burndown_chain_returns_only_overage_windows():
+    """Windows without overageTotalMs are excluded."""
+    rows = [
+        {"capacityId": "c", "windowStartTime": "t1",
+         "baseCapacityUnits": 64, "capacityUnitMs": 960000},
+        {"capacityId": "c", "windowStartTime": "t2",
+         "baseCapacityUnits": 64, "capacityUnitMs": 2016000,
+         "overageTotalCapacityUnitMs": 960_000},
+        {"capacityId": "c", "windowStartTime": "t3",
+         "baseCapacityUnits": 64, "capacityUnitMs": 960000},
+    ]
+    chain = capacity_burndown_chain(lambda kql: rows)
+    assert len(chain) == 1
+    assert chain[0]["ts"] == "t2"
+    assert abs(chain[0]["minutesToBurndown"] - 0.25) < 0.001
+
+
+def test_burndown_chain_empty_when_no_overage_windows():
+    rows = [{"capacityId": "c", "windowStartTime": "t1",
+             "baseCapacityUnits": 64, "capacityUnitMs": 960000}]
+    assert capacity_burndown_chain(lambda kql: rows) == []
+
+
+def test_burndown_chain_includes_all_fields():
+    """Chain rows carry ts, cuPct, all three overage fields, cumulativePct, minutesToBurndown."""
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 2016000,
+        "overageAddCapacityUnitMs": 200_000,
+        "overageBurndownCapacityUnitMs": -100_000,
+        "overageTotalCapacityUnitMs": 960_000,
+    }]
+    row = capacity_burndown_chain(lambda kql: rows)[0]
+    for key in ("ts", "cuPct", "overageAddMs", "overageBurndownMs", "overageTotalMs",
+                "overageCumulativePct", "minutesToBurndown"):
+        assert key in row, f"missing key: {key}"
+    assert row["overageAddMs"] == 200_000
+    assert row["overageBurndownMs"] == -100_000
+
+
+def test_burndown_chain_formula_f512():
+    """F512 cross-check matching the real tenant from the validation session.
+    budget = 512*1000*30 = 15,360,000 ms.
+    overageTotal = 7,680,000 ms -> cumulativePct = 50% -> minutesToBurndown = 0.25."""
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 512, "capacityUnitMs": 16_000_000,
+        "overageTotalCapacityUnitMs": 7_680_000,
+    }]
+    row = capacity_burndown_chain(lambda kql: rows)[0]
+    assert abs(row["overageCumulativePct"] - 50.0) < 0.01
+    assert abs(row["minutesToBurndown"] - 0.25) < 0.001
+
+
+def test_burndown_minutestoburndown_flows_through_series_to_throttle():
+    """throttle.py reads minutesToBurndown from the series; confirm the value flows through."""
+    from fabric_audit_agent.investigation.throttle import decompose_throttle
+    rows = [{
+        "capacityId": "c", "windowStartTime": "t1",
+        "baseCapacityUnits": 64, "capacityUnitMs": 2016000,
+        "overageTotalCapacityUnitMs": 960_000,
+        "interactiveDelayThresholdPercentage": 1.05,
+        "interactiveRejectionThresholdPercentage": 1.0,
+        "backgroundRejectionThresholdPercentage": 1.0,
+    }]
+    series = capacity_series(lambda kql: rows)
+    result = decompose_throttle(series, [])
+    assert "minutesToBurndown" in result
+    assert abs(result["minutesToBurndown"] - 0.25) < 0.001

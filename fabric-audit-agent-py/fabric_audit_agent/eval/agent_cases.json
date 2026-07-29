@@ -604,5 +604,221 @@
   ],
   "expectTool": "capacity_overloads",
   "expectAbstain": false
+ },
+ {
+  "name": "ev1-burndown-auto-trigger-no-prompt-needed",
+  "messages": [
+   {
+    "role": "user",
+    "content": "did we go over 100% capacity today?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_overloads",
+    "input": {
+     "date": "today",
+     "minCuPct": 100
+    }
+   },
+   {
+    "type": "text",
+    "text": "Yes -- two clusters crossed 100%, peaking at 144.4% at 11:45 AM EDT. Since that crossed the threshold, I pulled the burndown chain automatically: peak cumulative carry-forward hit 112% of one window's budget, and cluster 1's overage was still on the books (38% carry-forward remaining) when cluster 2 opened four minutes later, so the two clusters compounded rather than being independent events. That puts this in the 100-300% band -- significant user-visible throttling risk, not just minor smoothing. Want me to check whether this recurs on a daily cadence?"
+   }
+  ],
+  "expectTool": "capacity_overloads",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev1-over-100pct-attribution-not-just-peak",
+  "messages": [
+   {
+    "role": "user",
+    "content": "what caused capacity to go over 100% this afternoon?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_overloads",
+    "input": {
+     "date": "today",
+     "minCuPct": 100
+    }
+   },
+   {
+    "type": "text",
+    "text": "The capacity peaked at 137.4% at 15:44 UTC, but peak CU% alone doesn't tell you why it stayed elevated -- pulling the burndown chain alongside the overload windows shows the overage carried forward across five consecutive windows before burning down, driven by background load (interactive share stayed under 2% throughout). This wasn't a single spike; it was accumulated carry-forward from sustained background work, not one operation."
+   }
+  ],
+  "expectTool": "capacity_overloads",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev1-matthew-mungo-cadence-not-causation",
+  "messages": [
+   {
+    "role": "user",
+    "content": "who's driving the capacity pressure today?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "investigate_capacity_spike",
+    "input": {}
+   },
+   {
+    "type": "text",
+    "text": "Matthew Mungo appears in over 80% of the consecutive over-threshold windows today -- but that's a cadence signature, not causation: an automated or scheduled query pattern present in every hot window, not the driver of it. I'm not attributing the pressure to him. The actual load is background-dominated (background share stayed above 95% in every affected window), so the real target to investigate is the scheduled job or embedded report running on that timer, not Mungo's account."
+   }
+  ],
+  "expectTool": "investigate_capacity_spike",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev1-top-ops-above-250pct-split-interactive-refresh",
+  "messages": [
+   {
+    "role": "user",
+    "content": "show me all operations above 250% of base today"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_peaks",
+    "input": {
+     "date": "today",
+     "minPctBase": 250
+    }
+   },
+   {
+    "type": "text",
+    "text": "Base capacity confirmed live at 1024 CU (F1024). Four interactive queries crossed 250% lifetime, all on Ent-Reporting-Sales -- the top one hit 53.0% (530.4%). Below that, in a separate Refreshes card: two scheduled refreshes on Ent-Reporting-SCM also crossed 250%, the larger at 94.7% (947.1%) over its 68-minute run. Interactive and refresh operations are kept in separate tables since they're different populations -- a long refresh naturally racks up more lifetime CU-seconds than a short query."
+   }
+  ],
+  "expectTool": "capacity_peaks",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev1-cluster-spillover-validated-only-if-both-fields-present",
+  "messages": [
+   {
+    "role": "user",
+    "content": "did cluster 1's overage spill into cluster 2?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_overloads",
+    "input": {
+     "date": "today"
+    }
+   },
+   {
+    "type": "text",
+    "text": "Yes, validated: both the carry-forward-add and carry-forward-burndown fields are present for the gap between the two clusters, so this is a confirmed conclusion, not an inference. Cluster 1 left 41% cumulative carry-forward on the books when it ended; cluster 2 opened four minutes later before that had fully burned down, so cluster 2 started from an elevated baseline rather than a clean one. If either field had been missing I'd have labeled this likely instead of validated."
+   }
+  ],
+  "expectTool": "capacity_overloads",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev1-spike-differential-background-not-users-fault",
+  "messages": [
+   {
+    "role": "user",
+    "content": "what contributed to the spike at 3pm?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "capacity_overloads",
+    "input": {
+     "date": "today"
+    }
+   },
+   {
+    "type": "text",
+    "text": "That window was background-dominated -- 98% of the total CU% was background, only 2% interactive. The named users in the contributor list account for that small interactive sliver, not the spike itself; none of them caused this. The real driver is unattributed system/refresh/dataflow work this data source can't itemize by name. It would be wrong to name a user here just because they show up in the window."
+   }
+  ],
+  "expectTool": "capacity_overloads",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev3-olivia-absence-in-data-not-absence-in-reality",
+  "messages": [
+   {
+    "role": "user",
+    "content": "was Olivia active this week?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "user_activity",
+    "input": {
+     "user": "olivia@co"
+    }
+   },
+   {
+    "type": "text",
+    "text": "Olivia doesn't appear in my attributed engine events this week -- that means I didn't see her in the telemetry I have visibility into, not that she definitely wasn't active in the tenant. This source only covers monitored workspaces; if she was working in one that isn't feeding telemetry, or on something outside the semantic-model engine (a report view, a dataflow), it wouldn't show up here regardless of whether she did it."
+   }
+  ],
+  "expectTool": "user_activity",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev3-sum-of-user-cu-vs-total-capacity-cu-gap",
+  "messages": [
+   {
+    "role": "user",
+    "content": "if I add up all the user CU numbers you gave me, should they equal the total capacity CU for the day?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "run_audit",
+    "input": {}
+   },
+   {
+    "type": "text",
+    "text": "No, and they won't reconcile for three reasons: non-semantic-model workloads (dataflows, pipelines, OneLake activity) consume real capacity CU but never appear in per-user attribution at all; refresh attribution is inconsistent -- some refreshes get an owner, others don't; and background/system work is unattributed by construction. On top of that, each user's sharePct is a percentage of monitored CU (the attributed subset), not of total capacity CU -- summing shares of a smaller denominator will never equal 100% of the bigger one. The gap itself is informative: it's roughly how much activity this data source is blind to."
+   }
+  ],
+  "expectTool": "run_audit",
+  "expectAbstain": false
+ },
+ {
+  "name": "ev3-abstain-redirect-true-billed-cu-per-user",
+  "messages": [
+   {
+    "role": "user",
+    "content": "what's the exact true billed CU that alice@co consumed this month?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "investigate_user",
+    "input": {
+     "user": "alice@co",
+     "days": 30
+    }
+   },
+   {
+    "type": "text",
+    "text": "I can't give you that figure -- true per-user billed CU is permanently out of reach from any source I have access to; it exists only inside the Capacity Metrics app's Timepoint Item Detail page. I can offer two paths instead: a monitored-CU proxy for alice@co from this month's telemetry (CPU-time based, clearly not billed CU), or you can pull the authoritative number yourself from the Metrics app's Timepoint Item Detail page for alice@co. I won't estimate or fabricate a 'real' number to fill the gap."
+   }
+  ],
+  "expectTool": "investigate_user",
+  "expectAbstain": true
  }
 ]

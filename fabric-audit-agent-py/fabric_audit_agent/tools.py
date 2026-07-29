@@ -1907,6 +1907,19 @@ def create_tool_definitions(base_dir=None):
             dl = _kusto_deeplink(deeplink_args[0], deeplink_args[1], bounded)
             if dl:
                 result["verifyUrl"] = dl
+        # N11: ad-hoc KQL results never pass through gates.py's STOP gates, confidence.py's
+        # ClaimConfidence, or validate.assert_cu_consistency() -- those all expect specific
+        # structured evidence shapes the fixed tools produce, not arbitrary query rows this tool
+        # exists specifically to allow. Flagging honestly rather than silently implying the same
+        # verification level as a pipeline-derived number (see GAPS-AND-ISSUES.md N11 option (b) --
+        # actually routing arbitrary rows through the gates is the harder, riskier option (a),
+        # left for Claude Code since it needs live testing against real gate call shapes).
+        result["ungated"] = True
+        result["ungatedNote"] = (
+            "This is a raw ad-hoc query result -- it has not passed through any STOP gate, "
+            "confidence label, or math-consistency check. Treat any number here as unverified "
+            "until cross-checked, and never call it 'validated'."
+        )
         out = _finish(result, rows_key="rows", kql=bounded, extra=cap_meta)
         if inp.get("format") == "columnar":
             out["rows"] = _to_columnar(capped)

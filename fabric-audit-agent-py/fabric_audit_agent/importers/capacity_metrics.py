@@ -94,6 +94,14 @@ def looks_like_timepoints(headers):
 
 
 def analyze_timepoints(headers, rows):
+    """N16 caution: ``reportedPeakPct`` below reads the raw "Total CU Usage %" column directly,
+    with no scale verification -- unlike ``capacity_signal_from_timepoints()``'s ``peakCuPct``,
+    which is deliberately computed from two absolute CU-second columns instead of trusting any
+    raw %-labeled column (see that function's docstring). Treat ``reportedPeakPct`` here as a
+    diagnostic/comparison value only, never as the authoritative figure -- it inherits the same
+    fraction-vs-percentage-point risk documented for the streaming API (A1) and the Item History
+    UI export (N16), unverified for this specific column.
+    """
     usage_pct = _find_h(headers, lambda n: "totalcuusage" in n or ("usage" in n and "%" in n) or "utiliz" in n)
     total_cu = _find_h(headers, lambda n: "totalcus" in n or ("total" in n and "cus" in n))
     base_hdr = _find_h(headers, lambda n: "100%in" in n)

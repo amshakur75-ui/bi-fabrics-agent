@@ -1,6 +1,7 @@
 """Executable form of the docs/runbooks decision trees: the agent runs the investigation itself --
 confirming AND eliminating hypotheses -- instead of hoping the LLM follows a prose runbook. Every
 evidence figure comes from injected inputs (grounded by construction)."""
+from ..adapters.collector_capacity_events import burndown_chain_from_series
 from ..dax import analyze_dax
 from ..detectors.refresh import detect_refreshes
 from .expensive import top_expensive
@@ -33,6 +34,17 @@ def diagnose_throttle(series, events, *, refreshes=None, has_real_cost=True):
     if step1_verdict == "eliminated":
         return {"symptom": "throttle", "chain": chain, "rootCause": None,
                 "eliminated": ["capacity throttling"], "confidence": "high"}
+
+    # A2 / SP1 auto-trigger: whenever CU% exceeded the threshold in this series, pull the full
+    # burndown chain automatically -- no separate ask needed. Operates on the series already in
+    # hand (no re-query); empty when the series carries no overage fields at all (e.g. a series
+    # built before A2's extraction landed, or a source that never reports overage).
+    burndown_chain = burndown_chain_from_series(series)
+    if burndown_chain:
+        peak_cumulative = max((p.get("overageCumulativePct") or 0) for p in burndown_chain)
+        chain.append(_step("carry-forward / burndown", "Overage is accumulating on this capacity",
+                            "confirmed", {"chain": burndown_chain, "peakCumulativePct": peak_cumulative,
+                                         "minutesToBurndown": burndown_chain[-1].get("minutesToBurndown")}))
 
     confirmed = 1  # step1 confirmed counts as corroborating evidence
     stage2 = decomp["stage2"]

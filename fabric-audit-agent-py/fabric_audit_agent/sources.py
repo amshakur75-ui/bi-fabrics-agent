@@ -61,7 +61,7 @@ SOURCES = {
 }
 
 _DEGRADED_NOTES = {
-    "eventDepth": "per-query cost unavailable — enable Log Analytics or Workspace Monitoring for per-query depth",
+    "eventDepth": "per-query cost unavailable — enable Log Analytics for per-query depth (Workspace Monitoring does not currently provide this; see N1)",
     "perItemCU": "per-item CU is a proxy or estimate (no FUAM)",
 }
 

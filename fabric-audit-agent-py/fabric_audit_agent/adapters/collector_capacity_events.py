@@ -93,7 +93,46 @@ def _windows(rows):
         budget = base * 1000 * _WINDOW_SEC
         if budget <= 0:
             continue
-        out.append({"cap": cap, "ts": win, "pct": used / budget * 100})
+        point = {"cap": cap, "ts": win, "pct": used / budget * 100}
+
+        # A1 — Throttle threshold signals: raw API = 0–1 fraction → scale ×100 so
+        # throttle.py's `max(vals) > 100.0` check fires correctly.  Without this
+        # scaling a raw fraction (e.g. 1.237) would need to exceed 100 to trip the
+        # gate — permanently silent regardless of actual throttle state.
+        for camel, pascal, dst in (
+            ("interactiveDelayThresholdPercentage",
+             "InteractiveDelayThresholdPercentage", "interactiveDelayPct"),
+            ("interactiveRejectionThresholdPercentage",
+             "InteractiveRejectionThresholdPercentage", "interactiveRejectionPct"),
+            ("backgroundRejectionThresholdPercentage",
+             "BackgroundRejectionThresholdPercentage", "backgroundRejectionPct"),
+        ):
+            v = _num(_row(r, camel, pascal))
+            if v is not None:
+                point[dst] = v * 100
+
+        # A2 — Overage / carry-forward chain fields (formula proven against 1,777
+        # consecutive 30-second windows, GAPS-AND-ISSUES Section 12.3;
+        # Burndown is stored as negative by the API).
+        for camel, pascal, dst in (
+            ("overageAddCapacityUnitMs",      "OverageAddCapacityUnitMs",      "overageAddMs"),
+            ("overageBurndownCapacityUnitMs", "OverageBurndownCapacityUnitMs", "overageBurndownMs"),
+            ("overageTotalCapacityUnitMs",    "OverageTotalCapacityUnitMs",    "overageTotalMs"),
+        ):
+            v = _num(_row(r, camel, pascal))
+            if v is not None:
+                point[dst] = v
+
+        # Derive minutesToBurndown when overageTotalMs is present:
+        #   cumulativePct  = overageTotal / (base × 1000 × 30) × 100
+        #   minutesToBurndown = cumulativePct / 200  (constant divisor, verified exact)
+        overage_total = point.get("overageTotalMs")
+        if overage_total is not None:
+            cumulative_pct = overage_total / budget * 100
+            point["overageCumulativePct"] = round(cumulative_pct, 2)
+            point["minutesToBurndown"] = round(cumulative_pct / 200, 2)
+
+        out.append(point)
     return out
 
 
@@ -144,13 +183,76 @@ def capacity_base_cu(query, config=None):
 
 
 def capacity_series(query, config=None):
-    """Return per-window ``[{ts, cuPct}]`` sorted by ``ts`` — the full series, NOT reduced to the
-    peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``
+    """Return per-window ``[{ts, cuPct, ...}]`` sorted by ``ts`` — the full series, NOT reduced to
+    the peak (``create_capacity_events_collector`` above does the reduction; ``capacity_patterns``
     needs the series to correlate CU% against event-activity buckets). Shares ``_windows`` (dedupe +
-    CU% math) and ``_resolve_kql`` ({window} substitution) with the peak collector; read-only."""
+    CU% math + field extraction) and ``_resolve_kql`` ({window} substitution) with the peak
+    collector; read-only.
+
+    A1 — Now includes throttle threshold signal fields (``interactiveDelayPct``,
+    ``interactiveRejectionPct``, ``backgroundRejectionPct``) when present, so
+    ``throttle.py``’s stage-2 gate can actually fire.
+
+    A2 — Now includes overage / burndown chain fields (``overageAddMs``,
+    ``overageBurndownMs``, ``overageTotalMs``, ``overageCumulativePct``,
+    ``minutesToBurndown``) when present."""
     cfg = config or {}
     windows = _windows(query(_resolve_kql(cfg)) or [])
-    return sorted(
-        [{"ts": w["ts"], "cuPct": round(w["pct"], 1)} for w in windows],
-        key=lambda p: p["ts"],
-    )
+
+    def _series_point(w):
+        pt = {"ts": w["ts"], "cuPct": round(w["pct"], 1)}
+        # A1 — throttle threshold signal fields (scaled ×100 by _windows)
+        for f in ("interactiveDelayPct", "interactiveRejectionPct", "backgroundRejectionPct"):
+            if w.get(f) is not None:
+                pt[f] = round(w[f], 2)
+        # A2 — overage / burndown chain fields
+        for f in ("overageAddMs", "overageBurndownMs", "overageTotalMs",
+                  "overageCumulativePct", "minutesToBurndown"):
+            if w.get(f) is not None:
+                pt[f] = w[f]
+        return pt
+
+    return sorted([_series_point(w) for w in windows], key=lambda p: p["ts"])
+
+
+def burndown_chain_from_series(series):
+    """Pure core of the burndown chain: filter an ALREADY-FETCHED series (as produced by
+    ``capacity_series()``) down to windows carrying overage data, in ``ts`` order. Shared by
+    ``capacity_burndown_chain()`` below (which fetches its own series via a live query) and
+    ``diagnose.py`` (which already has a series in hand and must not re-query for it)."""
+    chain = []
+    for w in sorted(series or [], key=lambda p: p.get("ts", "")):
+        if w.get("overageTotalMs") is not None:
+            chain.append({
+                "ts": w["ts"],
+                "cuPct": w.get("cuPct", w.get("pct")),
+                "overageAddMs": w.get("overageAddMs"),
+                "overageBurndownMs": w.get("overageBurndownMs"),
+                "overageTotalMs": w["overageTotalMs"],
+                "overageCumulativePct": w.get("overageCumulativePct"),
+                "minutesToBurndown": w.get("minutesToBurndown"),
+            })
+    return chain
+
+
+def capacity_burndown_chain(query, config=None):
+    """Return the per-window carry-forward / burndown chain for windows where overage data
+    is present.  Only windows with ``overageTotalMs`` are included; use ``capacity_series``
+    when you need the full unfiltered series.  Read-only; shares ``_windows`` +
+    ``_resolve_kql`` with the other collectors.
+
+    Formula (proven against 1,777 consecutive 30-second windows, 2026-07-27 validation
+    session, GAPS-AND-ISSUES Section 12.3)::
+
+        Cumulative[T] = Cumulative[T-1] + Add[T-1] + Burndown[T-1]
+        (Burndown is stored negative by the API; recursion is one-window lagged)
+        minutesToBurndown = overageCumulativePct / 200  (constant divisor, verified exact)
+
+    Called from ``diagnose.py`` when ``timepointsOver > 0`` (A2) -- via ``burndown_chain_from_series``
+    on an already-fetched series there, or via this function directly when a fresh live query is
+    wanted instead."""
+    cfg = config or {}
+    windows = _windows(query(_resolve_kql(cfg)) or [])
+    series_shaped = [{"ts": w["ts"], "cuPct": round(w["pct"], 1), **{k: v for k, v in w.items()
+                     if k not in ("cap", "ts", "pct")}} for w in windows]
+    return burndown_chain_from_series(series_shaped)
