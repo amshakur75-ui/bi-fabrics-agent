@@ -416,6 +416,21 @@ the underlying number is `DurationMs` (a weaker wall-clock proxy), not true `Cpu
 
 ---
 
+### N18 (from Task 11's verify-only batch) — Fixed 2026-07-29 evening (Claude Code)
+
+Upstream trace confirmed the only at-risk site was ``attribution.py::enrich_items``'s
+name-only lookup (rollup + collector_activity are both workspace-aware). Fix: ``enrich_items``
+now prefers a ``(workspace, name)`` tuple key with a name-only fallback for backward compat.
+4 regression tests at ``tests/test_attribution_workspace_key.py``. No production caller of
+``enrich_items`` today, so this is defense-in-depth for any future consumer.
+
+### B4 wire-in (from priority-order item 8 in the handoff) — Fixed 2026-07-29 evening
+
+``diagnose_throttle`` accepts an optional ``base_cu`` and runs ``assert_cu_consistency`` per
+burndown-chain window when it's supplied; mismatches are captured as ``sourceInconsistencies``
+evidence (never raised out of the diagnosis). Wired at the tools.py call site via
+``_resolve_base_cu``. 4 regression tests at ``tests/test_diagnose_cu_consistency.py``.
+
 ### Task 11: Verify-only tasks (N17, N18, N19, N21, N1, N16, B5)
 
 **Description:** A batch of direct-code-read verification tasks — no new data needed, cheap to

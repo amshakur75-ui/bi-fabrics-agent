@@ -77,13 +77,35 @@ def enrich_items(items=None, events_by_item=None, *, top_n=DEFAULT_TOP_N, owner=
     """Attach attribution to each item that has events; leave the rest untouched.
 
     Sets ``topUsers / userCount / background / owner / attributionMode`` on matched items.
-    ``events_by_item`` is keyed by item name (or id).
+
+    ``events_by_item`` supports THREE key shapes for lookup, tried in priority order:
+      1. ``(workspace, name)`` tuple  -- strict workspace-aware match. Preferred.
+      2. ``name`` string              -- name-only fallback (workspace-blind).
+      3. ``id`` string                -- stable-id fallback.
+
+    **N18 fix (2026-07-29):** The workspace-aware tuple lookup was added to close a real
+    collision risk -- five item display names in one tenant's real data appeared in multiple
+    workspaces with materially different CU totals (see GAPS-AND-ISSUES.md N18). Name-only
+    keying let events for "Ent-Reporting-Sales" in workspace A silently attribute to
+    "Ent-Reporting-Sales" in workspace B. Callers that key events by ``(workspace, name)``
+    now get workspace-strict behavior; existing name-only callers keep working unchanged
+    (backward-compat: the same dict shape all existing tests pass in). The production
+    collector (``collector_activity.create_activity_collector``) already uses the correct
+    workspace-aware pattern via ``_events_for_item``, so no runtime path today hits the
+    name-only key -- this fix is defense-in-depth for any future consumer of ``enrich_items``.
     """
     items = items or []
     events_by_item = events_by_item or {}
     out = []
     for it in items:
-        events = events_by_item.get(it.get("name")) or events_by_item.get(it.get("id")) or []
+        # Preferred: strict (workspace, name) match. Skip if workspace is missing on the item.
+        ws = it.get("workspace")
+        name = it.get("name")
+        events = None
+        if ws is not None and name is not None:
+            events = events_by_item.get((ws, name))
+        if not events:
+            events = events_by_item.get(name) or events_by_item.get(it.get("id")) or []
         if not events:
             out.append(it)
             continue

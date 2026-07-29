@@ -5,6 +5,7 @@ from ..adapters.collector_capacity_events import burndown_chain_from_series
 from ..config import DEFAULT_CONFIG
 from ..dax import analyze_dax
 from ..detectors.refresh import detect_refreshes
+from ..validate import assert_cu_consistency, InconsistentSourcesError
 from .expensive import top_expensive
 from .forecast_throttle import forecast_time_to_threshold
 from .throttle import decompose_throttle
@@ -31,7 +32,7 @@ def _confidence(confirmed_count):
     return "low"
 
 
-def diagnose_throttle(series, events, *, refreshes=None, has_real_cost=True):
+def diagnose_throttle(series, events, *, refreshes=None, has_real_cost=True, base_cu=None):
     chain = []
     decomp = decompose_throttle(series, events, has_real_cost=has_real_cost)
     stage1 = decomp["stage1"]
@@ -51,9 +52,35 @@ def diagnose_throttle(series, events, *, refreshes=None, has_real_cost=True):
     burndown_chain = burndown_chain_from_series(series)
     if burndown_chain:
         peak_cumulative = max((p.get("overageCumulativePct") or 0) for p in burndown_chain)
+        # B4 wire-in (Task 8/9 follow-up, 2026-07-29): per-window sanity check that a
+        # window's reported cuPct and its overageAddMs describe the same excess-over-100%.
+        # A mismatch means the two figures came from different sources / different windows /
+        # different denominators and MUST NOT be presented as if they agree (see the B4
+        # documented bug case: 105.1% CU% alongside 786K CU-ms of overage, which reconcile
+        # to two different figures). Only meaningful when base_cu is known; a caller that
+        # can't supply base_cu (e.g. an offline test) simply gets no additional check.
+        # Failures are captured, not raised -- the diagnosis stays useful even if one window
+        # disagrees; the disagreement is surfaced in the step's evidence for the agent to
+        # explicitly caveat.
+        source_issues = []
+        if base_cu:
+            for pt in burndown_chain:
+                try:
+                    assert_cu_consistency(pt.get("cuPct"), pt.get("overageAddMs"), base_cu)
+                except InconsistentSourcesError as exc:
+                    source_issues.append({"ts": pt.get("ts"), "reason": str(exc)})
+        evidence = {"chain": burndown_chain, "peakCumulativePct": peak_cumulative,
+                    "minutesToBurndown": burndown_chain[-1].get("minutesToBurndown")}
+        if source_issues:
+            evidence["sourceInconsistencies"] = source_issues
+            evidence["sourceInconsistenciesNote"] = (
+                "One or more windows in the burndown chain have a cuPct and overageAddMs that "
+                "don't reconcile to the same excess-over-100% (B4 -- likely mixed denominators "
+                "or a lag between the fields). Do NOT present those two figures side by side "
+                "as if they agree; pick one and derive the other from the same source."
+            )
         chain.append(_step("carry-forward / burndown", "Overage is accumulating on this capacity",
-                            "confirmed", {"chain": burndown_chain, "peakCumulativePct": peak_cumulative,
-                                         "minutesToBurndown": burndown_chain[-1].get("minutesToBurndown")}))
+                            "confirmed", evidence))
 
     confirmed = 1  # step1 confirmed counts as corroborating evidence
     stage2 = decomp["stage2"]
@@ -303,9 +330,11 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None):
             "eliminated": eliminated, "confidence": _confidence(confirmed)}
 
 
-def run_diagnosis(symptom, *, series, events, refreshes=None, has_real_cost=True, config=None):
+def run_diagnosis(symptom, *, series, events, refreshes=None, has_real_cost=True, config=None,
+                  base_cu=None):
     if symptom == "throttle":
-        return diagnose_throttle(series, events, refreshes=refreshes, has_real_cost=has_real_cost)
+        return diagnose_throttle(series, events, refreshes=refreshes,
+                                  has_real_cost=has_real_cost, base_cu=base_cu)
     if symptom == "refresh":
         return diagnose_refresh(refreshes, events, series)
     if symptom == "slowness":

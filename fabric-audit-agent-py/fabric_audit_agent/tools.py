@@ -1619,8 +1619,15 @@ def create_tool_definitions(base_dir=None):
             refreshes = None
             if symptom == "refresh":
                 refreshes = _collector_or_mock()["collect"]().get("refreshes")
+            # B4 wire-in: pass the live base_cu so diagnose_throttle can run the
+            # assert_cu_consistency check per burndown-chain window and surface any
+            # cuPct/overageAddMs mismatch as a sourceInconsistencies evidence entry (does not
+            # crash the diagnosis -- see diagnose_throttle for the try/except contract).
+            cap_facts_for_base = _collector_or_mock()["collect"]().get("capacity") or {}
+            base_cu_for_diag, _bcs = _resolve_base_cu(None, cap_facts_for_base.get("sku"))
             chain = _run_diagnosis(symptom, series=series, events=events, refreshes=refreshes,
-                                    has_real_cost=(meta["tier"] != "operationLevel"))
+                                    has_real_cost=(meta["tier"] != "operationLevel"),
+                                    base_cu=base_cu_for_diag)
             out = {**chain, "tier": meta["tier"], "source": source, "windowLabel": meta["windowLabel"]}
             if meta.get("coverageNote") is not None:
                 out["coverageNote"] = meta["coverageNote"]

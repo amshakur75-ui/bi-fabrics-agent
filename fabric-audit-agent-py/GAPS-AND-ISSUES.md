@@ -179,7 +179,11 @@ Agent needs this to cite what it's computing and why. ~50 lines.
 
 ---
 
-### B4 — Math consistency check missing
+### B4 — Math consistency check missing — **STATUS: FIXED (2026-07-29 evening — helper landed in prior batch, wired into live control flow this pass)**
+
+Helper (``validate.assert_cu_consistency`` + ``InconsistentSourcesError``) already existed with a unit test pinning the documented 105.1% CU% / 786K CU-ms mismatch (prior session's Phase 1 batch). **Wire-in landed 2026-07-29 evening:** ``diagnose_throttle`` now calls ``assert_cu_consistency`` per burndown-chain window when a live ``base_cu`` is available (threaded through as an optional param from ``run_diagnosis`` and set at the call site in ``tools.py::diagnose_handler`` via the existing ``_resolve_base_cu`` helper). A per-window inconsistency is captured as ``sourceInconsistencies`` in the burndown step's evidence + a human-readable ``sourceInconsistenciesNote`` -- the diagnosis stays useful, the mismatch is visible for the agent to caveat rather than silently presenting two disagreeing figures side by side. Regression tests at ``tests/test_diagnose_cu_consistency.py`` (4 cases): flag on the B4 documented mismatch, silent on a consistent series, skip when base_cu missing (backward compat), and NEVER-crash contract on check failure.
+
+
 **File:** `fabric_audit_agent/validate.py`
 
 `validate.py` is shape-only — checks required keys and array types, nothing else. No arithmetic
@@ -724,7 +728,11 @@ construction, which would be worth documenting once confirmed rather than assume
 
 ---
 
-### N18 — Item display name (`ArtifactName`) is not a unique key at the capacity grain — 5 confirmed name collisions across workspaces
+### N18 — Item display name (`ArtifactName`) is not a unique key at the capacity grain — 5 confirmed name collisions across workspaces — **STATUS: FIXED (2026-07-29 evening, Claude Code)**
+
+**Upstream trace complete + code fix landed.** ``attribution_rollup.py``'s ``(workspace, name).lower()`` grouping key was already workspace-aware and NEVER at risk. ``adapters/collector_activity.py::_events_for_item`` also correctly filters by (name, workspace) with an explicit workspace-blindness carve-out only for events that carry no workspace field at all. The single at-risk site was ``attribution.py::enrich_items``, which looked up ``events_by_item.get(it.get("name"))`` -- workspace-blind, so a caller with two items sharing a display name across workspaces would silently attribute both to the same events. No production code path calls ``enrich_items`` today (only tests do; production uses ``collector_activity.create_activity_collector``'s workspace-aware ``_events_for_item``), but the buggy shape was defense-in-depth waiting to bite a future consumer. **Fix:** ``enrich_items`` now prefers a ``(workspace, name)`` tuple key on ``events_by_item`` when the item has a workspace, falling through to the existing name-key + id-key fallbacks for backward compat. All 9 existing ``test_attribution.py`` tests still pass unchanged. 4 new regression cases at ``tests/test_attribution_workspace_key.py`` pin: workspace-strict isolation across a real display-name collision, name-only backward compat, tuple key beating a stale name-only entry when both are present, and no-workspace-on-item cleanly falling through to the name key.
+
+
 **Discovered:** Item History tab export session (CU-by-item export)
 
 Five item names appear as duplicate rows in the CU-by-item export, each with materially different
