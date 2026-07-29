@@ -1,7 +1,10 @@
 """Shared offline test-double for the Anthropic messages client.
 
-Used by the eval harness (score_investigations.py) and by tests (test_agent_loop.py,
+Used by the eval harness (eval_score.py) and by tests (test_agent_loop.py,
 test_agent_investigator.py). Stdlib-only; no anthropic SDK import required.
+
+Ported from ``fabric_audit_agent/agent/scripted_client.py`` as part of ADR-001 (agent logic
+now lives in the chat app; the MCP package is tools-only).
 
 Typical usage::
 

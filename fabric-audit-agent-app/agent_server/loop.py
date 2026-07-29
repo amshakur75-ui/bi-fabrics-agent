@@ -1,6 +1,13 @@
-"""The read-only ReAct tool-loop: plan -> targeted tool call -> feed result back -> repeat under a
-hard step budget, forcing an answer on the last step. Identical tool calls are de-duplicated (sound
-because every tool is read-only). Pure: the Anthropic client is injected."""
+"""Sync ReAct tool-loop used by the eval harness. Ported from
+``fabric_audit_agent/agent/loop.py`` per ADR-001.
+
+Production runs the ASYNC twin ``_run_tool_loop`` in ``agent.py`` (uvicorn / streaming). This
+sync version is only used by ``investigator.investigate()``, which the offline eval harness
+drives with a ``ScriptedClient``. The two loops must stay structurally in sync: dedup of
+identical read-only calls, budget-exhaustion nudge injected before the forced-answer step,
+and ``wrap_untrusted`` on every tool result.
+
+Pure: the Anthropic client is injected."""
 import json
 from .system_prompt import wrap_untrusted
 

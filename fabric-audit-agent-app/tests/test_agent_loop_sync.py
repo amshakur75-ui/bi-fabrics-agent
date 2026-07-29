@@ -1,7 +1,10 @@
-# tests/test_agent_loop.py
+"""Sync tool-loop tests. Ported from ``fabric-audit-agent-py/tests/test_agent_loop.py`` per
+ADR-001 — the sync ``run_tool_loop`` (used by the offline eval harness) now lives in the
+chat app. The async twin in ``agent.py::_run_tool_loop`` is exercised separately by
+``test_agent_server.py``; the two loops must stay structurally in sync."""
 import json
-from fabric_audit_agent.agent.loop import run_tool_loop
-from fabric_audit_agent.agent.scripted_client import Block as _B, Message as _M, ScriptedClient as FakeClient
+from agent_server.loop import run_tool_loop
+from agent_server.scripted_client import Block as _B, Message as _M, ScriptedClient as FakeClient
 
 
 def _dispatch():

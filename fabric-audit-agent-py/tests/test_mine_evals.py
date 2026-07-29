@@ -14,7 +14,11 @@ from fabric_audit_agent.eval.mine_evals import (
     shape_key,
     to_eval_skeletons,
 )
-from fabric_audit_agent.eval.score_investigations import score_agent_case
+
+# score_agent_case moved to the chat app per ADR-001 (2026-07-29). The fail-loud pin below
+# ("an unedited skeleton can never be silently scored") is preserved by inlining the exact
+# shape violation the scorer would trip on -- iterating case["script"] to build a
+# ScriptedClient -- so the invariant is asserted without importing across the app boundary.
 
 
 def _line(question="why did capacity spike?", toolsCalled=None, abstainedHint=False,
@@ -474,10 +478,27 @@ def test_to_eval_skeletons_integration_with_rank_candidates():
 # Fail-loud pin: an unedited skeleton can never be scored/pass.
 # ---------------------------------------------------------------------------
 
-def test_unedited_skeleton_raises_when_fed_to_score_agent_case():
+def test_unedited_skeleton_raises_when_scored():
+    """Fail-loud pin: an unedited skeleton must be structurally incompatible with the scorer
+    (see the module docstring). The scorer (``score_agent_case``, chat app) builds a
+    ScriptedClient by iterating ``case['script']`` block-by-block. A skeleton ships the
+    placeholder as a plain STRING, so that iteration yields one-character 'blocks' that fail
+    the Block(type=...) construction downstream. We assert the incompatibility directly here
+    without importing across the app boundary."""
     records = [_rec("why did capacity spike?", ["investigate_capacity_spike"])] * 3
     ranked = rank_candidates(records, [], min_count=2)
     skeleton = to_eval_skeletons(ranked, [])[0]
 
-    with pytest.raises(Exception):
-        score_agent_case(skeleton)
+    # The skeleton's script is a placeholder STRING, not the list-of-blocks the scorer expects.
+    assert isinstance(skeleton["script"], str), (
+        "skeletons must ship script as a placeholder STRING (never a real script) so they "
+        "cannot be silently scored"
+    )
+    assert skeleton["script"] == SCRIPT_PLACEHOLDER
+
+    # Prove the scorer's iteration pattern chokes on it: iterating a string yields characters,
+    # not dicts, so any ``b["type"]`` access blows up the way the scorer's
+    # ``_client_from_script`` would.
+    with pytest.raises((TypeError, KeyError)):
+        for b in skeleton["script"]:
+            _ = b["type"]   # scorer's first field access -- fails on a character

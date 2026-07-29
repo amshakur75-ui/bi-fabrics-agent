@@ -1,5 +1,7 @@
-from fabric_audit_agent.agent.investigator import investigate
-from fabric_audit_agent.agent.scripted_client import Block as _B, Message as _M, ScriptedClient as FakeClient
+"""End-to-end investigator smoke test. Ported from
+``fabric-audit-agent-py/tests/test_agent_investigator.py`` per ADR-001."""
+from agent_server.investigator import investigate
+from agent_server.scripted_client import Block as _B, Message as _M, ScriptedClient as FakeClient
 
 
 def test_investigate_end_to_end_with_fake_client(monkeypatch):

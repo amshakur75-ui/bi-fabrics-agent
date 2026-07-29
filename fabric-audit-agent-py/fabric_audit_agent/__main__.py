@@ -83,12 +83,18 @@ def main(argv=None):
             print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} (abstain={c['abstainOk']} grounded={c['groundedOk']})")
         return
     elif cmd == "eval-agent":
-        from .eval.score_investigations import run_agent_suite
-        res = run_agent_suite()
-        print(f"Agent: {res['passed']}/{res['total']} passed")
-        for c in res["cases"]:
-            print(f"  {'PASS' if c['passed'] else 'FAIL'} {c['name']} "
-                  f"(grounded={c['groundedOk']} abstain={c['abstainOk']})")
+        # Agent-case eval moved to the chat app per ADR-001 (2026-07-29). The MCP tools
+        # package no longer owns any prompt/loop/investigator code -- ``score_agent_case``
+        # and ``agent_cases.json`` now live in the chat app alongside the actual agent.
+        print(
+            "Agent-case evals moved to the chat app. Run them there:\n"
+            "  cd fabric-audit-agent-app && python -m pytest tests/test_eval_agent.py -v\n"
+            "or programmatically:\n"
+            "  from agent_server.eval_score import run_agent_suite\n"
+            "  res = run_agent_suite()\n"
+            "Playbook evals (this package's remaining eval suite) still run here via "
+            "`eval-investigations`."
+        )
         return
     else:
         print(run_import(argv))   # forgiving: treat bare args as files to import

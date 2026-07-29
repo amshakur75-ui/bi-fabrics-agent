@@ -11,7 +11,13 @@ from fabric_audit_agent.eval.mine_evals import SCRIPT_PLACEHOLDER
 from fabric_audit_agent.tools import create_tool_definitions
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_REAL_AGENT_CASES = os.path.join(_REPO, "fabric_audit_agent", "eval", "agent_cases.json")
+# agent_cases.json moved to the chat app per ADR-001 (2026-07-29). This test verifies the
+# mine-evals CLI never writes to the real golden suite, so the path must point at wherever the
+# real file lives now, not where it used to live.
+_WORKSPACE_ROOT = os.path.dirname(_REPO)
+_REAL_AGENT_CASES = os.path.join(
+    _WORKSPACE_ROOT, "fabric-audit-agent-app", "agent_server", "eval_data", "agent_cases.json"
+)
 
 
 def _conv_line(question, toolsCalled=None, abstainedHint=False, tag="conversation", **extra):

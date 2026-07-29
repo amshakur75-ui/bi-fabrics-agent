@@ -1,8 +1,12 @@
 """The investigator system prompt + spotlighting for untrusted telemetry.
 
+Canonical home per ADR-001 (2026-07-29): the chat app owns the prompt, not the MCP tools
+package. This replaces `fabric_audit_agent/agent/system_prompt.py`, which was deleted in the
+same commit. Kept static/prompt-cache-friendly.
+
 Encodes the must-fixes as instructions: read-only, detectors-ground-the-LLM, cite-evidence,
 abstain-when-insufficient, monitored-vs-capacity-CU honesty, and treat-tool-results-as-data
-(prompt-injection defense). Kept static/prompt-cache-friendly."""
+(prompt-injection defense)."""
 
 _SYSTEM = """You are a READ-ONLY Microsoft Fabric / Power BI capacity investigator.
 

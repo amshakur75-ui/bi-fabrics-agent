@@ -361,12 +361,18 @@ _DEFAULT_AGENT_CASES_NAME = "agent_cases.json"
 
 
 def _resolve_agent_cases_path(cases_path=None):
-    """The path read for existing-case dedup. ``cases_path`` wins (tests); otherwise the
-    package-adjacent ``eval/agent_cases.json`` ships -- the same file ``score_agent_case`` scores
-    (see score_investigations.py's ``_AGENT_CASES``)."""
+    """The path read for existing-case dedup. ``cases_path`` wins (tests); otherwise resolve to
+    the chat app's ``agent_server/eval_data/agent_cases.json`` -- moved there per ADR-001, since
+    it's the golden suite for agent behavior. Layout assumed: package sits at
+    ``<repo>/fabric-audit-agent-py`` and the chat app at ``<repo>/fabric-audit-agent-app``.
+    A missing file degrades to ``[]`` in ``_read_agent_cases_from``, so this defaulting is
+    tolerant if the layout ever changes."""
     if cases_path is not None:
         return cases_path
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", _DEFAULT_AGENT_CASES_NAME)
+    pkg_root = os.path.dirname(os.path.abspath(__file__))            # fabric_audit_agent/
+    repo_root = os.path.dirname(os.path.dirname(pkg_root))            # <repo>/
+    return os.path.join(repo_root, "fabric-audit-agent-app", "agent_server",
+                        "eval_data", _DEFAULT_AGENT_CASES_NAME)
 
 
 def _read_agent_cases_from(path):

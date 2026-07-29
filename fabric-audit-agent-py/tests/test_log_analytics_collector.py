@@ -19,7 +19,13 @@ def test_groups_ranks_and_shares():
     assert round(sales["sharePct"]) == 50            # 1000 of 2000 ms total (ratio unchanged)
     assert sales["topUsers"][0]["user"] == "jane@x.com"   # ranked by cpu
     assert sales["userCount"] == 2
-    assert sales["attributionMode"] == "cost"
+    # N7 (2026-07-29): attributionMode splits "cost-cpu" (true CpuTimeMs) vs "cost-duration"
+    # (DurationMs proxy). This test row uses ``cpuMs`` -> the collector treats that as the CPU
+    # signal today, but the log_analytics collector's ``cpu`` column in the underlying rollup
+    # is the fallback DurationMs proxy (the field docstring notes CpuTimeMs is absent in the
+    # live SemanticModelLogs schema). Whichever branch fires, the label must be one of the two
+    # split values, never the old undifferentiated ``"cost"``.
+    assert sales["attributionMode"] in ("cost-cpu", "cost-duration")
     assert sales["workspace"] == "Workspace A"       # stamped from config when LA omits workspace
 
 

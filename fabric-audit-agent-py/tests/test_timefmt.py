@@ -111,9 +111,8 @@ def test_capacity_patterns_carry_windowStartDisplay(monkeypatch):
         assert " UTC (" in p["windowStartDisplay"]
 
 
-def test_system_prompt_mandates_verbatim_display_fields():
-    from fabric_audit_agent.agent.system_prompt import build_system_prompt
-    p = build_system_prompt()
-    assert "whenDisplay" in p and "tsDisplay" in p
-    assert "VERBATIM" in p
-    assert "NEVER convert timezones" in p
+# Note: the previous ``test_system_prompt_mandates_verbatim_display_fields`` test moved to
+# ``fabric-audit-agent-app/tests/test_agent_system_prompt.py`` as part of ADR-001 -- the
+# system prompt now lives in the chat app, not this package. The verbatim-display-field
+# assertion is covered there by ``test_presentation_voice_does_not_delete_preexisting_hard_rules``
+# (which checks the same timezone-verbatim rule from the app's canonical prompt).

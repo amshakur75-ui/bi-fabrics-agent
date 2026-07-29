@@ -1,4 +1,7 @@
-from fabric_audit_agent.agent.system_prompt import build_system_prompt, wrap_untrusted
+"""System-prompt content assertions. Ported from
+``fabric-audit-agent-py/tests/test_agent_system_prompt.py`` per ADR-001 — prompt now lives
+in the chat app."""
+from agent_server.system_prompt import build_system_prompt, wrap_untrusted
 
 
 def test_system_prompt_states_the_core_rules():
@@ -135,3 +138,50 @@ def test_presentation_voice_does_not_delete_preexisting_hard_rules():
     assert "were blind to" in low
     assert "absent" in low
     assert "final review" in low
+
+
+def test_sp1_burndown_auto_trigger_rule_present():
+    """SP1 (2026-07-29): the prompt must instruct auto-pull of the burndown chain
+    on any over-100% window — no 'want me to pull it?' hedge."""
+    low = build_system_prompt().lower()
+    assert "sp1" in low
+    assert "auto-pull" in low or "auto-trigger" in low or "auto in" in low
+    assert "carry-forward" in low
+    # Rejection of the retired hedge phrasing.
+    assert "want me to pull the burndown" in low  # quoted as the wrong thing to say
+
+
+def test_sp3_cadence_vs_causation_rule_present():
+    """SP3: >80% consecutive over-threshold window presence = cadence, not causation."""
+    low = build_system_prompt().lower()
+    assert "sp3" in low
+    assert "cadence" in low
+    assert "80%" in low
+    assert "automated" in low and "scheduled" in low
+
+
+def test_sp4_two_column_format_replaces_retired_combined_cell():
+    """SP4: two SEPARATE columns for % of base + Lifetime %; the retired
+    "47.1% (471.2%)" combined-cell format is called out as WRONG."""
+    p = build_system_prompt()
+    low = p.lower()
+    assert "sp4" in low
+    assert "two separate" in low
+    assert "never combined in one cell" in low
+    # The retired format is explicitly called wrong.
+    assert '"47.1% (471.2%)"' in p or "47.1% (471.2%)" in p
+    assert "retired" in low and "combined-cell" in low
+
+
+def test_sp6_inline_inferred_labeling_rule_present():
+    low = build_system_prompt().lower()
+    assert "sp6" in low
+    assert "[inferred]" in low or "[extrapolated]" in low
+    assert "(derived)" in low
+
+
+def test_sp7_query_provenance_rule_present():
+    low = build_system_prompt().lower()
+    assert "sp7" in low
+    assert "verbatim" in low
+    assert "_provenance" in low or "provenance" in low

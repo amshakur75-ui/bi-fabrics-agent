@@ -1,11 +1,14 @@
+"""Agent-case eval suite tests. Ported from ``fabric-audit-agent-py/tests/test_eval_agent.py``
+per ADR-001 — agent-behavior evals live with the agent (chat app), not with the tools."""
 import json
 import os
 import pathlib
-from fabric_audit_agent.eval.score_investigations import (
+
+from agent_server.eval_score import (
     run_agent_suite, score_agent_case, _client_from_script,
 )
-from fabric_audit_agent.agent.scripted_client import Block, Message, ScriptedClient
-from fabric_audit_agent.agent.investigator import investigate
+from agent_server.scripted_client import Block, Message, ScriptedClient
+from agent_server.investigator import investigate
 
 
 def test_agent_suite_all_golden_cases_pass(monkeypatch):
@@ -56,14 +59,16 @@ def test_grounded_gate_passes_honest_figure(monkeypatch):
     assert result["groundedOk"] is True
 
 
+def _cases_path():
+    return pathlib.Path(__file__).parent.parent / "agent_server" / "eval_data" / "agent_cases.json"
+
+
 def test_agent_suite_includes_new_depth_case(monkeypatch):
     """The agent golden suite must include at least one case that exercises a Phase-3 depth tool."""
     for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
               "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
         monkeypatch.delenv(v, raising=False)
-    import json, pathlib
-    cases_path = pathlib.Path(__file__).parent.parent / "fabric_audit_agent" / "eval" / "agent_cases.json"
-    with open(cases_path, encoding="utf-8") as fh:
+    with open(_cases_path(), encoding="utf-8") as fh:
         cases = json.load(fh)
     new_tools = {"spike_events", "user_spike_history", "capacity_patterns"}
     depth_tools_used = {
@@ -84,8 +89,7 @@ def test_windowed_raw_events_case_passes_structured_start_end(monkeypatch):
     for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
               "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
         monkeypatch.delenv(v, raising=False)
-    cases_path = pathlib.Path(__file__).parent.parent / "fabric_audit_agent" / "eval" / "agent_cases.json"
-    with open(cases_path, encoding="utf-8") as fh:
+    with open(_cases_path(), encoding="utf-8") as fh:
         cases = json.load(fh)
     case = next((c for c in cases if c["name"] == "windowed-raw-events-12to13"), None)
     assert case is not None, "agent_cases.json must include the windowed raw_events golden case"
@@ -102,11 +106,12 @@ def test_windowed_raw_events_case_passes_structured_start_end(monkeypatch):
 
 
 def test_runbook_files_exist_and_name_real_tools():
-    """The three investigation runbooks must exist and each must name at least one real tool."""
-    import pathlib
-    runbooks_dir = pathlib.Path(__file__).parent.parent / "fabric-audit-agent-py" / "docs" / "runbooks"
-    # Resolve relative to this file's location (tests/ -> fabric-audit-agent-py/)
-    runbooks_dir = pathlib.Path(__file__).parent.parent / "docs" / "runbooks"
+    """The three investigation runbooks must exist and each must name at least one real tool.
+    Runbook files live in the MCP package's docs (tools-side); the assertion still holds
+    because they name tools that exist there."""
+    # From the app's tests/ dir, walk up to the repo root then over to the MCP package.
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    runbooks_dir = repo_root / "fabric-audit-agent-py" / "docs" / "runbooks"
     required = ["throttle-investigation.md", "noisy-neighbor.md", "refresh-collision.md"]
     real_tools = {
         "investigate_capacity_spike", "spike_events", "user_spike_history",
@@ -124,10 +129,9 @@ def test_every_tool_has_golden_case_coverage(monkeypatch):
     for v in ("FABRIC_CSV_PATHS", "FABRIC_CLIENT_ID", "FABRIC_KUSTO_CLUSTER",
               "FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_LA_WORKSPACE_ID"):
         monkeypatch.delenv(v, raising=False)
-    import json, pathlib
     from fabric_audit_agent.tools import create_tool_definitions
-    cases = json.loads((pathlib.Path(__file__).parent.parent / "fabric_audit_agent" /
-                        "eval" / "agent_cases.json").read_text(encoding="utf-8"))
+    with open(_cases_path(), encoding="utf-8") as fh:
+        cases = json.load(fh)
     used = {b["name"] for c in cases for b in c.get("script", []) if b.get("type") == "tool_use"}
     missing = {d["name"] for d in create_tool_definitions()} - used
     assert not missing, f"tools with zero golden-case coverage: {sorted(missing)}"

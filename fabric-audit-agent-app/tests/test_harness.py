@@ -53,12 +53,12 @@ _MARKERS = [
 
 def test_playbook_markers_locked_in_system_prompt():
     for m in _MARKERS:
-        assert m in _agent._SYSTEM, f"playbook marker missing: {m!r}"
+        assert m in _agent.build_system_prompt(), f"playbook marker missing: {m!r}"
 
 
 def test_playbook_keeps_lean_default_for_lookups():
     # The precedence rule: narration is for investigations; lookups keep the lean default.
-    assert "simple lookups keep the lean default" in _agent._SYSTEM
+    assert "simple lookups keep the lean default" in _agent.build_system_prompt()
 
 
 # ---- Detective-by-default: investigation posture is the DEFAULT (not just why-questions),
@@ -80,7 +80,7 @@ _DETECTIVE_MARKERS = [
 
 def test_detective_posture_markers_locked_in_system_prompt():
     for m in _DETECTIVE_MARKERS:
-        assert m in _agent._SYSTEM, f"detective-posture marker missing: {m!r}"
+        assert m in _agent.build_system_prompt(), f"detective-posture marker missing: {m!r}"
 
 
 # Lock-in for the multi-lens "unusual today" rule -- added after a live miss where the agent
@@ -99,11 +99,11 @@ _MULTI_LENS_MARKERS = [
 
 def test_multi_lens_spike_scan_markers_locked_in_system_prompt():
     for m in _MULTI_LENS_MARKERS:
-        assert m in _agent._SYSTEM, f"multi-lens spike-scan marker missing: {m!r}"
+        assert m in _agent.build_system_prompt(), f"multi-lens spike-scan marker missing: {m!r}"
 
 
 def test_offer_skip_carve_out_still_present():
     # The offer is mandatory on substantive answers -- but not on refusals, false-premise
     # corrections, or pure clarifying questions. If we ever drop the carve-out the model would
     # start tacking a "want me to..." onto secret-disclosure refusals, which reads absurd.
-    assert "Skip the offer ONLY on refusals, corrections of a false premise" in _agent._SYSTEM
+    assert "Skip the offer ONLY on refusals, corrections of a false premise" in _agent.build_system_prompt()

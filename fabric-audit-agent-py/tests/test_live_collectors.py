@@ -101,7 +101,9 @@ def test_workspace_monitoring_ranks_users_per_item():
     assert "ago(2d)" in captured["kql"]
     sales = next(i for i in facts["items"] if i["name"] == "Sales Model")
     assert sales["topUsers"][0]["user"] == "alice" and sales["userCount"] == 2
-    assert sales["attributionMode"] == "cost"
+    # N7 (2026-07-29): "cost" split into "cost-cpu" / "cost-duration" based on which underlying
+    # field the rollup actually used.
+    assert sales["attributionMode"] in ("cost-cpu", "cost-duration")
 
 
 def test_workspace_monitoring_kql_override_window_placeholder_substituted():
