@@ -310,7 +310,24 @@ it live in production (now inside the app, per the corrected architecture).
 
 ---
 
-### Task 8: Unify the concentration item-kind + threshold family (N9, N5, N6, N8, N3)
+### Task 8: Unify the concentration item-kind + threshold family (N9, N5, N6, N8, N3) — **STATUS: DONE with two documented deferrals (2026-07-29 evening, Claude Code)**
+
+- **N5 (item-kind exclusion in concentration.py):** DONE. New module ``detectors/system_item_kinds.py`` +
+  filter in ``concentration.py``.
+- **N9 (single source of truth for the 30% threshold):** DONE. ``gates.CONCENTRATION_THRESHOLD_PCT``
+  derived from ``DEFAULT_CONFIG``; ``diagnose_slowness`` and ``run_diagnosis`` accept an optional
+  ``config`` and thread through to a shared ``_concentration_threshold(config)`` helper. Both inline
+  ``> 30.0`` literals in diagnose.py are gone.
+- **N6 (user_concentration.py item-kind filter):** DEFERRED. Per-user rollup doesn't carry Fabric
+  item kind today. Requires enriching ``rollup_attribution``. GAPS updated with the blocker.
+- **N8 (item-kind half of diagnose.py's inline hot-item/hot-user computation):** DEFERRED. Raw
+  events don't carry Fabric item kind (``normalize_event``'s "kind" is refresh/interactive, not
+  Fabric item kind). Requires enriching normalize_event. GAPS updated with the blocker.
+- **N3:** already fully fixed by the prior session's Phase 1 batch (defaults to hedged label for
+  ``None``/``frequency`` modes).
+
+10 regression tests at ``tests/test_concentration_unification.py``. Suite: 1160 passed (was 1150).
+
 
 **Description:** Four related gaps, best fixed together since they share the same root cause
 (item-kind blindness) and the same secondary issue (threshold hardcoded independently in multiple
@@ -345,7 +362,16 @@ threshold onto `config["capacity"]["concentrationPct"]`; fix N3's default-label 
 
 ---
 
-### Task 9: Fix E1 — concentration math source-consistency check
+### Task 9: Fix E1 — concentration math source-consistency check — **STATUS: DONE (2026-07-29 evening, Claude Code)**
+
+``concentration.py`` now computes the set of distinct ``attributionMode`` values across the
+(post-N5-exclusion) input items. When >1 mode is present, every emitted flag is tagged with
+``mixedSources: True`` + a ``mixedSourcesNote`` in evidence AND an inline caveat in the plain-
+language ``what`` string. Items with ``attributionMode=None`` don't count as their own mode
+(would flip every CSV+LA audit into "mixed" -- noise). 5 regression tests at
+``tests/test_concentration_source_consistency.py``. Suite: 1165 passed (was 1160). This is a
+WARN, not a recompute -- fixing the underlying rollup to group by mode is a documented follow-up.
+
 
 **Description:** No code currently enforces that a concentration ratio's numerator and denominator
 come from the same `attributionMode`. Add an explicit check.

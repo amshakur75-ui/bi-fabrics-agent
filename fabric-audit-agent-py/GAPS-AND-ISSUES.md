@@ -282,7 +282,11 @@ cost-based proxies.
 
 ---
 
-### N5 — Concentration detector has no item-kind filter, will false-positive on system accounts
+### N5 — Concentration detector has no item-kind filter, will false-positive on system accounts — **STATUS: FIXED (2026-07-29 evening, Claude Code — Task 8)**
+
+New module ``fabric_audit_agent/detectors/system_item_kinds.py`` holds the canonical exclusion set (``EventStream``, ``FabricEvents-CapacityUtilizationEvents``, ``Activator``) + ``is_system_item_kind()`` helper (case-insensitive, None-safe, conservatively returns False for missing kind so unenriched sources aren't over-filtered). ``concentration.py`` now skips any item whose ``kind`` is in the set BEFORE evaluating share. Regression test at ``tests/test_concentration_unification.py`` (5 cases) pins the exclusion, the case-insensitivity, the None-safe conservative behavior, and the "real Dataset alongside a system item still fires" scenario. Note: the programmatic-derivation-from-user-count-variance approach hinted at in the original entry is deferred -- current per-item statistics don't include variance, and Fabric's item-kind vocabulary is canonical enough that a hardcoded set is not tenant-specific. Follow-up.
+
+
 **File:** `fabric_audit_agent/detectors/concentration.py`
 **Discovered:** formula-validation session, Multi-metric ribbon chart (all 4 tabs: Users, Operations, Duration, CU)
 
@@ -339,7 +343,11 @@ implying completeness.
 
 ---
 
-### E1 — Concentration alert threshold may be applied to the wrong denominator
+### E1 — Concentration alert threshold may be applied to the wrong denominator — **STATUS: FIXED (2026-07-29 evening, Claude Code — Task 9)**
+
+``concentration.py`` now computes the set of distinct attribution modes present across the (post-N5-exclusion) input items. When more than one mode is present -- e.g. some items backed by ``cost-cpu`` (true ``CpuTimeMs``) alongside items backed by ``cost-duration`` (``DurationMs`` fallback) -- every emitted flag gets ``mixedSources: True`` + a ``mixedSourcesNote`` in evidence AND an inline "(Note: sharePct mixes cost bases across items -- treat as approximate.)" appended to the plain-language ``what`` string, so both the machine-readable and human-readable channels carry the caveat. Items with ``attributionMode=None`` (typical CSV/REST rollup that pre-dates N7's split) are deliberately NOT counted as their own mode -- treating None as a mode would flip every audit that mixes a CSV source with an LA source into "mixed", which is noise. Regression test at ``tests/test_concentration_source_consistency.py`` (5 cases) pins pure-cost-cpu, pure-cost-duration, actual-mixing, system-item-kind-doesn't-count, and None-doesn't-count scenarios. Note: this is a WARN, not a recompute -- ``sharePct`` was already computed upstream in ``rollup_attribution``; recomputing per-mode would require enriching the rollup to group by mode, a follow-up ticket beyond E1's stated ask.
+
+
 **File:** `fabric_audit_agent/detectors/concentration.py`
 **Status:** identified early in this conversation thread (pre-formula-validation session), never resolved, dropped from the file when it was first created — re-added here
 
@@ -360,7 +368,11 @@ from different sources get compared or combined without an explicit compatibilit
 
 ---
 
-### N6 — `user_concentration.py` has no item-kind awareness, same system-account risk as N5, one layer up
+### N6 — `user_concentration.py` has no item-kind awareness, same system-account risk as N5, one layer up — **STATUS: PARTIAL / DEFERRED (Task 8 2026-07-29)**
+
+**Why not fixed in Task 8:** the per-user rollup (``rollup_attribution.users``) does not currently carry a Fabric item kind on either the user record or on its ``topItems`` entries -- so this detector, by construction, can't tell an ``EventStream`` from a ``Dataset`` when ranking users. Fixing it cleanly requires ENRICHING the rollup (and probably the LA source query) to carry item kind through, which is a separate ticket. Name-pattern matching (e.g. exclude a user whose top item starts with ``Monitoring_``) was considered and rejected as too fragile for a canonical detector. Left open until an item-kind-enriched rollup lands.
+
+
 **File:** `fabric_audit_agent/detectors/user_concentration.py`
 **Discovered:** direct re-read of this file during a later audit pass of this document
 
@@ -414,7 +426,11 @@ number rather than treating all "cost" mode figures as equally grounded.
 
 ---
 
-### N8 — A THIRD independent concentration-style check exists, inline in `diagnose.py`, hardcoded and item-kind-blind
+### N8 — A THIRD independent concentration-style check exists, inline in `diagnose.py`, hardcoded and item-kind-blind — **STATUS: PARTIAL / DEFERRED (Task 8 2026-07-29)**
+
+**Threshold-unification half FIXED** as part of Task 8 (see N9 below): both inline ``> 30.0`` literals in ``diagnose_slowness`` are replaced with a config lookup (``_concentration_threshold(config)`` reading ``config["capacity"]["concentrationPct"]``); the function/``run_diagnosis`` now accept an optional ``config`` arg (default: DEFAULT_CONFIG) that threads through. Regression tests at ``tests/test_concentration_unification.py`` pin this end-to-end. **Item-kind-exclusion half DEFERRED**: this code path sums ``cuSeconds`` per item straight from raw EVENTS (``normalize_event``), which carry ``kind`` only in the interactive/refresh sense -- NOT the Fabric item-kind (``EventStream``/``Activator``/etc.). Applying the N5 exclusion here requires enriching normalize_event with Fabric item kind, same blocker as N6. Left open until events carry kind.
+
+
 **File:** `fabric_audit_agent/investigation/diagnose.py`
 **Discovered:** direct re-read of this file during a later audit pass of this document
 
@@ -437,7 +453,11 @@ shared detector logic instead of re-deriving hot-item/hot-user shares itself.
 
 ---
 
-### N9 — A FOURTH independent copy of the 30% threshold, hardcoded as a module constant in `gates.py`
+### N9 — A FOURTH independent copy of the 30% threshold, hardcoded as a module constant in `gates.py` — **STATUS: FIXED (2026-07-29 evening, Claude Code — Task 8)**
+
+Single source of truth = ``DEFAULT_CONFIG["capacity"]["concentrationPct"]``. ``gates.CONCENTRATION_THRESHOLD_PCT`` is now derived (``= float(_DEFAULT_CFG["capacity"]["concentrationPct"])``) instead of a hardcoded ``30.0``. ``concentration.py`` and ``user_concentration.py`` already read from config. ``diagnose.py`` no longer contains the inline ``> 30.0`` literals (both replaced with ``_concentration_threshold(config)``); ``diagnose_slowness`` and ``run_diagnosis`` accept an optional ``config`` arg. Regression test ``test_gates_concentration_threshold_matches_default_config`` pins the derivation, and two ``diagnose_slowness``-based tests confirm the threshold is respected end-to-end when config overrides it. The ``DOMINANT_ITEM_SHARE_PCT = 40.0`` verdict-gate constant is a DIFFERENT threshold (optimize-vs-size-up verdict logic) and was intentionally left alone.
+
+
 **File:** `fabric_audit_agent/investigation/gates.py`
 **Discovered:** direct re-read of this file during a later audit pass of this document
 

@@ -17,7 +17,12 @@ Grounding (verified vs Microsoft docs, deep-research run wf_2bd7708f-99f, all cl
   is blocked to service principals — permanently a human step; per-user CPU figures are a proxy.
 """
 
-CONCENTRATION_THRESHOLD_PCT = 30.0
+# N9 fix (Task 8, 2026-07-29): derived from ``config["capacity"]["concentrationPct"]`` so
+# there is exactly one source of truth for the concentration threshold across the codebase.
+# Kept as a module attribute so existing callers/tests that reference ``CONCENTRATION_THRESHOLD_PCT``
+# still resolve; the value now tracks whatever DEFAULT_CONFIG says (single edit propagates).
+from ..config import DEFAULT_CONFIG as _DEFAULT_CFG
+CONCENTRATION_THRESHOLD_PCT = float(_DEFAULT_CFG["capacity"]["concentrationPct"])
 # One item over this share of monitored CU means "optimize that item first", not "buy a bigger SKU".
 DOMINANT_ITEM_SHARE_PCT = 40.0
 

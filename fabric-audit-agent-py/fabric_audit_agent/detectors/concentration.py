@@ -7,6 +7,7 @@ names the owner for background-dominated load, else notes users are pending corr
 import math
 from ..config import DEFAULT_CONFIG
 from ..investigation.sku import round_pct
+from .system_item_kinds import is_system_item_kind
 
 
 def _fmt(x):
@@ -20,7 +21,33 @@ def detect_concentration(facts, config=None):
     min_share = config["capacity"]["concentrationPct"]
     flags = []
 
+    # E1 fix (Task 9, 2026-07-29): a concentration ratio only makes sense when its numerator
+    # and denominator come from the SAME attribution mode. If the items feeding this detector
+    # carry a MIX of modes (e.g. some ``cost-cpu`` from rows with CpuTimeMs alongside
+    # ``cost-duration`` from rows that fell back to DurationMs), the pre-computed ``sharePct``
+    # was formed with a MIXED denominator -- the resulting percentage silently blends two
+    # different metrics and cannot be trusted at face value. We can only WARN here (sharePct
+    # was computed upstream in rollup_attribution), so tag every emitted flag with an inline
+    # caveat and a ``mixedSources`` evidence field a caller/agent can see. System-item-kind
+    # items excluded above (N5) are NOT counted for mode-mixing purposes -- they were dropped
+    # from the population, so their mode doesn't contribute to the denominator either.
+    _modes = {
+        it.get("attributionMode")
+        for it in items
+        if not is_system_item_kind(it.get("kind"))
+        and it.get("attributionMode") is not None
+    }
+    mixed_sources = len(_modes) > 1
+
     for it in items:
+        # N5 fix (Task 8): a system item kind (EventStream / Activator /
+        # FabricEvents-CapacityUtilizationEvents) is driven by exactly one service identity every
+        # hour of every day -- "1 user = 100% concentration" fires trivially and permanently on
+        # any of them. Silent skip when kind is present AND matches; leave items with an unknown
+        # kind alone (conservative: better a false negative than falsely hiding a real workload).
+        # See detectors/system_item_kinds.py for the evidence.
+        if is_system_item_kind(it.get("kind")):
+            continue
         try:
             share = float(it.get("sharePct"))
         except (TypeError, ValueError):
@@ -62,16 +89,25 @@ def detect_concentration(facts, config=None):
             what = (f"\"{it.get('name')}\" ({ws}) is using {_fmt(share)}% of {label} across {who} "
                     f"— specific users pending activity-log correlation.")
 
+        evidence = {
+            "sharePct": share_out, "cuSeconds": it.get("cuSeconds"), "kind": it.get("kind"),
+            "users": it.get("users"), "userCount": it.get("userCount"), "topUsers": named,
+            "background": it.get("background") or False, "owner": it.get("owner"),
+            "attributionMode": it.get("attributionMode"),
+        }
+        if mixed_sources:
+            evidence["mixedSources"] = True
+            evidence["mixedSourcesNote"] = (
+                "sharePct was formed with a denominator that mixed attribution modes "
+                f"({sorted(m for m in _modes if m)}). The ratio silently blends two different "
+                "cost signals -- treat the reported percentage as approximate, not authoritative."
+            )
+            what = what + " (Note: sharePct mixes cost bases across items -- treat as approximate.)"
         flags.append({
             "type": "capacity.concentration",
             "resource": f"{it.get('workspace') or '(unknown ws)'} / {it.get('name')}",
             "when": it.get("observedAt") or "",
-            "evidence": {
-                "sharePct": share_out, "cuSeconds": it.get("cuSeconds"), "kind": it.get("kind"),
-                "users": it.get("users"), "userCount": it.get("userCount"), "topUsers": named,
-                "background": it.get("background") or False, "owner": it.get("owner"),
-                "attributionMode": it.get("attributionMode"),
-            },
+            "evidence": evidence,
             "what": what,
         })
     return flags

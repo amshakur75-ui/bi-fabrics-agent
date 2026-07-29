@@ -2,12 +2,21 @@
 confirming AND eliminating hypotheses -- instead of hoping the LLM follows a prose runbook. Every
 evidence figure comes from injected inputs (grounded by construction)."""
 from ..adapters.collector_capacity_events import burndown_chain_from_series
+from ..config import DEFAULT_CONFIG
 from ..dax import analyze_dax
 from ..detectors.refresh import detect_refreshes
 from .expensive import top_expensive
 from .forecast_throttle import forecast_time_to_threshold
 from .throttle import decompose_throttle
 from .workload import refresh_collisions
+
+
+def _concentration_threshold(config):
+    """Read the concentration threshold from a config or ``DEFAULT_CONFIG``. Single source of
+    truth per N9 (Task 8, 2026-07-29): the same value ``concentration.py``, ``user_concentration.py``,
+    and ``gates.CONCENTRATION_THRESHOLD_PCT`` all resolve to."""
+    cfg = config or DEFAULT_CONFIG
+    return float(cfg["capacity"]["concentrationPct"])
 
 
 def _step(step, hypothesis, verdict, evidence):
@@ -193,7 +202,7 @@ def diagnose_refresh(refreshes, events, series):
             "eliminated": [], "confidence": _confidence(confirmed)}
 
 
-def diagnose_slowness(series, events, *, has_real_cost=True):
+def diagnose_slowness(series, events, *, has_real_cost=True, config=None):
     chain = []
     decomp = decompose_throttle(series, events, has_real_cost=has_real_cost)
     stage1 = decomp["stage1"]
@@ -232,14 +241,22 @@ def diagnose_slowness(series, events, *, has_real_cost=True):
         hot_item, hot_cu = max(totals.items(), key=lambda kv: kv[1])
         hot_share = hot_cu / grand_total * 100.0
 
-    if hot_item is not None and hot_share > 30.0:
-        chain.append(_step("single hot item >30% share?", "One item dominates workload share",
+    # N9 fix (Task 8): threshold now reads from ``config["capacity"]["concentrationPct"]`` --
+    # the same value ``concentration.py``, ``user_concentration.py``, and
+    # ``gates.CONCENTRATION_THRESHOLD_PCT`` all resolve to. Previously hardcoded ``> 30.0`` in
+    # two places here, so an admin bumping the config value tenant-wide would silently NOT
+    # affect this inline check.
+    threshold = _concentration_threshold(config)
+    hot_step_hypothesis = "One item dominates workload share"
+    hot_step_name = f"single hot item >{int(threshold) if threshold == int(threshold) else threshold}% share?"
+    if hot_item is not None and hot_share > threshold:
+        chain.append(_step(hot_step_name, hot_step_hypothesis,
                             "confirmed", {"item": hot_item, "sharePct": hot_share}))
         confirmed += 1
         root_cause = f"single hot item \"{hot_item}\" ({hot_share:.1f}% of workload share)"
         return {"symptom": "slowness", "chain": chain, "rootCause": root_cause,
                 "eliminated": eliminated, "confidence": _confidence(confirmed)}
-    chain.append(_step("single hot item >30% share?", "One item dominates workload share",
+    chain.append(_step(hot_step_name, hot_step_hypothesis,
                         "eliminated", {"item": hot_item, "sharePct": hot_share}))
     eliminated.append("single hot item")
 
@@ -252,7 +269,8 @@ def diagnose_slowness(series, events, *, has_real_cost=True):
         hot_user, hot_user_cu = max(user_totals.items(), key=lambda kv: kv[1])
         hot_user_share = hot_user_cu / grand_total * 100.0
 
-    if hot_user is not None and hot_user_share > 30.0:
+    # Same N9 threshold source (already resolved above as ``threshold``).
+    if hot_user is not None and hot_user_share > threshold:
         chain.append(_step("hot user surge?", "One user dominates workload share", "confirmed",
                             {"user": hot_user, "sharePct": hot_user_share}))
         confirmed += 1
@@ -285,11 +303,11 @@ def diagnose_slowness(series, events, *, has_real_cost=True):
             "eliminated": eliminated, "confidence": _confidence(confirmed)}
 
 
-def run_diagnosis(symptom, *, series, events, refreshes=None, has_real_cost=True):
+def run_diagnosis(symptom, *, series, events, refreshes=None, has_real_cost=True, config=None):
     if symptom == "throttle":
         return diagnose_throttle(series, events, refreshes=refreshes, has_real_cost=has_real_cost)
     if symptom == "refresh":
         return diagnose_refresh(refreshes, events, series)
     if symptom == "slowness":
-        return diagnose_slowness(series, events, has_real_cost=has_real_cost)
+        return diagnose_slowness(series, events, has_real_cost=has_real_cost, config=config)
     raise ValueError(f"unknown symptom: {symptom!r}")
