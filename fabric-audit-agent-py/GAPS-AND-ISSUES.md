@@ -2300,6 +2300,188 @@ trick's real value is raw table access, not measure resolution) or another exter
 
 ---
 
+## SECTION 15 — LIVE VALIDATION FINDINGS (2026-07-30)
+
+Findings from a live real-world validation attempt: agent output for "who had the largest
+base-capacity operations today" compared against the Capacity Metrics app for the same time
+windows. Two distinct issues found.
+
+### N24 — Proxy users don't appear prominently in the Capacity Metrics app for the same time windows
+**Discovered:** 2026-07-30 live validation session
+**Priority: High — directly undermines the agent's core user-attribution claim**
+
+The agent surfaced hemal.patel, sabrina.gacem, and catherine.ullman as the top users for
+2026-07-30, with operation windows ranging from 06:49–11:53 UTC. When the project owner
+validated these against the Capacity Metrics app's Timepoint Item Detail page for those same
+time windows, the users **don't come up prominently**.
+
+This is the most important validation finding in the project. Three plausible explanations,
+not mutually exclusive, in order of likelihood:
+
+**Explanation A (most likely): CpuTimeMs proxy doesn't rank users the same way true billed CU does.**
+`CpuTimeMs` is Analysis Services engine CPU time — it measures raw engine work. True billed CU
+includes AS engine work, but is normalized, smoothed, and includes memory pressure, concurrency
+penalties, and other factors the AS engine timer doesn't see. A query that's expensive in CPU
+time but brief in wall-clock duration can rank very differently in CU vs. in CpuTimeMs. This
+was always known and documented (the proxy caveat), but seeing it fail a direct validation check
+is the first live evidence that the gap is large enough to produce materially different top-user
+rankings, not just slightly different numbers.
+
+**Explanation B: ExecutingUser blank issue (B2).** Even with B2's two-tier fallback now
+implemented, some user records may still have blank identity in the source telemetry — meaning
+the same users DO show up in the Metrics app but DON'T show up in the agent's attributed figures
+because their identity was never captured by the monitoring source. The agent doesn't know
+these queries happened at all, let alone who ran them.
+
+**Explanation C: Time-window alignment.** The Capacity Metrics app attributes CU to the
+30-second window the operation ENDS in; the proxy sources (Workspace Monitoring, Log Analytics)
+stamp the operation by when it was RECORDED, which may differ. A 114-second query that starts
+at 07:46 and ends at 07:48 shows up in the Metrics app at 07:48 but may appear in the proxy
+source at 07:47 or earlier. At a 30-second granularity this creates up to one-window misalignment
+per operation — enough to miss a window lookup when validating.
+
+**What to do:**
+- For N24A: this can only be partially mitigated, not fully fixed, because the proxy is
+  structurally not the same thing as true billed CU. The agent must label concentration findings
+  as based on a proxy with clear language: "based on engine CPU time from monitored telemetry —
+  the Capacity Metrics app Timepoint Item Detail page is the authoritative source for true billed
+  CU per user." This is already in the system prompt (proxy caveat) but may need strengthening
+  to an explicit instruction to validate user rankings against the Metrics app rather than
+  treating the agent's ranking as final.
+- For N24B: confirm by checking whether the users the Metrics app DOES show prominently have
+  blank ExecutingUser in the WM/LA source — if so, B2's fallback didn't resolve their identity,
+  and there's a gap between what the fallback can reach and what the Metrics app sees.
+- For N24C: a concrete fix is possible — add a ±30-second tolerance window when validating
+  cross-source operation lookups, rather than requiring exact-second timestamp matching.
+
+**Broader implication:** every concentration alert the agent fires at the user level is based on
+this same proxy. If the proxy doesn't rank users consistently with true CU, alerts naming
+specific users as the top consumers may be naming the wrong people. The system prompt must be
+more explicit that user-level concentration is a RANKED INDICATOR ("these users appear heavy
+in monitored telemetry") not a VERIFIED ATTRIBUTION ("these users consumed this much capacity").
+
+---
+
+### N25 — "% of base" formula applied to per-user figures produces misleading large numbers
+**Discovered:** 2026-07-30 live validation session
+**Priority: Medium — cosmetic harm but real trust risk**
+
+The agent's top-operations table for 2026-07-30 included:
+```
+hemal.patel | Ent-Reporting-Sales | 1,321.6 CU-sec | % of base: 12.9% | Lifetime %: 129.1%
+```
+
+The `% of base` figure (12.9%) and especially the `Lifetime %` figure (129.1%) are computed
+using the capacity-level formula: `total_CU-sec / (base_CU × 30)` — the same formula that
+gives the capacity's overall utilization in a 30-second window.
+
+Applied to a SINGLE USER'S single operation, this is the answer to the question:
+**"if this one query consumed an entire 30-second capacity budget all by itself, what % would it
+be?"** At 129.1% lifetime %, it means this query consumed more CU-seconds than the ENTIRE
+capacity would generate in one 30-second window at full utilization. That is true, and it's a
+meaningful concentration signal, but it is very easy to misread as:
+- "this user used 129% of the capacity during that time" (wrong — many other things were running)
+- "the capacity was at 129% because of this user" (wrong — that's capacity-level throttling, not user-level)
+
+**The real issue:** this formula was designed for capacity-level windows. Applied per-user, it
+tells you how big an operation was RELATIVE TO THE CAPACITY BUDGET, not how much of the capacity
+this user actually consumed during their operation's runtime. The two are very different when
+other users are running simultaneously.
+
+**Fix:** Either:
+1. Rename the columns to make clear what they actually mean:
+   - "% of base" → "operation size (% of one 30-sec window budget)" or similar
+   - "Lifetime %" → "lifetime budget equivalent (% of one window)"
+2. Add a note to the system prompt explaining what these figures mean and what they DO NOT mean:
+   add a rule that when per-user Lifetime % > 100%, the agent must state explicitly that this
+   means the operation was "larger than one full 30-second window budget in total CU consumed
+   over its lifetime" — NOT that the user caused 100%+ capacity utilization.
+3. Never present per-user figures in the same table format as capacity-level figures without
+   a clear label distinguishing them (they are NOT the same quantity despite using the same formula).
+
+**Relationship to N24:** N25 is a formula-labeling problem — the numbers may be technically
+correct but easily misread. N24 is a ranking-validity problem — the numbers may not accurately
+reflect which users are actually heavy consumers. Both need to be addressed before user-level
+concentration output is trustworthy in a real business context.
+
+---
+
+### N26 — SKU mismatch between agent and Capacity Metrics app for same capacity
+**Discovered:** 2026-07-30 live validation session (screenshot comparison)
+**Priority: High — potentially corrupts every “% of base” figure if wrong SKU is used**
+
+The agent reported **"Base 1024 CU (live, FTL64)"** throughout the 2026-07-30 session. The
+Capacity Metrics app's Timepoint Detail screenshot from the same day shows **F512** for the same
+capacity (entreportingfabricprd1).
+
+Two possible explanations:
+
+**Explanation A: Two different capacities.** The agent and the screenshot may be looking at
+different capacity IDs. The agent resolves capacity from its configured
+`FABRIC_CAPACITY_EVENTS_CLUSTER`/`DB`; the Metrics app screenshot may be filtered to a
+different capacity. This is the less alarming scenario.
+
+**Explanation B: The capacity was resized.** Section 12.9 already documented that
+entreportingfabricprd1 changed from F1024 to F512 during an earlier session (a real live
+resize event). If the capacity is F512 and the agent is reading base_CU=1024, every single
+“% of base” figure it computes today is **2× understated** — an operation at 84% of real
+capacity appears as 42% to the agent, a concentration alert fires at 60% of true share, etc.
+
+**Explanation C: The agent is reading a stale/cached SKU value.** If `_resolve_base_cu()`
+caches the base CU from an earlier configuration check and doesn’t refresh it after a resize,
+it could be using yesterday’s F1024 value against today’s F512 capacity.
+
+**What to check:**
+1. Query the live capacity ARM endpoint or the Capacity Overview Events stream for this
+   capacity’s current `baseCapacityUnits` and compare to what the agent is using
+2. Check whether `_resolve_base_cu()` in `tools.py` re-fetches live or uses a cached value
+3. If Explanation B is confirmed: add a staleness check/refresh on base_CU to the Tier 2
+   cheap check — a resize event should immediately invalidate any cached base value
+
+**Never assume the base_CU is stable.** Section 12.9 confirmed real live resizes happen
+during normal operations. The agent must treat base_CU as a live value, not a constant.
+
+---
+
+### N27 — Phase 8 chart component fails to render in the deployed chat app
+**Discovered:** 2026-07-30 live E2 verification
+**Priority: Medium — graceful fallback works but the feature doesn’t actually render**
+
+The agent called `render_chart` correctly (confirmed in backend logs during E2 verification)
+but the chart did not visually render in the chat UI. The agent correctly fell back to a
+text-based bar chart. The fallback is working — the render path itself is not.
+
+This was noted in the GAPS header as task #42 but never got its own gap entry.
+
+**What to check:**
+- Does `chart.tsx` exist in the deployed frontend bundle? (`databricks apps deploy` may not
+  have included the new component if `npm install` for recharts wasn’t run first)
+- Claude Code’s session note said: “frontend: `npm install` needed for recharts in the chat app”
+  — this was flagged as unfinished
+- The `databricks-message-part-transformers.ts` registration of the chart component: confirm
+  it actually landed in the deployed bundle, not just in the local build
+
+**Fix:** Run `npm install` in the chat app frontend directory, rebuild, redeploy the chat app.
+Verify by asking the agent to “show me a chart of CU% over time” against the redeployed app.
+
+How to validate agent output against the Capacity Metrics app going forward:
+
+1. Take the agent's top-N user + item combinations with their time windows
+2. Open the Capacity Metrics app → Timepoint Item Detail page
+3. Filter to the same time window (±2 minutes to account for N24C's alignment gap)
+4. Check whether the same users appear in the top-N on that page
+5. **What "validated" means:** the same users appear in both, in roughly the same order.
+   The absolute CU-sec numbers will differ (proxy vs. true CU — expected). The RANKING should
+   be consistent if the proxy is working correctly.
+6. **What "not validated" means:** different users appear prominently in the Metrics app, or
+   the agent's top users don't appear at all. This is the N24 scenario and should be noted
+   in GAPS-AND-ISSUES.md as a concrete, dated instance.
+7. If validation fails: record the exact time window, the users the agent named, and the users
+   the Metrics app shows — these are inputs to a future calibration investigation of whether
+   N24A/B/C is the primary driver in this tenant.
+
+---
+
 ## SECTION 13 — INDEX: WHERE TO FIND EVERYTHING
 
 Given this document has grown large across several passes, a quick index of what's authoritative
