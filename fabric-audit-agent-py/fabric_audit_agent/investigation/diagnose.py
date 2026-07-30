@@ -229,7 +229,7 @@ def diagnose_refresh(refreshes, events, series):
             "eliminated": [], "confidence": _confidence(confirmed)}
 
 
-def diagnose_slowness(series, events, *, has_real_cost=True, config=None):
+def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system_item_names=None):
     chain = []
     decomp = decompose_throttle(series, events, has_real_cost=has_real_cost)
     stage1 = decomp["stage1"]
@@ -258,9 +258,16 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None):
 
     eliminated = ["capacity throttling"] if step1_verdict == "eliminated" else []
 
+    # N8 fix (Task 8.2, 2026-07-29): exclude events whose item name is in system_item_names
+    # from the hot-item AND hot-user share computation, so that system/service items
+    # (EventStream, Activator, etc.) don't trigger a structural false positive.
+    _sys_names = system_item_names or set()
+
     totals = {}
     for e in events:
         item = e.get("item")
+        if item and _sys_names and item.lower() in _sys_names:
+            continue
         totals[item] = totals.get(item, 0.0) + (e.get("cuSeconds") or 0.0)
     grand_total = sum(totals.values())
     hot_item, hot_share = None, 0.0
@@ -289,6 +296,9 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None):
 
     user_totals = {}
     for e in events:
+        item = e.get("item")
+        if item and _sys_names and item.lower() in _sys_names:
+            continue
         user = e.get("user")
         user_totals[user] = user_totals.get(user, 0.0) + (e.get("cuSeconds") or 0.0)
     hot_user, hot_user_share = None, 0.0
@@ -331,12 +341,13 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None):
 
 
 def run_diagnosis(symptom, *, series, events, refreshes=None, has_real_cost=True, config=None,
-                  base_cu=None):
+                  base_cu=None, system_item_names=None):
     if symptom == "throttle":
         return diagnose_throttle(series, events, refreshes=refreshes,
                                   has_real_cost=has_real_cost, base_cu=base_cu)
     if symptom == "refresh":
         return diagnose_refresh(refreshes, events, series)
     if symptom == "slowness":
-        return diagnose_slowness(series, events, has_real_cost=has_real_cost, config=config)
+        return diagnose_slowness(series, events, has_real_cost=has_real_cost, config=config,
+                                  system_item_names=system_item_names)
     raise ValueError(f"unknown symptom: {symptom!r}")

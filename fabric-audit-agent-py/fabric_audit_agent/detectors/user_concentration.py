@@ -15,6 +15,7 @@ who is heaviest, which is exactly what this detector reports.
 import math
 
 from ..config import DEFAULT_CONFIG
+from .system_item_kinds import is_system_item_kind
 
 
 def _fmt(x):
@@ -40,6 +41,29 @@ def detect_user_concentration(facts, config=None):
     config = config or DEFAULT_CONFIG
     facts = facts or {}
     users = [u for u in (facts.get("users") or []) if u.get("user")]
+    if not users:
+        return []
+
+    # N6 fix (Task 8.1, 2026-07-29): cross-reference item names from facts["items"] against
+    # system_item_kinds to build a set of system-item NAMES.  Users whose topItems are ALL
+    # system items are excluded -- their apparent concentration is structural (e.g. a service
+    # identity listening on an EventStream 24/7), not a real finding.  When facts["items"] is
+    # absent or carries no kind data, the set is empty and nobody is excluded (conservative).
+    system_item_names = {
+        (it.get("name") or "").lower()
+        for it in (facts.get("items") or [])
+        if is_system_item_kind(it.get("kind"))
+    }
+    system_item_names.discard("")  # don't match unnamed items
+
+    def _is_pure_system_user(u):
+        """True iff every item in this user's topItems is a known system item (by name)."""
+        top = u.get("topItems") or []
+        if not top or not system_item_names:
+            return False  # no topItems or no system names -> conservative: keep the user
+        return all((ti.get("name") or "").lower() in system_item_names for ti in top)
+
+    users = [u for u in users if not _is_pure_system_user(u)]
     if not users:
         return []
 

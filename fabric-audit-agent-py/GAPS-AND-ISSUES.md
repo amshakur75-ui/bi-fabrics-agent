@@ -1205,10 +1205,24 @@ behavior worth locking in, not just failure modes to guard against:
     page), never a fabricated "real" number. Called out in the July 21 session as "the correct
     template for all abstain-and-redirect answers" — worth locking in as the canonical example.
 
-### EV2 — Run mine_evals on conversation log — 30-min task
-`mine_evals.py` reads the conversation audit log and ranks candidate eval cases. Run after every
-significant session going forward. Surfaces what real users actually ask most. Grows the eval
-suite from real usage rather than synthetic cases.
+### EV2 — Run mine_evals on conversation log — BLOCKED on real usage existing
+
+**Status (2026-07-29):** `_conversation_audit_log()` in `agent_server/agent.py` (line 363)
+prints `[conversation]` JSON lines to **stdout only** — there is no persistent file, Volume,
+or Delta table store. These lines go to the deployed Databricks App's stdout/stderr capture
+(Databricks app logs), which has limited retention and no structured query surface.
+
+**No conversation logs exist to mine yet** because:
+1. The app has not had sustained real-user traffic since deployment
+2. Even if it had, logs are ephemeral stdout — `mine_evals.py` needs a `--log-file` path that
+   doesn't exist as a persistent artifact today
+
+**Unblocking requires:** Either (a) real user traffic generating conversation lines in Databricks
+app logs, which can be exported/downloaded and passed to `mine_evals.py`, or (b) the Phase 5
+Delta store (`audit_findings` table) providing a queryable persistent surface that
+`mine_evals.py` could read from instead.
+
+`mine_evals.py` itself is ready — the blocker is input data, not code.
 
 ```bash
 cd fabric-audit-agent-py
@@ -1498,6 +1512,20 @@ architecture pivot is now formally recorded at `docs/decisions/ADR-001-mcp-packa
 any close variant — not found anywhere. It may live outside what's currently accessible (a
 different drive, OneDrive, or it was only ever a Claude-generated download never saved locally).
 Needs the correct path before this can be updated.
+
+**Full plan consolidation pass (2026-07-29, end of day):** `tasks/todo.md` given full task-level
+detail for Phases 3–9 (previously checklist-only), matching Phase 1's rigor. Every Phase 1 task's
+header-status-vs-bullet-checkbox inconsistency found and fixed (several tasks said "STATUS: DONE"
+with unchecked acceptance criteria underneath — all reconciled). Two genuinely new tracked items
+surfaced: **N22 flagged as NEEDS VERIFICATION, not done** — its fix predates Task 1/2's migration
+of `agent_server/agent.py`, and there's no confirmation it survived; and **N6/N8's deferred
+item-kind halves (from Task 8) given real subtasks** (Task 8.1/8.2 in todo.md) rather than staying
+prose-only deferrals. Also found via direct file reads: a complete, tested production sweep/alert
+system already exists (`job.py`, `databricks.yml`, `automation/*`, `outbound.py`,
+`adapters/delivery_*.py`) that the plan's Phase 9 didn't previously account for — reconciled as a
+two-tier design (existing full sweep + a new cheap deterministic tier) rather than rebuilt from
+scratch. Phase 9's cadence/channel decision confirmed with the project owner: two-tier, Teams
+primary, 15-minute cheap-check cadence.
 
 **Third implementation pass (2026-07-29, same day):** confirmed no `.docx` file exists anywhere
 accessible — **D3 dropped entirely per explicit instruction, nothing to delete.** Also: **N12

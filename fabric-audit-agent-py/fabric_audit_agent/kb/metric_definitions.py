@@ -230,6 +230,25 @@ USER_CPU_SHARE_PCT = {
     ),
 }
 
+USER_DURATION_SHARE_PCT = {
+    "name": "user_duration_share_pct",
+    "description": "A user's share of total DurationMs in the analysis window (wall-clock duration proxy)",
+    "formula": "SUM(user.DurationMs) / SUM(all.DurationMs) * 100",
+    "source_table": "Workspace Monitoring SemanticModelLogs / Log Analytics PowerBIDatasetsWorkspace",
+    "source_columns": ["DurationMs", "ExecutingUser"],
+    "metric_type": "proxy_dur",
+    "smoothing_window": "query window (variable)",
+    "verified": False,
+    "notes": (
+        "Fallback attribution mode when CpuTimeMs is not available in the tenant's "
+        "SemanticModelLogs table. DurationMs is wall-clock time, not CPU time -- it includes "
+        "idle/wait time, so it's a weaker proxy than CpuTimeMs for actual compute cost. "
+        "Activated automatically by attribution_rollup.py when hasCpuTime is False for a "
+        "group/user; labeled 'cost-duration' in attributionMode (vs 'cost-cpu' when real "
+        "CpuTimeMs is present). See N7 in GAPS-AND-ISSUES.md."
+    ),
+}
+
 # ---------------------------------------------------------------------------
 # Verdict thresholds (gates.py constants -- documented here for discoverability)
 # ---------------------------------------------------------------------------
@@ -289,6 +308,7 @@ METRIC_DEFINITIONS = {
         INTERACTIVE_REJECTION_THRESHOLD_PCT,
         BACKGROUND_REJECTION_THRESHOLD_PCT,
         USER_CPU_SHARE_PCT,
+        USER_DURATION_SHARE_PCT,
         CONCENTRATION_THRESHOLD_PCT,
         DOMINANT_ITEM_SHARE_PCT,
     ]
