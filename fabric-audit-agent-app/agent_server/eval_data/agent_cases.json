@@ -822,5 +822,168 @@
   ],
   "expectTool": "investigate_user",
   "expectAbstain": true
+ },
+ {
+  "name": "run-sql-abstain-no-endpoint",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Run this SQL against the lakehouse: SELECT TOP 10 * FROM Sales"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "run_sql",
+    "input": {
+     "sql": "SELECT TOP 10 * FROM Sales"
+    }
+   },
+   {
+    "type": "text",
+    "text": "I can't run that SQL query — no Fabric SQL endpoint is configured; set FABRIC_SQL_CONNECTION_STRING or FABRIC_SQL_ENDPOINT to run ad-hoc SQL against a Lakehouse or Warehouse."
+   }
+  ],
+  "expectTool": "run_sql",
+  "expectAbstain": true
+ },
+ {
+  "name": "run-dax-abstain-no-endpoint",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Run this DAX query against the semantic model: EVALUATE Sales"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "run_dax",
+    "input": {
+     "dax": "EVALUATE Sales"
+    }
+   },
+   {
+    "type": "text",
+    "text": "I can't run that DAX query — no XMLA endpoint is configured; set FABRIC_XMLA_ENDPOINT to run ad-hoc DAX against a semantic model."
+   }
+  ],
+  "expectTool": "run_dax",
+  "expectAbstain": true
+ },
+ {
+  "name": "describe-sql-table-abstain-no-endpoint",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What columns does the Sales table have?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "describe_sql_table",
+    "input": {
+     "table": "Sales"
+    }
+   },
+   {
+    "type": "text",
+    "text": "I can't describe the Sales table — no Fabric SQL endpoint is configured."
+   }
+  ],
+  "expectTool": "describe_sql_table",
+  "expectAbstain": true
+ },
+ {
+  "name": "describe-semantic-model-abstain-no-endpoint",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What tables and measures does the semantic model have?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "describe_semantic_model",
+    "input": {}
+   },
+   {
+    "type": "text",
+    "text": "I can't describe the semantic model — no XMLA endpoint is configured."
+   }
+  ],
+  "expectTool": "describe_semantic_model",
+  "expectAbstain": true
+ },
+ {
+  "name": "classify-query-target-grounded-dax",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Which DAX measure is causing this slow report to be so slow?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "classify_query_target",
+    "input": {
+     "question": "Which DAX measure is causing this slow report to be so slow?"
+    }
+   },
+   {
+    "type": "text",
+    "text": "This is a strong DAX-targeted question (confidence 1.0, score 4.5 vs runner-up 0.0) — best answered with run_dax against the semantic model, after grounding with describe_semantic_model."
+   }
+  ],
+  "expectTool": "classify_query_target",
+  "expectAbstain": false
+ },
+ {
+  "name": "render-chart-grounded-cu-bar",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Render a bar chart of CU% at 09:00, 09:10, and 09:15 — 55, 85, and 72."
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "render_chart",
+    "input": {
+     "chartType": "bar",
+     "title": "CU% Over Time",
+     "series": [
+      {
+       "name": "CU%",
+       "data": [
+        {
+         "x": "09:00",
+         "y": 55
+        },
+        {
+         "x": "09:10",
+         "y": 85
+        },
+        {
+         "x": "09:15",
+         "y": 72
+        }
+       ]
+      }
+     ],
+     "sourceScope": "capacity"
+    }
+   },
+   {
+    "type": "text",
+    "text": "Rendered a bar chart of CU% over time, peaking at 85% around 09:10."
+   }
+  ],
+  "expectTool": "render_chart",
+  "expectAbstain": false
  }
 ]
