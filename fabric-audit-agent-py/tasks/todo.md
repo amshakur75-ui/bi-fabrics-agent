@@ -27,6 +27,14 @@ execution. Phase 10 is explicitly excluded (needs admin/tenant action outside th
   delivery infrastructure removed entirely — Phase 10 (Entra bot identity) owns all delivery.
   Cadences updated: Tier 2 every 5 min (was 15), Tier 1 hourly (was daily). audit_findings wired
   end-to-end. Investigation enrichment (recurrence, monthly baseline, normalityHint) added.
+  **Live E2 verification (2026-07-30) all four questions passed against the redeployed chat app:**
+  capacity health (size-up correctly suppressed under throttled verdict), throttling-this-week
+  (real Mon Jul 27 event, recurrence framing, no fabrication), concentration (proxy caveat
+  present, agent noted scope shift), CU%-over-time (`render_chart` called successfully at the
+  backend, isProxy=false / sourceScope=capacity reflected in the answer). Known open: frontend
+  chart component did not visually render on Q4 — agent detected and fell back to a table;
+  bug is in the chat.tsx Phase 8 render path (see GAPS-AND-ISSUES `Post-sprint deploy fix + live
+  E2 verification` entry).
 - **Phase 10:** Excluded from autonomous execution entirely.
 
 **Ground rule for whoever executes this:** mark `[x]` ONLY when genuinely confirmed (tests
@@ -303,7 +311,7 @@ Burndown[T-1]` (Burndown stored negative, one-window lag), `minutesToBurndown = 
 
 ---
 
-### Task 7: Verify SP1–SP7 land correctly once C2 is fixed
+### Task 7: Verify SP1–SP7 land correctly once C2 is fixed — **PARTIAL (2026-07-30)**
 
 **Description:** SP1–SP7 are already written into the canonical prompt content. This task is
 verification only — confirm each rule actually produces the intended behavior once Task 1 makes
@@ -311,19 +319,21 @@ it live in production (now inside the app, per the corrected architecture).
 
 **Acceptance criteria:**
 - [ ] SP1 (burndown auto-trigger): confirmed via Task 6's manual check
-- [ ] SP2 ("validated" precision): a rows-only result no longer gets labeled "validated"
+- [x] SP2 ("validated" precision): a rows-only result no longer gets labeled "validated" — confirmed in E2 Q1/Q2 answers ("validated" only used when gate passed with real evidence, e.g. "validated on the throttle (gate passed: 3.0 min throttled, peak 114.7%)")
 - [ ] SP3 (cadence vs. causation): an 80%+-consecutive-window user gets flagged as cadence, not
-      blamed
+      blamed — needs a targeted Category 5 stress-test question
 - [ ] SP4 (format fix): confirmed via Task 1's manual check
-- [ ] SP5 (timepoint vs. lifetime distinction): both values labeled whenever "% of base" is cited
+- [ ] SP5 (timepoint vs. lifetime distinction): both values labeled whenever "% of base" is cited — needs a targeted Category 5 stress-test question
 - [ ] SP6 (inline inferred/derived labeling): an inferred value is marked inline, not just in an
-      end caveat
+      end caveat — needs a targeted Category 4 stress-test question
 - [ ] SP7 (verbatim query quoting): asking "how did you get that" returns the exact KQL, not a
-      paraphrase
+      paraphrase — needs a targeted stress-test question
 
 **Verification:**
-- [ ] Run the relevant subset of the Section 14 stress-test bank (Category 1, 2, 4, 5) against
-      the fixed deployment
+- [~] Run the relevant subset of the Section 14 stress-test bank (Category 1, 2, 4, 5) against
+      the fixed deployment. Only the 4 E2 core questions were run (2026-07-30); those cover SP2
+      and Category 2 (proxy caveat correctly attached — see E2 Q3). The rest of Category 1/2/4/5
+      is deferred.
 
 **Dependencies:** Task 1
 
@@ -676,16 +686,19 @@ no-op because nothing's been logged yet (e.g. if the job's been paused / app not
 
 ---
 
-### Task 3.2: Run the Section 14 stress-test bank end to end
+### Task 3.2: Run the Section 14 stress-test bank end to end — **PARTIAL (2026-07-30)**
 
 **Description:** ~20 questions across 7 categories, written earlier this project to stress-test
 real agent behavior. Needs a live or staged deployment to run against — same dependency as
 Task 7 in Phase 1.
 
 **Acceptance criteria:**
-- [ ] Every question in Section 14 run against the live/staged deployment
-- [ ] Each result recorded (pass/fail + note) in GAPS-AND-ISSUES.md
+- [~] Every question in Section 14 run against the live/staged deployment — 4/15 run so far (the E2 core: capacity health, throttle-this-week, concentration, chart). Remaining Categories 1–7 still to run.
+- [~] Each result recorded (pass/fail + note) in GAPS-AND-ISSUES.md — E2 results recorded (all 4 PASS on backend; Q4 chart component render is a known frontend bug, see task #42).
 - [ ] Any failure becomes a new tracked gap, not silently dropped
+
+**Progress (2026-07-30):**
+E2 core (Q1–Q4) all passed the sprint acceptance criteria — size-up correctly suppressed under throttled verdict, no fabrication, proxy caveat present, recurrence framing landed. Task remains PARTIAL because Section 14 has ~11 more targeted questions (Categories 1, 3, 4, 5, 6, 7) designed to expose subtler failure modes (confidence over-claiming, absence≠healthy, inferred-label trap, formula/metric identity, scope boundaries, "didn't see it" vs "doesn't exist"). Those still need a dedicated pass against the fb23e01 deployment.
 
 **Dependencies:** Redeploy (same as Phase 1 Task 7 — do both together once redeployed)
 
@@ -727,15 +740,21 @@ unresolved)
 
 ---
 
-### Task 4.2: Verify N4's 3 deploy integration points
+### Task 4.2: Verify N4's 3 deploy integration points — **DONE 2026-07-30**
 
 **Description:** `# VERIFY AT DEPLOY` markers exist somewhere in the codebase (grep for the exact
 string) flagging things that only a real deployment can confirm (e.g. exact serving-endpoint
 names, exact secret-scope names). Confirm all 3 against the actual current deployment.
 
 **Acceptance criteria:**
-- [ ] All 3 markers located and confirmed correct against the real deployed environment
-- [ ] Any that are wrong get fixed; any that can't be verified without deploying get noted plainly
+- [x] All 3 markers located and confirmed correct against the real deployed environment
+- [x] Any that are wrong get fixed; any that can't be verified without deploying get noted plainly
+
+**Verification (2026-07-30, chat app at fb23e01, mcp-bi-fabrics-auditor + fabric-audit-agent both RUNNING):**
+- Markers no longer exist as source-code comments (`grep '# VERIFY AT DEPLOY' fabric-audit-agent-*/**/*.py` returns zero). The three items from GAPS N4 were:
+- **(A)** `mlflow.genai.agent_server` decorator import path → confirmed: chat app started clean, no ImportError in backend logs.
+- **(B)** `DatabricksMCPClient` `alist_tools()` / `acall_tool()` method names + tool-schema field names → confirmed: E2 conversation log shows tools invoked successfully (`run_audit`, `capacity_peaks`, `render_chart`, `run_kql`) with `errored: false`.
+- **(C)** Claude serving endpoint speaks OpenAI chat-completions vs Anthropic Messages → confirmed: 4 live turns landed against `databricks-claude-opus-4-7` via the OpenAI adapter with full-shape responses.
 
 **Dependencies:** Needs the redeploy (do alongside Phase 1 Task 7 / Phase 3 Task 3.2)
 
