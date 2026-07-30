@@ -1,7 +1,7 @@
 """File DeliveryPort: writes the envelope as pretty JSON. Port of ``adapters/delivery.file.js``.
 
-The real delivery (``delivery_teams`` / ``ticketing``) posts to Teams / opens tickets,
-implementing the same ``deliver`` contract.
+Real delivery will be via Phase 10's Entra bot identity adapter, implementing the same
+``deliver`` contract.
 
 ``ensure_ascii=False`` matches Node's ``JSON.stringify``: envelopes carry em-dashes and other
 Unicode that Node writes literally — Python would otherwise escape them to ``\\uXXXX``.

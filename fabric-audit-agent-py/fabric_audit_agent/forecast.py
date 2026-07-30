@@ -40,3 +40,25 @@ def forecast_capacity(history=None, ceiling=100, min_points=3):
     else:
         message = f"Peak CU trend is {trend}; no ceiling breach projected."
     return {"trend": trend, "points": len(series), "current": current, "slopePerRun": slope_per_run, "runsToCeiling": runs_to_ceiling, "message": message}
+
+
+def bucket_monthly_summary(history):
+    """Monthly bucketed peak CU% for multi-month baseline comparisons."""
+    from collections import defaultdict
+    buckets = defaultdict(list)
+    for run in (history or []):
+        run_at = run.get("runAt", "")
+        peak = (run.get("metrics") or {}).get("peakCuPct")
+        if run_at and peak is not None:
+            month = run_at[:7]
+            buckets[month].append(peak)
+    result = []
+    for month in sorted(buckets):
+        vals = buckets[month]
+        result.append({
+            "month": month,
+            "meanPeakCuPct": round(sum(vals) / len(vals), 1),
+            "maxPeakCuPct": round(max(vals), 1),
+            "runCount": len(vals),
+        })
+    return result

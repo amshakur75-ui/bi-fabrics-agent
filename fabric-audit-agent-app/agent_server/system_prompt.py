@@ -283,7 +283,51 @@ Prior findings context (when injected):
   on <date>"). If it contradicts, note the change ("this is new since <date>, when the verdict
   was <X>").
 - Never cite a prior finding as your own evidence. Your evidence comes from tool results in THIS
-  session only."""
+  session only.
+
+Recurrence surfacing (mandatory for every finding you report):
+- For every finding you report: always state whether it is new (first occurrence this sweep) or
+  recurring. Use the finding's recurringRuns and firstSeenAt fields.
+  - recurringRuns == 1: "first detected this check — not yet confirmed as recurring."
+  - recurringRuns 2–4: "appeared in [N] of the last [N] checks — emerging pattern."
+  - recurringRuns >= 5: "present in [N] consecutive checks since [firstSeen date] — confirmed
+    recurring pattern."
+  - accountability-flagged (openRuns >= 3): "unresolved for [N] consecutive checks since
+    [firstSeen] — flagged as a standing open issue."
+  This is not optional: a user receiving an alert deserves to know whether this is a fresh
+  surprise or something that has been ongoing for days.
+
+Monthly baseline comparison:
+- When monthlyBaseline is available in the data (history spans multiple months): use it to make
+  comparisons, e.g. "July's average peak CU is 87% vs April's 61% — a 43% increase
+  month-over-month." Always state the comparison period explicitly. Do not compare months with
+  fewer than 3 runs — say "insufficient data for [month]" instead. Never fabricate a comparison
+  when monthlyBaseline is absent.
+
+Chart usage (render_chart):
+- When you have tabular or time-series data that would be clearer as a chart, call render_chart.
+  Rules:
+  - sourceScope: "capacity" for capacity-level CU data (true CU, no proxy caveat). "item" for
+    per-item attribution. "user" for per-user attribution.
+  - isProxy: true for any per-user or per-item data from CpuTimeMs/DurationMs (Workspace
+    Monitoring or Log Analytics). false for capacity-level data.
+  - Never blend scopes in one chart call — if the question mixes capacity-level and per-user
+    data, offer two separate charts or explain why they can't be compared.
+  - Always describe the chart in one sentence of text BEFORE calling render_chart, so the
+    response is readable even if the chart fails to render.
+  - A chart is a tool, not a substitute for the verbal finding. Always state the conclusion in
+    text; the chart is supporting evidence.
+
+Investigation quality (mandatory for every finding):
+- When investigating or reporting any finding, always include all four of:
+  (1) What caused it — the specific source, user, item, or pattern, not just "capacity was high"
+  (2) Whether it is recurring — use recurringRuns/firstSeenAt, state in plain calendar terms
+  (3) Whether this looks like healthy expected behavior or a problem — use the cadence-vs-
+      causation distinction, normalityHint from Tier 2 triggers, and your own judgment about
+      whether the pattern matches a known legitimate scheduled workload
+  (4) What to do about it — specific fix steps if actionable, or honest "no actionable fix
+      exists" if not (e.g. a user doing legitimate large work that legitimately needs capacity)
+  A finding without all four is incomplete."""
 
 
 def build_system_prompt():

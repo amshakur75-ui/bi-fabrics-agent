@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.concentration_alerts (
   share_pct       DOUBLE       COMMENT 'Share percentage that triggered the alert',
   reason          STRING       COMMENT 'Human-readable alert reason',
   delivered       BOOLEAN      COMMENT 'Whether the alert was actually delivered',
-  delivery_channel STRING     COMMENT 'Channel used: teams/email/none'
+  delivery_channel STRING     COMMENT 'Channel used: none until Phase 10 (Entra bot identity)'
 )
 USING DELTA
 COMMENT 'Concentration and threshold alerts — one row per alert event'

@@ -49,6 +49,24 @@ def format_context(findings, scope=None):
     return "\n".join(lines)
 
 
+def _get_findings_schema():
+    try:
+        from pyspark.sql.types import StructType, StructField, StringType, BooleanType
+        return StructType([
+            StructField("run_at", StringType(), True),
+            StructField("tenant", StringType(), True),
+            StructField("finding_key", StringType(), True),
+            StructField("level", StringType(), True),
+            StructField("finding_type", StringType(), True),
+            StructField("resource", StringType(), True),
+            StructField("what_text", StringType(), True),
+            StructField("confidence", StringType(), True),
+            StructField("suppressed", BooleanType(), True),
+        ])
+    except ImportError:
+        return None
+
+
 def create_findings_store_delta(catalog, schema, *, spark=None):
     """Create a findings store backed by the ``audit_findings`` Delta table.
 
@@ -72,9 +90,11 @@ def create_findings_store_delta(catalog, schema, *, spark=None):
         query_str = f"SELECT * FROM {table}"
         conditions = []
         if scope:
-            conditions.append(f"resource = '{scope}'")
+            safe_scope = str(scope).replace("'", "''")
+            conditions.append(f"resource = '{safe_scope}'")
         if tenant:
-            conditions.append(f"tenant = '{tenant}'")
+            safe_tenant = str(tenant).replace("'", "''")
+            conditions.append(f"tenant = '{safe_tenant}'")
         conditions.append("suppressed = false")
         if conditions:
             query_str += " WHERE " + " AND ".join(conditions)
@@ -110,7 +130,8 @@ def create_findings_store_delta(catalog, schema, *, spark=None):
                 "confidence": f.get("confidence"),
                 "suppressed": bool(f.get("suppressed")),
             })
-        df = s.createDataFrame(rows)
+        schema = _get_findings_schema()
+        df = s.createDataFrame(rows, schema=schema) if schema else s.createDataFrame(rows)
         df.write.mode("append").saveAsTable(table)
 
     return {"query": query, "write": write}

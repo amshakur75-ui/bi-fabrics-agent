@@ -5,9 +5,9 @@ The functional core (``pipeline.run_audit``) takes injected ports — dict-style
 offline (mock adapters, no external deps) or in production (real adapters).
 
 Offline/mock adapters work with zero dependencies and back the test suite + local runs.
-Production adapters (REST collector, Claude reasoner, Teams delivery) inject their
-HTTP/LLM *client* so they stay unit-testable offline and swap to real SDKs at deploy;
-concrete client builders live in ``adapters.clients`` (lazy-import msal/requests/anthropic).
+Production adapters (REST collector, Claude reasoner) inject their HTTP/LLM *client* so
+they stay unit-testable offline and swap to real SDKs at deploy; concrete client builders
+live in ``adapters.clients`` (lazy-import msal/requests/anthropic).
 """
 from ..reasoner_stub import create_stub_reasoner
 from .collector_mock import create_mock_collector
@@ -24,7 +24,6 @@ from .collector_list_usages import create_list_usages_collector
 from .collector_workspace_monitoring import create_workspace_monitoring_collector
 from .collector_merge import create_merged_collector, merge_facts_list
 from .reasoner_claude import create_claude_reasoner
-from .delivery_teams import create_teams_delivery
 
 __all__ = [
     "create_stub_reasoner",
@@ -46,5 +45,4 @@ __all__ = [
     "create_merged_collector",
     "merge_facts_list",
     "create_claude_reasoner",
-    "create_teams_delivery",
 ]

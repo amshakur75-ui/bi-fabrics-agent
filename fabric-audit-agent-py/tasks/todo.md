@@ -22,8 +22,11 @@ execution. Phase 10 is explicitly excluded (needs admin/tenant action outside th
 - **Phase 8:** DONE — `render_chart` tool (5 chart types, sourceScope/isProxy data contract,
   thin-data fallback), `chart.tsx` React component (recharts, proxy badge, error/fallback states),
   wired into `message.tsx`, 20 new tests. Tool count now 26.
-- **Phase 9:** DONE — tier2_check.py (15-min deterministic check, zero LLM calls), Teams enabled,
-  heartbeat dead-man's-switch, 57 new tests. Two-tier design, Teams primary.
+- **Phase 9:** DONE — tier2_check.py (5-min deterministic check, zero LLM calls), heartbeat
+  dead-man's-switch. Two-tier design. **Post-Phase-9 sprint (2026-07-30):** Teams webhook + email
+  delivery infrastructure removed entirely — Phase 10 (Entra bot identity) owns all delivery.
+  Cadences updated: Tier 2 every 5 min (was 15), Tier 1 hourly (was daily). audit_findings wired
+  end-to-end. Investigation enrichment (recurrence, monthly baseline, normalityHint) added.
 - **Phase 10:** Excluded from autonomous execution entirely.
 
 **Ground rule for whoever executes this:** mark `[x]` ONLY when genuinely confirmed (tests
@@ -1041,12 +1044,12 @@ email delivery paths (Teams currently deferred/commented out in favor of email �
   two). Email (SMTP) is the only channel with an active path today, and it too needs its secrets
   configured before it does anything (currently commented out as well).
 
-**Decision (confirmed with project owner, 2026-07-29):** Two-tier design confirmed. Tier 1 (the
-existing full LLM-reasoned sweep) stays as-is architecturally, cadence tightened moderately (not
-to 5–15 min — that's Tier 2's job). Tier 2 (new, cheap, deterministic-only) runs every 15 minutes,
-watching the two primary triggers first. Teams is confirmed as the primary delivery channel,
-matching the accumulated project research; email stays as the secondary/failure-alert path.
-Proceed with Tasks 9.1–9.4 below.
+**Decision (confirmed with project owner, 2026-07-29; delivery infrastructure removed 2026-07-30):**
+Two-tier design confirmed. Delivery infrastructure (Teams webhook + Email) removed entirely in the
+post-Phase-9 sprint — both used incompatible infrastructure with Phase 10's real Entra bot identity.
+Phase 10 owns all delivery. See `tasks/post-phase9-sprint.md` Part A for the full removal scope.
+The tier2_check.py gate-check logic, heartbeat, decide_alert(), and alerting pipeline all remain
+and work correctly — only the delivery adapters and outbound allowlist entries are gone.
 
 ### Task 9.1: Retune the full sweep's cadence — **DONE**
 

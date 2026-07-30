@@ -326,47 +326,30 @@ class TestRunTier2Check:
         assert "pressure" in checks
         assert "overage" in checks
 
-    def test_delivers_to_teams_and_email(self):
-        teams_captured, teams_sink = _capturing_sink()
-        email_captured, email_sink = _capturing_sink()
+    def test_delivered_always_empty_dict(self):
+        """Delivery is stubbed until Phase 10 — delivered must always be empty."""
         facts = _facts(
             capacity={"peakCuPct": 120.0, "throttleMinutes": 5.0},
             items=[],
         )
         result = run_tier2_check(
             _fake_collector(facts),
-            delivery_sinks={"teams": teams_sink, "email": email_sink},
+            delivery_sinks={"teams": _capturing_sink()[1]},
         )
         assert result["triggered"] is True
-        assert result["delivered"].get("teams") is True
-        assert result["delivered"].get("email") is True
-        assert len(teams_captured) == 1
-        assert len(email_captured) == 1
+        assert result["delivered"] == {}
 
     def test_no_delivery_when_no_trigger(self):
-        teams_captured, teams_sink = _capturing_sink()
         facts = _facts(
             capacity={"peakCuPct": 50.0, "throttleMinutes": 0},
             items=[],
         )
         result = run_tier2_check(
             _fake_collector(facts),
-            delivery_sinks={"teams": teams_sink},
+            delivery_sinks={},
         )
         assert result["triggered"] is False
-        assert teams_captured == []
-
-    def test_delivery_failure_isolated(self):
-        """A broken sink must never prevent the check from completing."""
-        def boom(payload):
-            raise RuntimeError("Teams is down")
-        facts = _facts(capacity={"peakCuPct": 120.0, "throttleMinutes": 5.0}, items=[])
-        result = run_tier2_check(
-            _fake_collector(facts),
-            delivery_sinks={"teams": {"deliver": boom}},
-        )
-        assert result["triggered"] is True
-        assert result["delivered"].get("teams") is False
+        assert result["delivered"] == {}
 
     def test_heartbeat_written_on_every_run(self):
         written = []
@@ -509,89 +492,37 @@ class TestJobTier2Wiring:
 
 
 # ===========================================================================
-# _maybe_alert sends to BOTH Teams and email (Phase 9)
+# _maybe_alert returns decision only (delivery in Phase 10)
 # ===========================================================================
 
-class TestMaybeAlertTeamsAndEmail:
-    def test_both_channels_fire_on_material_change(self, monkeypatch):
+class TestMaybeAlertNoDelivery:
+    def test_returns_decision_on_material_change(self):
         from fabric_audit_agent import job as job_mod
-        from fabric_audit_agent.adapters import delivery_email as email_mod
-
-        email_sent = []
-        monkeypatch.setattr(email_mod, "_smtp_send", lambda msg, cfg: email_sent.append(msg))
-
-        teams_posted = []
-        original_build = job_mod._build_failure_delivery
-        # We can't monkeypatch PlainJsonHttp easily, so monkeypatch at dispatch_outbound level
-        from fabric_audit_agent import outbound as outbound_mod
-        original_dispatch = outbound_mod.dispatch_outbound
-        def tracking_dispatch(action_type, payload, *, sinks):
-            if action_type == "teams_notify":
-                for sink_name, sink in sinks.items():
-                    teams_posted.append(payload)
-                    return {"dispatched": True, "delivered": True, "actionType": action_type,
-                            "disclosure": None, "reason": None}
-            return original_dispatch(action_type, payload, sinks=sinks)
-        monkeypatch.setattr(outbound_mod, "dispatch_outbound", tracking_dispatch)
-
-        env = {"SMTP_HOST": "smtp.local", "SMTP_TO": "ops@x.com",
-               "TEAMS_WEBHOOK_URL": "https://logic.azure.com/test"}
         envelope = {"summary": "test", "data": {"findings": [
             {"key": "new-finding", "score": {"level": "Critical", "reason": "r"}}
         ], "verdict": {"decision": "optimize", "reason": "r"}}}
         prev = [{"runAt": "t", "findings": [], "verdictDecision": "optimize", "slaBreachedCount": 0}]
-
-        decision = job_mod._maybe_alert(envelope, prev, env)
+        decision = job_mod._maybe_alert(envelope, prev, {})
         assert decision["alert"] is True
-        assert len(teams_posted) == 1
-        assert len(email_sent) == 1
 
     def test_alert_path_error_does_not_fail(self, monkeypatch):
         from fabric_audit_agent import job as job_mod
         import fabric_audit_agent.automation.alerting as alerting_mod
         monkeypatch.setattr(alerting_mod, "decide_alert",
                             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-        env = {"TEAMS_WEBHOOK_URL": "https://hook"}
-        result = job_mod._maybe_alert({"summary": "s", "data": {"findings": []}}, [], env)
-        assert result is None  # swallowed, sweep continues
+        result = job_mod._maybe_alert({"summary": "s", "data": {"findings": []}}, [], {})
+        assert result is None
 
 
 # ===========================================================================
-# _alert_failure sends to both channels
+# Outbound allowlist: all delivery removed, only ado_create_ticket (disabled)
 # ===========================================================================
 
-class TestAlertFailureBothChannels:
-    def test_alert_failure_teams_and_email(self, monkeypatch):
-        from fabric_audit_agent import job as job_mod
-        from fabric_audit_agent.adapters import delivery_email as email_mod
-
-        teams_posted = {}
-        monkeypatch.setattr(job_mod, "_build_failure_delivery",
-                            lambda env: {"deliver": lambda card: teams_posted.update(card)})
-        email_sent = []
-        monkeypatch.setattr(email_mod, "_smtp_send", lambda msg, cfg: email_sent.append(msg))
-
-        env = {"SMTP_HOST": "smtp.local", "SMTP_TO": "ops@x.com",
-               "TEAMS_WEBHOOK_URL": "https://hook"}
-        ok = job_mod._alert_failure(RuntimeError("boom"), env, now_iso="t")
-        assert ok is True
-        assert teams_posted  # Teams got the card
-        assert len(email_sent) == 1  # Email also got it
-
-
-# ===========================================================================
-# Outbound allowlist: teams_notify is now enabled
-# ===========================================================================
-
-class TestTeamsNotifyEnabled:
-    def test_teams_notify_dispatches_when_enabled(self):
+class TestOutboundPostDeliveryRemoval:
+    def test_teams_notify_refused(self):
         from fabric_audit_agent.outbound import dispatch_outbound
-        captured, sink = _capturing_sink()
-        payload = {"summary": "test alert", "data": {"findings": []}}
-        out = dispatch_outbound("teams_notify", payload, sinks={"teams": sink})
-        assert out["dispatched"] is True
-        assert out["delivered"] is True
-        assert len(captured) == 1
+        out = dispatch_outbound("teams_notify", {"summary": "s"}, sinks={"teams": _capturing_sink()[1]})
+        assert out["dispatched"] is False
 
     def test_ado_still_disabled(self):
         from fabric_audit_agent.outbound import dispatch_outbound

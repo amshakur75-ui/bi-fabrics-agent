@@ -1,16 +1,12 @@
 """Autonomous watcher — the 5-minute Job entry point.
 
-Pull-only until now; this is the PUSH loop. Each run: confirm the LIVE base capacity (SKU-first),
-pull the recent capacity stream + per-operation events, evaluate the approved triggers, dedup
-against prior runs, and POST a two-way Adaptive Card per NEW incident to the Teams Workflows
-webhook. Stays SILENT when nothing new fires.
+Pull-only: each run confirms the LIVE base capacity (SKU-first), pulls the recent capacity
+stream + per-operation events, evaluates the approved triggers, and deduplicates against prior
+runs. Delivery is a no-op stub — Phase 10 (Entra bot identity) will provide real Teams delivery.
 
-Read-only + safe-outbound: the ONLY side effect is posting alert cards to the configured webhook
-(no writes/refreshes/scale). ``plan_watch`` is pure and offline-testable; ``main`` wires the live
-sources and delivery.
+Read-only posture: ``plan_watch`` is pure and offline-testable; ``main`` wires live sources.
 
 Config (job parameters / env):
-  FABRIC_WATCH_WEBHOOK_URL   Power Automate Workflows webhook (required to deliver).
   FABRIC_WATCH_LOOKBACK      KQL lookback for the pull (default "15m" -- overlaps the 5-min cadence
                              so nothing is missed between runs; dedup handles the overlap).
   FABRIC_WATCH_STATE_PATH    JSON file for cross-run dedup state (default /tmp/fabric-watch-state.json;
@@ -106,24 +102,15 @@ def main(argv=None):
     import sys
     argv = sys.argv[1:] if argv is None else argv
     env = os.environ
-    webhook = env.get("FABRIC_WATCH_WEBHOOK_URL")
-    app_url = env.get("FABRIC_APP_URL")   # chat app root for the "Yes, show me more" deep-link
 
     def _deliver(incident):
-        if not webhook:
-            print("[watch] no FABRIC_WATCH_WEBHOOK_URL set -- would deliver:",
-                  json.dumps(incident.get("summary"), ensure_ascii=False))
-            return
-        from .adapters.clients import PlainJsonHttp
-        from .adapters.delivery_teams import create_watch_delivery
-        delivery = create_watch_delivery(PlainJsonHttp(), webhook, app_base_url=app_url)
-        delivery["deliverIncident"](incident)
+        print("[watch] delivery stub (Phase 10):",
+              json.dumps(incident.get("summary"), ensure_ascii=False))
 
-    # --test-card: deliver a single sample card and exit (webhook proof).
     if "--test-card" in argv:
         inc = _sample_incident()
         _deliver(inc)
-        print("[watch] test card delivered" if webhook else "[watch] test card built (no webhook)")
+        print("[watch] test card built (delivery stub — Phase 10)")
         return 0
 
     # ---- live run ----

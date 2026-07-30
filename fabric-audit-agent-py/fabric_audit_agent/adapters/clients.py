@@ -1,7 +1,7 @@
 """Concrete client builders for production deploy (Databricks).
 
 These wrap real SDKs into the shapes the adapters expect:
-  - HTTP client  -> ``.get_json(url)`` / ``.post_json(url, body)``  (collector_rest, delivery_teams)
+  - HTTP client  -> ``.get_json(url)`` / ``.post_json(url, body)``  (collector_rest)
   - Anthropic    -> ``.messages.create(...)`` with ``resp.content[0].text``  (reasoner_claude)
 
 Optional deps (``requests``, ``msal``, ``anthropic``) are imported lazily so this module —
@@ -54,30 +54,6 @@ class EntraHttp:
         except Exception:
             return None
 
-
-class PlainJsonHttp:
-    """Unauthenticated JSON HTTP client — for Teams *incoming webhooks*, which take no auth
-    (the authed Bot Service path uses ``EntraHttp`` instead). Inject a fake session in tests."""
-
-    def __init__(self, session=None, timeout=30):
-        if session is None:
-            import requests  # lazy
-            session = requests.Session()
-        self._session = session
-        self._timeout = timeout
-
-    def get_json(self, url):
-        r = self._session.get(url, headers={"Accept": "application/json"}, timeout=self._timeout)
-        r.raise_for_status()
-        return r.json()
-
-    def post_json(self, url, body):
-        r = self._session.post(url, json=body, headers={"Content-Type": "application/json"}, timeout=self._timeout)
-        r.raise_for_status()
-        try:
-            return r.json()
-        except Exception:
-            return None
 
 
 def build_entra_token_provider(tenant_id, client_id, client_secret, scope=POWERBI_SCOPE):

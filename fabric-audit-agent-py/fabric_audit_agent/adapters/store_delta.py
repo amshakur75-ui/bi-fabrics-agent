@@ -90,11 +90,11 @@ def create_delta_store(catalog, schema, *, spark=None, keep=180):
         try:
             rows = (
                 s.table(table)
-                .orderBy("run_at")
+                .orderBy("run_at", ascending=False)
                 .limit(keep)
                 .collect()
             )
-            return [_from_delta_row(r.asDict()) for r in rows]
+            return [_from_delta_row(r.asDict()) for r in reversed(rows)]
         except Exception:
             return []
 

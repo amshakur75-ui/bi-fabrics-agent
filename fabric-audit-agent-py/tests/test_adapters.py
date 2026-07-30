@@ -11,7 +11,7 @@ import pytest
 from fabric_audit_agent.adapters import (
     create_mock_collector, create_file_delivery, create_local_store,
     create_lifecycle_store, create_ticketing_delivery, create_rest_collector,
-    fetch_all_pages, create_claude_reasoner, create_teams_delivery, create_stub_reasoner,
+    fetch_all_pages, create_claude_reasoner, create_stub_reasoner,
 )
 from fabric_audit_agent.adapters.clients import EntraHttp
 from fabric_audit_agent.detectors import detect_all
@@ -224,15 +224,6 @@ def test_stub_reasoner_still_exported_from_adapters():
     out = create_stub_reasoner()["reason"](_opt_facts(), detect_all(_opt_facts(), DEFAULT_CONFIG))
     assert out and all("key" in f for f in out)
 
-
-# ---------- delivery.teams ----------
-def test_teams_delivery_posts_card():
-    http = _FakeHttp()
-    env = {"summary": "Audit", "data": {"verdict": {"decision": "optimize", "reason": "r"},
-                                        "findings": [{"score": {"level": "Critical"}, "what": "w", "fix": ["f"]}]}}
-    res = create_teams_delivery(http, "https://hook")["deliver"](env)
-    assert res == {"delivered": True, "target": "https://hook", "sections": 3}
-    assert http.post_calls[0][0] == "https://hook" and http.post_calls[0][1]["type"] == "message"
 
 
 # ---------- clients.EntraHttp ----------

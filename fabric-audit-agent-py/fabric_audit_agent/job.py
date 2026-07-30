@@ -3,8 +3,8 @@
 Builds REAL adapters from environment / Databricks secret-scope config and runs one audit:
   collector -> REST over Fabric/Power BI Admin APIs (Entra SP, client-credentials)
   reasoner  -> Claude (Anthropic SDK / Databricks-hosted), KB fallback on error
-  delivery  -> Teams push (incoming webhook)
-  store     -> run history (local JSON here; swap to Delta / Unity Catalog at deploy)
+  delivery  -> no-op stub (Phase 10 will wire real Entra bot delivery)
+  store     -> run history (Delta / Unity Catalog)
 
 Every port is injectable, so the wiring is unit-testable without the real SDKs (tests pass
 fakes). Read-only posture is absolute: the agent only reads telemetry and posts findings.
@@ -80,18 +80,11 @@ def _default_reasoner(env, config):
     from .adapters.reasoner_claude import create_claude_reasoner
     endpoint = env.get("DATABRICKS_CLAUDE_ENDPOINT")
     if endpoint or env.get("FABRIC_REASONER", "").lower() == "databricks":
-        # Databricks-hosted Claude (in-tenant; no external key). Confirm the endpoint name under Serving.
         from .adapters.clients import build_databricks_claude_client
         endpoint = endpoint or "databricks-claude-opus-4-7"
         return create_claude_reasoner(build_databricks_claude_client(endpoint), model=endpoint, config=config)
     from .adapters.clients import build_anthropic_client
     return create_claude_reasoner(build_anthropic_client(api_key=env.get("ANTHROPIC_API_KEY")), config=config)
-
-
-def _default_delivery(env):
-    from .adapters.clients import PlainJsonHttp
-    from .adapters.delivery_teams import create_teams_delivery
-    return create_teams_delivery(PlainJsonHttp(), _require(env, "TEAMS_WEBHOOK_URL"))
 
 
 def _default_store(env):
@@ -107,6 +100,19 @@ def _default_store(env):
     return create_local_store(env.get("AUDIT_HISTORY_PATH", "/tmp/fabric-audit/history.json"))
 
 
+def _default_findings_store(env):
+    """Construct the audit_findings store when Delta is configured, else None."""
+    catalog = env.get("FABRIC_DELTA_CATALOG")
+    schema = env.get("FABRIC_DELTA_SCHEMA")
+    if catalog and schema:
+        try:
+            from .context_findings import create_findings_store_delta
+            return create_findings_store_delta(catalog, schema)
+        except (ImportError, RuntimeError):
+            pass
+    return None
+
+
 def run_job(collector=None, reasoner=None, delivery=None, store=None,
             config=None, agent_id="fabric-audit-agent", tenant=None, now=None, env=None):
     """Run one production sweep. Pass any port to override; unset ports are built from ``env``."""
@@ -116,7 +122,8 @@ def run_job(collector=None, reasoner=None, delivery=None, store=None,
         config = merge_config(json.loads(raw)) if raw else DEFAULT_CONFIG
     collector = collector if collector is not None else _default_collector(env)
     reasoner = reasoner if reasoner is not None else _default_reasoner(env, config)
-    delivery = delivery if delivery is not None else _default_delivery(env)
+    if delivery is None:
+        delivery = {"deliver": lambda envelope: None}
     store = store if store is not None else _default_store(env)
     t0 = time.monotonic()
     try:
@@ -132,15 +139,6 @@ def run_job(collector=None, reasoner=None, delivery=None, store=None,
 def _csv_paths_from_env(env):
     raw = (env.get("FABRIC_CSV_PATHS") or "").replace(";", ",")
     return [p.strip() for p in raw.split(",") if p.strip()]
-
-
-def _csv_delivery(env):
-    """Teams push if a webhook is set, else a no-op (outputs are still written to out_dir)."""
-    if env.get("TEAMS_WEBHOOK_URL"):
-        from .adapters.clients import PlainJsonHttp
-        from .adapters.delivery_teams import create_teams_delivery
-        return create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
-    return {"deliver": lambda envelope: None}
 
 
 def _write_outputs(out_dir, envelope):
@@ -162,13 +160,14 @@ def _write_outputs(out_dir, envelope):
 
 
 def run_csv_job(csv_paths=None, out_dir=None, env=None, reasoner=None, delivery=None,
-                store=None, config=None, agent_id="fabric-audit-agent", tenant=None, now=None):
+                store=None, findings_store=None, config=None, agent_id="fabric-audit-agent",
+                tenant=None, now=None):
     """No-permission sweep: audit a Capacity Metrics CSV/.vpax export end to end on Databricks.
 
     Builds the CSV collector + reasoner (Claude if ANTHROPIC_API_KEY, else the offline stub), runs
-    the full read-only pipeline, writes ``latest.json`` + ``report.md`` to ``out_dir`` (a Volume),
-    and posts a Teams card if ``TEAMS_WEBHOOK_URL`` is set. Every port is injectable for tests.
-    Needs no service principal / tenant permissions — only the exported CSV(s).
+    the full read-only pipeline, writes ``latest.json`` + ``report.md`` to ``out_dir`` (a Volume).
+    Every port is injectable for tests. Needs no service principal / tenant permissions — only the
+    exported CSV(s).
     """
     env = env if env is not None else os.environ
     paths = csv_paths if csv_paths is not None else _csv_paths_from_env(env)
@@ -182,15 +181,18 @@ def run_csv_job(csv_paths=None, out_dir=None, env=None, reasoner=None, delivery=
     if reasoner is None:
         reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
     if delivery is None:
-        delivery = _csv_delivery(env)
+        delivery = {"deliver": lambda envelope: None}
     if store is None:
         store = _default_store(env)
+    if findings_store is None:
+        findings_store = _default_findings_store(env)
 
     from .adapters.collector_csv import create_csv_collector
     t0 = time.monotonic()
     try:
         envelope = run_audit(create_csv_collector(paths), reasoner, delivery, store=store,
-                             config=config, agent_id=agent_id, tenant=tenant, now=now)
+                             findings_store=findings_store, config=config,
+                             agent_id=agent_id, tenant=tenant, now=now)
     except Exception:
         _append_error_record(store, t0)
         raise
@@ -198,51 +200,10 @@ def run_csv_job(csv_paths=None, out_dir=None, env=None, reasoner=None, delivery=
     return envelope
 
 
-def _build_failure_delivery(env):
-    from .adapters.clients import PlainJsonHttp
-    from .adapters.delivery_teams import create_teams_delivery
-    return create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
-
-
 def _alert_failure(exc, env, now_iso=None):
-    """Post a minimal failure card so a crashed sweep/check is never silent. Never raises; never
-    masks the original error (caller re-raises regardless of the return value). Routes to BOTH
-    Teams (primary) and email (secondary); each is independently gated, failure-isolated, and
-    inert unless its channel is configured."""
-    from datetime import datetime, timezone
-    at = now_iso if now_iso is not None else datetime.now(timezone.utc).isoformat()
-    # build_teams_card reads ONLY envelope["summary"]/["data"] — the error text MUST be inside
-    # summary, or the production card silently drops the diagnostic payload.
-    card = {"summary": (f"⚠️ fabric-audit sweep FAILED at {at}: "
-                        f"{type(exc).__name__}: {exc}")}
-    delivered = False
-
-    # Teams path (primary; inert unless TEAMS_WEBHOOK_URL is set).
-    if env.get("TEAMS_WEBHOOK_URL"):
-        try:
-            from .egress import apply_egress_controls, disclosure_line
-            # Egress chokepoint (Phase 5.2): the failure card is an outbound surface too — a secret
-            # leaking into an exception message must still be masked before it is posted.
-            safe, meta = apply_egress_controls(card, sink="failure")
-            line = disclosure_line(meta)
-            if line and isinstance(safe, dict):
-                safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
-            _build_failure_delivery(env)["deliver"](safe)
-            delivered = True
-        except Exception:
-            pass
-
-    # Email path (secondary; inert unless SMTP is configured). Routed through the outbound allowlist,
-    # which gates the card before the email adapter (which self-gates again) sends it.
-    try:
-        from .outbound import dispatch_outbound
-        from .adapters.delivery_email import create_email_delivery
-        res = dispatch_outbound("email_notify", card, sinks={"email": create_email_delivery(env)})
-        delivered = delivered or res["delivered"]
-    except Exception:
-        pass
-
-    return delivered
+    """Failure alert stub — delivery wired in Phase 10 (Entra bot identity).
+    Called from job_main/tier2_main on sweep failure; currently a no-op."""
+    return False
 
 
 def main():
@@ -307,7 +268,7 @@ def build_collector_from_env(env, window=None):
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"], _require(env, "FABRIC_CLIENT_SECRET"),
         )
         la_cfg = {"window": window if window is not None else env.get("FABRIC_LA_WINDOW", "1d")}
-        if env.get("FABRIC_LA_WORKSPACE_FILTER"):   # comma-string -> scope to named workspaces (else whole-estate)
+        if env.get("FABRIC_LA_WORKSPACE_FILTER"):
             la_cfg["workspaceFilter"] = env["FABRIC_LA_WORKSPACE_FILTER"]
         if env.get("FABRIC_LA_KQL"):
             la_cfg["kql"] = env["FABRIC_LA_KQL"]
@@ -316,7 +277,6 @@ def build_collector_from_env(env, window=None):
         collectors.append(create_log_analytics_collector(la_query, la_cfg))
 
     # Live capacity CU% / throttle from Real-Time Hub Capacity Overview Events (custom Eventhouse).
-    # Separate plane from the workspace's Log Analytics — they coexist (no monitoring-vs-LA conflict).
     if (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
             and env.get("FABRIC_CLIENT_ID")):
         from .adapters.clients import build_kusto_query
@@ -339,9 +299,7 @@ def build_collector_from_env(env, window=None):
         tenant = _require(env, "FABRIC_TENANT_ID")
         client = _require(env, "FABRIC_CLIENT_ID")
         secret = _require(env, "FABRIC_CLIENT_SECRET")
-        # Fabric REST (api.fabric.microsoft.com) uses the Power BI token audience; only the Azure ARM
-        # "List Usages" endpoint (management.azure.com) needs the ARM scope — one token per audience.
-        capacities_http = EntraHttp(build_entra_token_provider(tenant, client, secret))   # Power BI scope (default)
+        capacities_http = EntraHttp(build_entra_token_provider(tenant, client, secret))
         usages_http = (EntraHttp(build_entra_token_provider(tenant, client, secret, scope=ARM_SCOPE))
                        if env.get("FABRIC_USAGES_URL") else None)
         collectors.append(create_list_usages_collector(capacities_http, {
@@ -360,18 +318,7 @@ def build_collector_from_env(env, window=None):
 
 
 def _emit_identity_audit(env):
-    """Label-only identity audit at the primary sweep path (Phase 5.3 Task 2). Resolves the run's
-    primary-path identity via ``resolve_identity`` and emits ONE ``[identity]`` stdout line via
-    ``emit_identity_audit``. This is LABEL-ONLY wiring: the resolved provider is never called
-    here (no token is acquired just for the label), and it is NOT threaded into the six existing
-    SP token-construction sites (``job.py`` x3, ``clients.py`` Log Analytics, ``connectivity.py``,
-    ``tools.py`` run_kql) -- those stay exactly as they are. Activating any non-SP identity for
-    real would require routing ALL SIX of those sites through ``resolve_identity``, or
-    ``runIdentity`` would overstate the identity actually used elsewhere (Phase-7, admin-gated).
-
-    If SP config isn't set yet (e.g. a no-permission CSV-only deployment), there is no
-    primary-path identity to label -- skip silently rather than crash an otherwise-working sweep.
-    """
+    """Label-only identity audit at the primary sweep path (Phase 5.3 Task 2)."""
     try:
         resolved = resolve_identity(env)
     except RuntimeError:
@@ -380,13 +327,14 @@ def _emit_identity_audit(env):
 
 
 def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=None,
-                    config=None, agent_id="fabric-audit-agent", tenant=None, now=None):
+                    findings_store=None, config=None, agent_id="fabric-audit-agent",
+                    tenant=None, now=None):
     """Production sweep: audit whatever sources are configured, end to end.
 
     Composes the collector via ``build_collector_from_env`` (CSV now; live sources auto-included as
     permissions land), runs the read-only pipeline, writes ``latest.json`` + ``report.md`` to
-    ``out_dir`` (a Volume), and posts a Teams card if ``TEAMS_WEBHOOK_URL`` is set. Ports are
-    injectable for tests. The deployed job is unchanged as access grows.
+    ``out_dir`` (a Volume). Ports are injectable for tests. The deployed job is unchanged as access
+    grows.
     """
     env = env if env is not None else os.environ
     out_dir = out_dir if out_dir is not None else env.get("FABRIC_OUT_DIR", "/tmp/fabric-audit")
@@ -398,23 +346,23 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
     if reasoner is None:
         reasoner = _default_reasoner(env, config) if _wants_llm(env) else create_stub_reasoner(config)
     if delivery is None:
-        delivery = _csv_delivery(env)
+        # Phase 10: Entra bot identity will provide Teams delivery here.
+        delivery = {"deliver": lambda envelope: None}
     if store is None:
         store = _default_store(env)
-    # Capture history BEFORE run_audit — the pipeline appends the current run to the store during
-    # the run (pipeline.py), so store["history"]() afterward would include it. decide_alert needs
-    # the PREVIOUS run to detect resolved/verdict/SLA change against.
+    if findings_store is None:
+        findings_store = _default_findings_store(env)
     prev_history = store["history"]()
     t0 = time.monotonic()
     try:
-        envelope = run_audit(collector, reasoner, delivery, store=store, config=config,
+        envelope = run_audit(collector, reasoner, delivery, store=store,
+                             findings_store=findings_store, config=config,
                              agent_id=agent_id, tenant=tenant, now=now)
     except Exception:
         _append_error_record(store, t0)
         raise
     _write_outputs(out_dir, envelope)
     _maybe_alert(envelope, prev_history, env)
-    # Task 9.4: check whether Tier 2 is still running (dead-man's-switch for the cheap check).
     _check_tier2_health(env)
     return envelope
 
@@ -424,38 +372,17 @@ def _check_tier2_health(env):
     try:
         status = _check_tier2_heartbeat(env)
         if status.get("stale"):
-            reason = status.get("reason", "Tier 2 heartbeat is stale")
-            _alert_failure(RuntimeError(reason), env)
+            pass  # Phase 10: Entra bot identity will provide alerting here.
     except Exception:
         pass
 
 
 def _maybe_alert(envelope, prev_history, env):
-    """Phase 9: on a MATERIAL change vs the previous run, surface an alert via the outbound
-    allowlist — Teams (primary) + email (secondary). Both are independently gated, failure-isolated,
-    and inert unless their channel is configured. An alert-path error must never fail the sweep.
-    Read-only: this surfaces findings, it never acts."""
+    """Alert-on-change decision — delivery wired in Phase 10 (Entra bot identity).
+    decide_alert() still runs and its result is returned for observability."""
     try:
         from .automation.alerting import decide_alert
-        from .outbound import dispatch_outbound
-        from .adapters.delivery_email import create_email_delivery
-        decision = decide_alert(envelope, prev_history)
-        if decision["alert"]:
-            # Teams (primary channel) — inert unless TEAMS_WEBHOOK_URL is set.
-            try:
-                if env.get("TEAMS_WEBHOOK_URL"):
-                    from .adapters.clients import PlainJsonHttp
-                    from .adapters.delivery_teams import create_teams_delivery
-                    teams_sink = create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
-                    dispatch_outbound("teams_notify", envelope, sinks={"teams": teams_sink})
-            except Exception:
-                pass
-            # Email (secondary channel) — inert unless SMTP configured.
-            try:
-                dispatch_outbound("email_notify", envelope, sinks={"email": create_email_delivery(env)})
-            except Exception:
-                pass
-        return decision
+        return decide_alert(envelope, prev_history)
     except Exception:
         return None
 
@@ -490,22 +417,9 @@ def job_main():
 
 # ---- Tier 2: cheap deterministic check (Phase 9 Task 9.2) ----
 
-def _tier2_delivery_sinks(env):
-    """Build the delivery sinks for Tier 2 alerts — Teams (primary) + email (secondary).
-    Each is independently inert unless configured."""
-    sinks = {}
-    if env.get("TEAMS_WEBHOOK_URL"):
-        from .adapters.clients import PlainJsonHttp
-        from .adapters.delivery_teams import create_teams_delivery
-        sinks["teams"] = create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
-    from .adapters.delivery_email import create_email_delivery
-    sinks["email"] = create_email_delivery(env)
-    return sinks
-
-
 def _tier2_heartbeat_store(env):
     """Simple heartbeat store: writes a timestamp to a JSON file on each Tier 2 run.
-    The daily full sweep checks this file for staleness (Task 9.4)."""
+    The full sweep checks this file for staleness (Task 9.4)."""
     path = env.get("FABRIC_TIER2_HEARTBEAT_PATH")
     if not path:
         return None
@@ -529,11 +443,7 @@ def _tier2_heartbeat_store(env):
 
 
 def _check_tier2_heartbeat(env):
-    """Task 9.4: Check whether the Tier 2 check has run recently. Returns a diagnostic dict.
-
-    Called from the daily full sweep (``run_unified_job``). If the heartbeat is stale
-    (older than 1 hour — 4 missed 15-minute checks), fires a failure alert so a silently
-    stopped Tier 2 job is detected."""
+    """Task 9.4: Check whether the Tier 2 check has run recently."""
     store = _tier2_heartbeat_store(env)
     if store is None:
         return {"checked": False, "reason": "no heartbeat path configured"}
@@ -545,18 +455,45 @@ def _check_tier2_heartbeat(env):
         return {"checked": True, "stale": True, "reason": "heartbeat file has no lastRun"}
     try:
         from datetime import datetime, timezone
-        # Parse ISO timestamp
         last_dt = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
         age_minutes = (datetime.now(timezone.utc) - last_dt).total_seconds() / 60
-        stale = age_minutes > 60  # 1 hour = 4 missed 15-min checks
+        stale = age_minutes > 20  # 20 min = 4 missed 5-min checks
         result = {"checked": True, "stale": stale, "lastRun": last_run,
                   "ageMinutes": round(age_minutes, 1)}
         if stale:
             result["reason"] = (f"Tier 2 heartbeat is {round(age_minutes, 0)} minutes old "
-                                "(threshold: 60 min). The Tier 2 check may have silently stopped.")
+                                "(threshold: 20 min). The Tier 2 check may have silently stopped.")
         return result
     except Exception as exc:
         return {"checked": True, "stale": True, "reason": f"heartbeat parse error: {exc}"}
+
+
+def _build_tier2_collector(env, window="5m"):
+    """Live-stream-only collector for Tier 2. Never reads CSV (static, doesn't update between
+    5-min checks). Returns a no-op collector if no live sources are configured."""
+    collectors = []
+    if (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
+            and env.get("FABRIC_CLIENT_ID")):
+        from .adapters.clients import build_kusto_query
+        from .adapters.collector_capacity_events import create_capacity_events_collector
+        ce_query = build_kusto_query(
+            env["FABRIC_CAPACITY_EVENTS_CLUSTER"], env["FABRIC_CAPACITY_EVENTS_DB"],
+            _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
+            _require(env, "FABRIC_CLIENT_SECRET"),
+        )
+        ce_cfg = {"window": window}
+        if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
+            ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
+        if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
+            ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
+        collectors.append(create_capacity_events_collector(ce_query, ce_cfg))
+
+    if not collectors:
+        return {"collect": lambda: {"capacity": None, "items": [], "models": []}}
+    if len(collectors) == 1:
+        return collectors[0]
+    from .adapters.collector_merge import create_merged_collector
+    return create_merged_collector(collectors)
 
 
 def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=None,
@@ -565,12 +502,14 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
 
     Builds real adapters from environment when ports are not injected. Same DI pattern as
     ``run_job`` / ``run_unified_job`` — pass any port to override for tests.
+    ``delivery_sinks`` is reserved for Phase 10; pass None for now.
     """
     env = env if env is not None else os.environ
     if collector is None:
-        collector = build_collector_from_env(env, window="15m")
+        collector = _build_tier2_collector(env, window="5m")
     if delivery_sinks is None:
-        delivery_sinks = _tier2_delivery_sinks(env)
+        # Phase 10: Entra bot identity will provide delivery sinks here.
+        delivery_sinks = {}
     if heartbeat_store is None:
         heartbeat_store = _tier2_heartbeat_store(env)
 

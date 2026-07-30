@@ -1,10 +1,8 @@
-"""Autonomous watcher — trigger evaluation, harmless/real classification, dedup, and the two-way
-Adaptive Card. Pure/offline."""
+"""Autonomous watcher — trigger evaluation, harmless/real classification, dedup. Pure/offline."""
 import unittest
 
 from fabric_audit_agent.investigation.watch import evaluate_incidents, new_incidents
 from fabric_audit_agent.watch_run import plan_watch
-from fabric_audit_agent.teams_card import build_watch_adaptive_card
 
 
 def _win(epoch, total, interactive=None, background=None, contributors=None):
@@ -31,7 +29,6 @@ class TestCapacityTrigger(unittest.TestCase):
         self.assertIn("worth attention", inc[0]["why"].lower())
 
     def test_brief_background_blip_is_harmless_info(self):
-        # one window just over 100%, background-dominated -> harmless
         wins = [_win(0, 108, interactive=4, background=104)]
         inc = evaluate_incidents(wins, [], base_cu=1024)
         self.assertEqual(len(inc), 1)
@@ -66,43 +63,11 @@ class TestDedup(unittest.TestCase):
 
 class TestPlanWatch(unittest.TestCase):
     def test_end_to_end_pure(self):
-        # a real DAX op over threshold, expressed as a raw event; base 1024
         events = [{"ts": "2026-07-17T14:03:00Z", "user": "analyst@example.com", "item": "Sales",
                    "operation": "QueryEnd", "operationDetail": "MdxQuery", "kind": "interactive",
                    "cuSeconds": 5000, "durationMs": 300000}]
         fresh = plan_watch([], events, base_cu=1024, seen_ids=set())
-        self.assertTrue(any(i["kind"] == "operation" for i in fresh))  # 5000/1024*100=488% lifetime -> 48.8% converted
-
-
-class TestAdaptiveCard(unittest.TestCase):
-    def test_yes_no_card_with_deeplink(self):
-        inc = evaluate_incidents([], [_peak(47.1, 471.2)], base_cu=1024)[0]
-        msg = build_watch_adaptive_card(inc, app_base_url="https://app.example.com")
-        self.assertEqual(msg["type"], "message")
-        att = msg["attachments"][0]
-        self.assertEqual(att["contentType"], "application/vnd.microsoft.card.adaptive")
-        card = att["content"]
-        self.assertEqual(card["type"], "AdaptiveCard")
-        yes, no = card["actions"][0], card["actions"][1]
-        self.assertEqual(yes["type"], "Action.OpenUrl")
-        self.assertIn("context=", yes["url"])                 # deep-link carries the incident
-        self.assertTrue(yes["url"].startswith("https://app.example.com?context="))
-        self.assertEqual(no["type"], "Action.Submit")
-        self.assertEqual(no["data"]["response"], "no")        # drives the flow's dismiss branch
-
-    def test_no_only_card_when_no_app_url(self):
-        inc = evaluate_incidents([], [_peak(47.1, 471.2)], base_cu=1024)[0]
-        card = build_watch_adaptive_card(inc)["attachments"][0]["content"]
-        self.assertEqual([a["type"] for a in card["actions"]], ["Action.Submit"])
-
-    def test_deeplink_context_roundtrips(self):
-        import base64 as _b64, json as _json
-        inc = evaluate_incidents([], [_peak(47.1, 471.2)], base_cu=1024)[0]
-        card = build_watch_adaptive_card(inc, app_base_url="https://app.example.com")["attachments"][0]["content"]
-        enc = card["actions"][0]["url"].split("context=", 1)[1]
-        ctx = _json.loads(_b64.urlsafe_b64decode(enc).decode())
-        self.assertEqual(ctx["kind"], "operation")
-        self.assertEqual(ctx["item"], "Ent-Reporting-Sales")
+        self.assertTrue(any(i["kind"] == "operation" for i in fresh))
 
 
 if __name__ == "__main__":

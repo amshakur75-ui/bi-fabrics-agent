@@ -22,7 +22,7 @@ from .health_score import build_health_score
 from .roadmap import build_roadmap
 from .accountability import annotate_accountability, summarize_accountability
 from .sla import assess_sla, summarize_sla
-from .forecast import forecast_capacity
+from .forecast import forecast_capacity, bucket_monthly_summary
 from .outcomes import assess_outcomes
 from .anomaly import detect_anomalies
 from .correlate import correlate
@@ -58,8 +58,8 @@ def _type_of(f):
     return k.split("::")[0] if isinstance(k, str) else None
 
 
-def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
-              agent_id=None, now=None, config=None, tenant=None):
+def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
+              lifecycle_store=None, agent_id=None, now=None, config=None, tenant=None):
     config = config or DEFAULT_CONFIG
     t0 = time.monotonic()
     run_at = now if now is not None else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -88,6 +88,7 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
 
     digest = forecast = outcomes = None
     anomalies = []
+    history = []
     peak = (facts.get("capacity") or {}).get("peakCuPct")
     # Verdict is a pure function of facts+flags; compute it here (once) so the run-history append
     # below can record its decision for the Phase 6 alert-on-change comparison. Reused at d["verdict"].
@@ -134,6 +135,14 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
     # Confidence — deterministic detections = high; Claude-enriched = medium; meta/errors = low.
     findings = [{**f, "confidence": score_confidence(f)} for f in findings]
 
+    if findings_store is not None:
+        try:
+            write_fn = (findings_store or {}).get("write")
+            if write_fn:
+                write_fn(run_at, resolved_tenant, findings)
+        except Exception:
+            pass
+
     health_score = build_health_score(findings)
     roadmap = build_roadmap(findings)
     correlations = correlate(findings)
@@ -162,6 +171,9 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
         d["routing"] = routing
     if forecast and forecast.get("runsToCeiling") is not None:
         d["forecast"] = forecast
+    monthly = bucket_monthly_summary(history)
+    if len(monthly) >= 2:
+        d["monthlyBaseline"] = monthly
     if outcomes and (outcomes["resolvedSinceLast"] or outcomes["metricDelta"]):
         d["outcomes"] = outcomes
     if anomalies:

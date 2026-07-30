@@ -1,4 +1,4 @@
-"""Tier 2 cheap deterministic check — runs every 15 minutes, NO LLM calls (Phase 9).
+"""Tier 2 cheap deterministic check — runs every 5 minutes, NO LLM calls (Phase 9).
 
 Pulls live collectors (at minimum Capacity Events — the source that carries both throttle/CU%
 and concentration signal) and runs ONLY the deterministic gate checks from ``gates.py``. When
@@ -52,6 +52,10 @@ def _check_concentration(facts, config=None):
             gate_args["threshold"] = threshold
         result = concentration_gate(**gate_args)
         if result["passed"]:
+            hint = ("High share — likely automated/scheduled or runaway process; "
+                    "verify if this is a known batch job" if share >= 50
+                    else "Moderate share — may be a large legitimate user run; "
+                         "check if this matches a known scheduled job or report")
             triggers.append({
                 "check": "concentration",
                 "gate": result,
@@ -60,6 +64,7 @@ def _check_concentration(facts, config=None):
                 "sharePct": share,
                 "owner": item.get("owner"),
                 "topUsers": item.get("topUsers"),
+                "normalityHint": hint,
             })
     return triggers
 
@@ -74,7 +79,9 @@ def _check_throttle(facts):
     if result["passed"]:
         return [{"check": "throttle", "gate": result,
                  "throttleMinutes": cap.get("throttleMinutes"),
-                 "peakCuPct": cap.get("peakCuPct")}]
+                 "peakCuPct": cap.get("peakCuPct"),
+                 "normalityHint": "Capacity exceeded its throttle threshold — check if this "
+                                  "coincides with a scheduled refresh or batch window"}]
     return []
 
 
@@ -84,7 +91,9 @@ def _check_pressure(facts):
     result = pressure_claim_gate(cap)
     if result["passed"]:
         return [{"check": "pressure", "gate": result,
-                 "peakCuPct": cap.get("peakCuPct")}]
+                 "peakCuPct": cap.get("peakCuPct"),
+                 "normalityHint": "CU exceeded 100% but throttle not yet confirmed — watch "
+                                  "for escalation in the next few checks"}]
     return []
 
 
@@ -103,7 +112,10 @@ def _check_overage(facts):
         if overage > 0:
             return [{"check": "overage", "overageTotalMs": overage,
                      "overageCumulativePct": cap.get("overageCumulativePct"),
-                     "minutesToBurndown": cap.get("minutesToBurndown")}]
+                     "minutesToBurndown": cap.get("minutesToBurndown"),
+                     "normalityHint": "Overage is accumulating — if this is a one-off large "
+                                      "job it will burn down; if it persists across multiple "
+                                      "checks it's a pattern"}]
     return []
 
 
@@ -186,75 +198,43 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
-    ``delivery_sinks``: ``{"teams": teams_sink, "email": email_sink}`` — both optional/inert.
+    ``delivery_sinks``: reserved for Phase 10 (Entra bot identity); pass None for now.
     ``findings_store``: a ``{"query": fn}`` store for recurrence cross-reference (Phase 6).
     ``heartbeat_store``: a ``{"write": fn(timestamp)}`` store for self-observability (Task 9.4).
     ``config``: detection config (uses DEFAULT_CONFIG if None).
 
     Returns ``{"triggered": bool, "triggers": list, "delivered": dict, "checkedAt": str}``.
-    Failure-isolated — a delivery error never prevents the check from completing.
     """
     from ..config import DEFAULT_CONFIG
     config = config if config is not None else DEFAULT_CONFIG
     checked_at = _now_iso()
 
-    # Write heartbeat FIRST so even a failed check updates the timestamp (Task 9.4).
     if heartbeat_store is not None:
         try:
             heartbeat_store["write"](checked_at)
         except Exception:
             pass
 
-    # Collect data — failure here is the check failing, not an alert-path error.
     try:
         facts = collector["collect"]()
     except Exception:
         return {"triggered": False, "triggers": [], "delivered": {},
                 "checkedAt": checked_at, "error": "collector failed"}
 
-    # Run deterministic checks in priority order.
     triggers = []
-    triggers.extend(_check_concentration(facts, config))   # 1. concentration (PRIMARY)
-    triggers.extend(_check_throttle(facts))                 # 2. throttle (PRIMARY)
-    triggers.extend(_check_pressure(facts))                 # 3. CU pressure > 100%
-    triggers.extend(_check_overage(facts))                  # 4. overage/burndown
-    triggers.extend(_check_data_availability(facts))        # 5. data availability (STOP gate)
+    triggers.extend(_check_concentration(facts, config))
+    triggers.extend(_check_throttle(facts))
+    triggers.extend(_check_pressure(facts))
+    triggers.extend(_check_overage(facts))
+    triggers.extend(_check_data_availability(facts))
 
-    # Cross-reference recent findings for recurrence detection.
     triggers = _cross_reference_recurrence(triggers, findings_store,
                                            scope=scope, tenant=tenant)
 
     triggered = any(t.get("check") != "data_unavailable" for t in triggers)
 
+    # Delivery: Phase 10 (Entra bot identity) will wire the real channel here.
     delivered = {}
-    if triggered:
-        summary = _build_tier2_alert_summary(triggers)
-        alert_payload = {
-            "summary": summary,
-            "tier": "tier2",
-            "checkedAt": checked_at,
-            "triggers": triggers,
-        }
-        # Deliver through the outbound allowlist — Teams (primary), email (secondary).
-        # Each channel is independently failure-isolated.
-        try:
-            from ..outbound import dispatch_outbound
-            if (delivery_sinks or {}).get("teams"):
-                try:
-                    res = dispatch_outbound("teams_notify", alert_payload,
-                                            sinks={"teams": delivery_sinks["teams"]})
-                    delivered["teams"] = res.get("delivered", False)
-                except Exception:
-                    delivered["teams"] = False
-            if (delivery_sinks or {}).get("email"):
-                try:
-                    res = dispatch_outbound("email_notify", alert_payload,
-                                            sinks={"email": delivery_sinks["email"]})
-                    delivered["email"] = res.get("delivered", False)
-                except Exception:
-                    delivered["email"] = False
-        except Exception:
-            pass
 
     return {"triggered": triggered, "triggers": triggers,
             "delivered": delivered, "checkedAt": checked_at}
