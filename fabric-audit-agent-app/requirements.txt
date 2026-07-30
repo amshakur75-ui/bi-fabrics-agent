@@ -4,6 +4,8 @@ mlflow>=3.10.0
 databricks-agents>=1.9.3
 databricks-sdk>=0.28
 databricks-mcp>=0.1
-mcp>=1.26.0
+# CAP IS LOAD-BEARING — see the note in pyproject.toml. mcp 2.0.0 dropped
+# streamablehttp_client, which databricks-mcp still imports. Keep in sync with pyproject.
+mcp>=1.13,<2
 requests>=2
 python-dotenv>=1.2.1

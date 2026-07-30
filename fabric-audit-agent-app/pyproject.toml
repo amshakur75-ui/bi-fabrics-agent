@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent-app"
-version = "0.2.13"
+version = "0.2.14"
 description = "Read-only Fabric/Power BI audit agent - Phase 2 Databricks App"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,7 +10,13 @@ dependencies = [
     "databricks-agents>=1.9.3",
     "databricks-sdk>=0.28",
     "databricks-mcp>=0.1",
-    "mcp>=1.26.0",
+    # CAP IS LOAD-BEARING — do not relax to a bare `>=`. mcp 2.0.0 (2026-07-28) is a major
+    # rework that DROPPED the deprecated `streamablehttp_client` from mcp.client.streamable_http.
+    # databricks-mcp 0.9.0 still imports that name at module level and declares only `mcp>=1.13.0`
+    # (no upper bound), so an uncapped resolve pulls v2 and every tool call dies at import with
+    # "cannot import name 'streamablehttp_client'". Broke prod 2026-07-30 with zero code changes.
+    # Lift to `<3` only after databricks-mcp declares v2 support.
+    "mcp>=1.13,<2",
     "requests>=2",
     "python-dotenv>=1.2.1",
 ]
