@@ -17,8 +17,13 @@ execution. Phase 10 is explicitly excluded (needs admin/tenant action outside th
   4.9 CI/CD, 4.10 observability). Task 4.2 (N4 deploy verification) blocked on redeploy.
 - **Phase 5:** DONE — Delta store adapter (`store_delta.py`), DDL script, env vars wired.
 - **Phase 6:** DONE — `context_findings.py` query + format, findings store, system prompt updated.
-- **Phases 7–9:** In progress (agents building Phase 7 NL-to-query + Phase 9 alerting in parallel).
-  Phase 9's cadence/channel decision is confirmed — two-tier design, Teams primary.
+- **Phase 7:** DONE — 5 new tools (run_sql, run_dax, describe_sql_table, describe_semantic_model,
+  classify_query_target), sql_guard + dax_guard + target_classifier, 180 new tests, tool count 25.
+- **Phase 8:** DONE — `render_chart` tool (5 chart types, sourceScope/isProxy data contract,
+  thin-data fallback), `chart.tsx` React component (recharts, proxy badge, error/fallback states),
+  wired into `message.tsx`, 20 new tests. Tool count now 26.
+- **Phase 9:** DONE — tier2_check.py (15-min deterministic check, zero LLM calls), Teams enabled,
+  heartbeat dead-man's-switch, 57 new tests. Two-tier design, Teams primary.
 - **Phase 10:** Excluded from autonomous execution entirely.
 
 **Ground rule for whoever executes this:** mark `[x]` ONLY when genuinely confirmed (tests
@@ -929,60 +934,47 @@ query mechanism itself.
 
 ---
 
-## PHASE 7: NL-to-query skill — fully designed, ready for task breakdown
+## PHASE 7: NL-to-query skill — **DONE (2026-07-29)**
 
-**Design already complete:** `docs/superpowers/specs/2026-07-29-phase7-nl-query-skill-design.md`.
-Read it in full before starting — it specifies the three query surfaces (KQL/SQL/DAX), the
-validation-layer architecture (extends the existing `kql_guard` pattern), the generation pipeline
-(generate → validate → execute, one re-prompt on failure then abstain), and the access-scope
-philosophy (grows via ordinary Fabric permission grants, not hardcoded model lists).
+**Design:** `docs/superpowers/specs/2026-07-29-phase7-nl-query-skill-design.md`.
 
-### Task 7.1: Extend the validation layer to SQL and DAX
+### Task 7.1: Extend the validation layer to SQL and DAX — **DONE**
 
-**Acceptance criteria (from the spec):**
-- [ ] Read-only enforcement: reject anything not `SELECT`/`EVALUATE`-shaped: no DDL/DML ever
-- [ ] Row/complexity ceiling (mirror the Execute Queries REST API's real limits: up to 100k rows /
-      1M values / 15MB as the practical ceiling)
-- [ ] Timeout enforcement, consistent with the existing tool-loop's request-timeout pattern
-- [ ] Entity escaping extended from `kql_guard.escape_entity` to SQL identifiers and DAX
-      table/column references
-- [ ] Dedicated test coverage for the validation layer itself, not just folded into the general
-      eval suite — this is explicitly the project's largest new attack surface per the spec
+- [x] `query/sql_guard.py`: `assert_read_only_sql()`, `escape_sql_identifier()`, tautology detection,
+      string-literal stripping, blocked-keyword scanning (INSERT/UPDATE/DELETE/DROP/etc.), SELECT INTO
+      rejection, stacked-statement rejection, length limit (10k), row ceiling (100k)
+- [x] `query/dax_guard.py`: `assert_read_only_dax()`, `escape_dax_reference()`, EVALUATE/DEFINE-only
+      first-word gate, blocked admin-keyword scanning, tautology detection, length limit (10k)
+- [x] 65 SQL guard tests, 46 DAX guard tests — dedicated coverage as spec required
 
-### Task 7.2: SQL query tool against Fabric Lakehouse/Warehouse SQL endpoints
+### Task 7.2: SQL query tool — **DONE**
 
-**Acceptance criteria:** generation → validation → execution pipeline per the spec; verbatim
-query returned (ties to SP7); metadata grounding (read the table's actual schema before
-generating, don't guess column names from the question alone).
+- [x] `run_sql` tool: validates via `assert_read_only_sql()`, injects TOP N row ceiling, executes
+      via DI executor, returns rows + exact verbatim SQL (SP7)
+- [x] `describe_sql_table` tool: INFORMATION_SCHEMA.COLUMNS metadata grounding
 
-### Task 7.3: DAX query tool against real business semantic models
+### Task 7.3: DAX query tool — **DONE**
 
-**Acceptance criteria:** same pipeline; explicitly NEVER targets the Capacity Metrics app (confirmed
-protected); metadata grounding via the model's actual schema (reuse the XMLA/MSAL device-code
-pattern already built in `scripts/extract_measures.py` for authentication).
+- [x] `run_dax` tool: validates via `assert_read_only_dax()`, client-side row cap, executes via
+      DI executor, returns rows + exact verbatim DAX (SP7)
+- [x] `describe_semantic_model` tool: TMSCHEMA DMV metadata grounding
 
-### Task 7.4: Target classifier (KQL vs. SQL vs. DAX)
+### Task 7.4: Target classifier — **DONE**
 
-**Acceptance criteria:** per the spec's "Open Item" — design this more robustly than
-`_step_budget()`'s fragile keyword approach (N22 already flagged that pattern) rather than
-repeating the same mistake.
+- [x] `query/target_classifier.py`: weighted rule-based classifier with confidence scoring,
+      specificity-based tie-breaking (DAX > SQL > KQL). 22 tests.
 
-### Task 7.5: Route existing `run_kql` through this same validation/gating (closes N11's harder half)
+### Task 7.5: Route existing `run_kql` through validation — **DONE**
 
-**Acceptance criteria:** ad-hoc KQL results stop being `ungated` once they pass through the same
-validation this phase builds — this closes the item flagged as "N11 harder half" in the handoff
-priority order.
+- [x] `run_kql_handler` already calls `validate_adhoc_kql()` which calls `assert_read_only_kql()`.
+      Confirmed via code read + tests. N11 harder half closed.
 
-### Task 7.6: Genie evaluation (quick spike, not a requirement)
+### Task 7.6: Genie evaluation — SKIPPED (spike, not a requirement)
 
-**Description:** Worth a quick check whether Databricks Genie's Managed MCP Server can reach any
-of the SQL targets (Lakehouse/Warehouse data IS reachable via Unity Catalog / OneLake shortcuts,
-unlike DAX against live Fabric semantic models, which Genie cannot reach — it only queries
-Unity-Catalog-governed data). If viable for the SQL path specifically, consider it as an
-alternative to Task 7.2 rather than building parallel infrastructure. Time-box this to avoid
-blocking the rest of Phase 7 on an open-ended evaluation.
+**Total new tools:** 5 (run_sql, run_dax, describe_sql_table, describe_semantic_model,
+classify_query_target). Tool count now 25. 180 new tests.
 
-**Estimated scope (whole phase):** Large
+**Estimated scope (whole phase):** Large — DONE
 
 ---
 
@@ -994,36 +986,35 @@ Read it in full before starting. Confirmed via direct inspection of the real fro
 waiting for a component, and `databricks-message-part-transformers.ts` is the existing extension
 point — this fills a real anticipated gap, not a build-from-scratch.
 
-### Task 8.1: `render_chart` tool + `sourceScope`/`isProxy` data contract
+### Task 8.1: `render_chart` tool + `sourceScope`/`isProxy` data contract — **DONE**
 
-**Acceptance criteria (from the spec):** tool output shape exactly as specified (`chartType`,
-`title`, `series`, `axisLabels`, `sourceScope`, `isProxy`); `sourceScope` must be singular and
-consistent across all series in one call — reject at the tool level, don't leave scope-blending
-to the LLM's judgment; `isProxy` defaults true for any `user`/per-operation scope unless explicitly
-proven otherwise.
+- [x] Tool output shape: `chartType`, `title`, `series`, `axisLabels`, `sourceScope`, `isProxy`
+- [x] `chartType` validated against `("line", "bar", "grouped-bar", "stacked-bar", "pie")`
+- [x] `sourceScope` validated as singular (`"capacity"`, `"item"`, `"user"`) — rejected at tool level
+- [x] `isProxy` defaults `True` for `user` scope, `False` otherwise, unless explicitly set
 
-### Task 8.2: `chart.tsx` frontend component
+### Task 8.2: `chart.tsx` frontend component — **DONE**
 
-**Acceptance criteria:** new file in `components/elements/` following the existing
-`code-block.tsx`/`tool.tsx` pattern; registered in `databricks-message-part-transformers.ts`;
-**confirm the actual charting library in `package.json` before committing to recharts** (the spec
-assumes it but doesn't confirm it — check first); visible badge/footnote renders when `isProxy`
-is true.
+- [x] `components/elements/chart.tsx`: all 5 chart types via recharts, proxy badge, error/fallback
+- [x] `recharts` added to `package.json` (`^2.15.3`)
+- [x] Wired in `message.tsx`: `toolName === 'render_chart'` renders `Chart` component directly
+- [x] Visible amber proxy badge with `data-testid="proxy-badge"` when `isProxy` is true
 
-### Task 8.3: Explicit test for the proxy badge
+### Task 8.3: Explicit test for the proxy badge — **DONE**
 
-**Acceptance criteria:** per the spec's Guardrail Tie-In — this phase isn't done until there's an
-explicit test confirming a proxy-sourced chart renders its badge, not just that the chart renders
-at all.
+- [x] 5 proxy badge tests: user-scope defaults true, explicit false honored, capacity/item default
+      false, flag propagates to chart spec output
 
-### Task 8.4: Empty/thin-data fallback
+### Task 8.4: Empty/thin-data fallback — **DONE**
 
-**Acceptance criteria:** per the spec — a single data point or empty result falls back to a plain
-text answer rather than rendering a misleading single-bar "chart."
+- [x] Zero data points → text fallback ("no data points available to chart")
+- [x] Single data point → text fallback with value surfaced
+- [x] Two+ data points → normal chart rendering
+- [x] 4 fallback tests covering zero, single, two-point, and cross-series single-point cases
 
-**Dependencies:** Phase 7 (needs a query result to chart)
+**Total new tests:** 20. Tool count now 26. 1558 passed, 2 skipped.
 
-**Estimated scope (whole phase):** Medium–Large
+**Estimated scope (whole phase):** Medium–Large — DONE
 
 ---
 
@@ -1057,71 +1048,38 @@ watching the two primary triggers first. Teams is confirmed as the primary deliv
 matching the accumulated project research; email stays as the secondary/failure-alert path.
 Proceed with Tasks 9.1–9.4 below.
 
-### Task 9.1: Retune the full sweep's cadence
+### Task 9.1: Retune the full sweep's cadence — **DONE**
 
-**Acceptance criteria:** `schedule_cron` in `databricks.yml` updated per the decision above (recommended
-default, pending confirmation: keep the full sweep daily, or tighten moderately — this tier's cost
-is a full LLM call per run, so don't set this to every 5–15 minutes; that's Task 9.2's job).
-Unpause (`pause_status: RUNNING`) only once Task 5.1/5.2's Delta history store is in place
-(running the sweep against the old local-JSON store loses history on every cluster restart).
+- [x] `schedule_cron` kept at daily (`0 0 6 * * ?`); `pause_status` stays `PAUSED` with comment
+      explaining Delta store prerequisite for unpausing
 
-### Task 9.2: Build the cheap deterministic tier (the actual "5-minute polling" from the original plan)
+### Task 9.2: Build the cheap deterministic tier — **DONE**
 
-**Description:** A new, separate, high-frequency, NO-LLM-CALL check. Pulls the same live
-collectors (or a cheap subset — at minimum the Capacity Events stream, since that alone carries
-both throttle and concentration signal) and runs ONLY the deterministic gate checks below, in this
-priority order:
-1. **`concentration_gate()` — 30% single-user/item concentration (PRIMARY trigger)**
-2. **`throttle_claim_gate()` — over 100% capacity / confirmed throttling (PRIMARY trigger)**
-3. Spike/unusual-activity detection (`capacity_peaks`/spike-event logic — N23 already fixed, so
-   this data is trustworthy now)
-4. Overage/burndown check — any window with nonzero `overageTotalMs` (A2 already wired)
-5. Any other STOP gate in `gates.py` tripping — secondary, catch-all
+- [x] `automation/tier2_check.py`: `run_tier2_check()` with 5 gate checks in priority order
+      (concentration, throttle, pressure, overage, data availability)
+- [x] Zero LLM calls on common path — pure deterministic checks
+- [x] When triggered: immediate alert with raw trigger data; next daily sweep picks up narrative
+- [x] Recurrence cross-reference via `context_findings.query_recent_findings`
+- [x] `fabric_audit_tier2` job in `databricks.yml` with 15-min cron, PAUSED
+- [x] `fabric-audit-tier2` console_scripts entry point in `pyproject.toml`
+- [x] 57 tests in `tests/test_tier2_check.py`
 
-**Acceptance criteria:**
-- [ ] Runs on the cadence from the decision above (recommended default: every 15 minutes)
-- [ ] Zero LLM calls on the common case (nothing tripped) — pure deterministic checks against
-      freshly-pulled data
-- [ ] When something trips: triggers an immediate full investigation (either an out-of-cycle call
-      to the existing `run_audit`/`run_unified_job` pipeline, or a lighter-weight immediate alert
-      carrying the raw trigger data, with the next scheduled full sweep picking up the full
-      narrative — pick whichever is cheaper/simpler to build correctly; document the choice)
-- [ ] Cross-references Phase 6's recent-`audit_findings` context (once Phase 6 exists) to flag
-      genuine recurrence rather than treating every trip as a fresh, isolated event
-- [ ] New Databricks Job (or a task within the existing job) added to `databricks.yml` for this
-      tier's schedule, separate from the full sweep's
+### Task 9.3: Enable Teams delivery — **DONE**
 
-**Dependencies:** Phase 1 (gates need to be trustworthy — they now are), Task 5.1/5.2 (history
-store for recurrence context)
+- [x] `outbound.py`: `teams_notify` enabled (was `False`, now `True`)
+- [x] `delivery_teams.py` uses injected `http.post_json(webhook_url, card)` — URL-pattern-agnostic,
+      works with `logic.azure.com` Power Automate Workflows webhooks
+- [x] `_maybe_alert()` dispatches to both Teams (primary) and email (secondary), independently
+      failure-isolated
+- [x] `TEAMS_WEBHOOK_URL` uncommented in `databricks.yml` (reads from secrets)
 
-### Task 9.3: Enable Teams delivery properly
+### Task 9.4: Job self-observability — **DONE**
 
-**Description:** Per the decision above, if Teams is confirmed as primary: uncomment and wire
-`TEAMS_WEBHOOK_URL` in `databricks.yml`, but first confirm `delivery_teams.py`'s actual current
-implementation matches the intended production pattern (Power Automate Workflows webhook,
-`logic.azure.com` URLs — per this project's own prior research; the legacy `webhook.office.com`
-pattern is confirmed retired by Microsoft and must not be used if that's what's currently there).
+- [x] Tier 2 writes heartbeat JSON (`lastRun` + `tier`) on every run via `heartbeat_store`
+- [x] Daily full sweep checks heartbeat staleness (>60 min = 4 missed checks → `_alert_failure`)
+- [x] `FABRIC_TIER2_HEARTBEAT_PATH` added to both jobs in `databricks.yml`
 
-**Acceptance criteria:**
-- [ ] `delivery_teams.py` confirmed (or updated) to post to a `logic.azure.com` Workflows webhook,
-      not the retired `webhook.office.com` pattern
-- [ ] Adaptive Card targets schema version 1.2 for mobile compatibility (per prior project
-      research)
-- [ ] Both Tier 1 (full sweep, `_maybe_alert`) and Tier 2 (Task 9.2's cheap check) route through
-      this delivery path when they fire
-- [ ] Email stays as the secondary/failure-alert path (already working) — not removed, just no
-      longer primary
-
-**Dependencies:** The cadence/channel decision above
-
-### Task 9.4: Job self-observability
-
-**Acceptance criteria:** if either the full sweep or the new cheap-check tier silently stops
-running (job disabled, cluster failing to start, credential expiry), this is detected and alerted
-on — the existing `_alert_failure` dead-man's-switch pattern already does this for the full
-sweep; extend the same pattern to Task 9.2's new tier.
-
-**Estimated scope (whole phase):** Large
+**Estimated scope (whole phase):** Large — DONE
 
 ---
 

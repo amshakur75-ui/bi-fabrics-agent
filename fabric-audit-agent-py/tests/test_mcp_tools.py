@@ -2689,3 +2689,335 @@ def test_run_kql_la_engine_goes_through_the_one_firewall_chokepoint(monkeypatch)
     assert calls == []   # the denied statement never reached the LA client
     assert "error" in out and out.get("rejectionStage") not in (None, "engine-unconfigured")
     assert out["engine"] == "la"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: render_chart — chart generation data contract
+# ---------------------------------------------------------------------------
+
+def _chart_handler():
+    return next(d for d in create_tool_definitions() if d["name"] == "render_chart")["handler"]
+
+
+def test_render_chart_tool_is_defined():
+    """render_chart must be registered with a proper input_schema."""
+    by_name = {d["name"]: d for d in create_tool_definitions()}
+    assert "render_chart" in by_name
+    schema = by_name["render_chart"]["input_schema"]
+    assert "chartType" in schema["properties"]
+    assert "series" in schema["properties"]
+    assert "sourceScope" in schema["properties"]
+    assert "chartType" in schema["required"]
+    assert "title" in schema["required"]
+    assert "series" in schema["required"]
+    assert "sourceScope" in schema["required"]
+
+
+def test_render_chart_valid_bar_chart():
+    """A well-formed bar chart spec passes validation and returns a chart key."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "CU Usage by Workspace",
+        "series": [{"name": "CU Seconds", "data": [
+            {"x": "Sales", "y": 1200},
+            {"x": "HR", "y": 800},
+            {"x": "Finance", "y": 950},
+        ]}],
+        "axisLabels": {"x": "Workspace", "y": "CU Seconds"},
+        "sourceScope": "item",
+    })
+    assert "chart" in out
+    assert out["chart"]["chartType"] == "bar"
+    assert out["chart"]["title"] == "CU Usage by Workspace"
+    assert len(out["chart"]["series"]) == 1
+    assert out["chart"]["isProxy"] is False  # item scope defaults to non-proxy
+
+
+def test_render_chart_valid_line_chart():
+    """A well-formed line chart passes validation."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "line",
+        "title": "CU% Over Time",
+        "series": [{"name": "CU%", "data": [
+            {"x": "09:00", "y": 55},
+            {"x": "09:10", "y": 85},
+            {"x": "09:15", "y": 72},
+        ]}],
+        "axisLabels": {"x": "Time", "y": "CU%"},
+        "sourceScope": "capacity",
+    })
+    assert "chart" in out
+    assert out["chart"]["chartType"] == "line"
+    assert out["chart"]["isProxy"] is False
+
+
+def test_render_chart_valid_pie_chart():
+    """A well-formed pie chart passes validation."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "pie",
+        "title": "Cost Distribution",
+        "series": [{"name": "Share", "data": [
+            {"x": "alice@co", "y": 45},
+            {"x": "bob@co", "y": 30},
+            {"x": "carol@co", "y": 25},
+        ]}],
+        "axisLabels": {"x": "User", "y": "Share %"},
+        "sourceScope": "user",
+    })
+    assert "chart" in out
+    assert out["chart"]["chartType"] == "pie"
+
+
+def test_render_chart_rejects_invalid_chart_type():
+    """An unrecognized chartType is rejected at the tool level."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "radar",
+        "title": "Test",
+        "series": [{"name": "S", "data": [{"x": "a", "y": 1}, {"x": "b", "y": 2}]}],
+        "sourceScope": "capacity",
+    })
+    assert "error" in out
+    assert "chartType" in out["error"]
+
+
+def test_render_chart_rejects_invalid_scope():
+    """An unrecognized sourceScope is rejected at the tool level."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Test",
+        "series": [{"name": "S", "data": [{"x": "a", "y": 1}, {"x": "b", "y": 2}]}],
+        "sourceScope": "workspace",
+    })
+    assert "error" in out
+    assert "sourceScope" in out["error"]
+
+
+def test_render_chart_rejects_empty_series():
+    """An empty series list is rejected."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Test",
+        "series": [],
+        "sourceScope": "capacity",
+    })
+    assert "error" in out
+    assert "series" in out["error"]
+
+
+def test_render_chart_rejects_missing_title():
+    """A missing or blank title is rejected."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "",
+        "series": [{"name": "S", "data": [{"x": "a", "y": 1}, {"x": "b", "y": 2}]}],
+        "sourceScope": "capacity",
+    })
+    assert "error" in out
+    assert "title" in out["error"]
+
+
+def test_render_chart_rejects_missing_data_point_fields():
+    """A data point missing x or y is rejected."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Test",
+        "series": [{"name": "S", "data": [{"x": "a"}]}],
+        "sourceScope": "capacity",
+    })
+    assert "error" in out
+    assert "x and y" in out["error"]
+
+
+# --- Task 8.3: Proxy badge tests ---
+
+def test_render_chart_user_scope_defaults_proxy_true():
+    """sourceScope='user' must default isProxy to True (proxy-attributed data)."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "User CU",
+        "series": [{"name": "CU", "data": [
+            {"x": "alice@co", "y": 100},
+            {"x": "bob@co", "y": 80},
+        ]}],
+        "sourceScope": "user",
+    })
+    assert "chart" in out
+    assert out["chart"]["isProxy"] is True
+
+
+def test_render_chart_user_scope_explicit_proxy_false():
+    """sourceScope='user' with isProxy explicitly False is honored."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "User CU",
+        "series": [{"name": "CU", "data": [
+            {"x": "alice@co", "y": 100},
+            {"x": "bob@co", "y": 80},
+        ]}],
+        "sourceScope": "user",
+        "isProxy": False,
+    })
+    assert "chart" in out
+    assert out["chart"]["isProxy"] is False
+
+
+def test_render_chart_capacity_scope_defaults_proxy_false():
+    """sourceScope='capacity' must default isProxy to False."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "line",
+        "title": "CU% Over Time",
+        "series": [{"name": "CU%", "data": [
+            {"x": "09:00", "y": 55},
+            {"x": "09:10", "y": 85},
+        ]}],
+        "sourceScope": "capacity",
+    })
+    assert "chart" in out
+    assert out["chart"]["isProxy"] is False
+
+
+def test_render_chart_item_scope_defaults_proxy_false():
+    """sourceScope='item' must default isProxy to False."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Item CU",
+        "series": [{"name": "CU", "data": [
+            {"x": "Sales", "y": 1200},
+            {"x": "HR", "y": 800},
+        ]}],
+        "sourceScope": "item",
+    })
+    assert "chart" in out
+    assert out["chart"]["isProxy"] is False
+
+
+def test_render_chart_proxy_true_in_output_spec():
+    """When isProxy is True, the chart spec carries the flag for the frontend badge."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "pie",
+        "title": "User Share",
+        "series": [{"name": "Share", "data": [
+            {"x": "alice@co", "y": 60},
+            {"x": "bob@co", "y": 40},
+        ]}],
+        "sourceScope": "user",
+        "isProxy": True,
+    })
+    assert "chart" in out
+    assert out["chart"]["isProxy"] is True
+    assert out["chart"]["sourceScope"] == "user"
+
+
+# --- Task 8.4: Empty / thin-data fallback tests ---
+
+def test_render_chart_fallback_on_zero_data_points():
+    """Zero data points across all series triggers a text fallback, not a chart."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Empty Chart",
+        "series": [{"name": "S", "data": []}],
+        "sourceScope": "capacity",
+    })
+    assert out["fallback"] is True
+    assert "chart" not in out
+    assert "text" in out
+    assert out["totalPoints"] == 0
+    assert "no data" in out["text"].lower()
+
+
+def test_render_chart_fallback_on_single_data_point():
+    """A single data point triggers a text fallback — a single-bar chart is misleading."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Single Point",
+        "series": [{"name": "CU", "data": [{"x": "Sales", "y": 1200}]}],
+        "sourceScope": "item",
+    })
+    assert out["fallback"] is True
+    assert "chart" not in out
+    assert "text" in out
+    assert out["totalPoints"] == 1
+    assert "Sales" in out["text"]
+    assert "1200" in out["text"]
+
+
+def test_render_chart_no_fallback_on_two_data_points():
+    """Two data points are enough to render a chart (no fallback)."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "bar",
+        "title": "Two Points",
+        "series": [{"name": "CU", "data": [
+            {"x": "Sales", "y": 1200},
+            {"x": "HR", "y": 800},
+        ]}],
+        "sourceScope": "item",
+    })
+    assert "chart" in out
+    assert "fallback" not in out
+
+
+def test_render_chart_fallback_single_point_across_multiple_series():
+    """One point total across multiple series still triggers fallback."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "line",
+        "title": "Sparse",
+        "series": [
+            {"name": "A", "data": [{"x": "t1", "y": 10}]},
+            {"name": "B", "data": []},
+        ],
+        "sourceScope": "capacity",
+    })
+    assert out["fallback"] is True
+    assert out["totalPoints"] == 1
+
+
+def test_render_chart_multi_series_grouped_bar():
+    """Multi-series grouped-bar chart validates correctly."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "grouped-bar",
+        "title": "CU by Workspace by User",
+        "series": [
+            {"name": "alice@co", "data": [{"x": "Sales", "y": 500}, {"x": "HR", "y": 300}]},
+            {"name": "bob@co", "data": [{"x": "Sales", "y": 400}, {"x": "HR", "y": 200}]},
+        ],
+        "axisLabels": {"x": "Workspace", "y": "CU Seconds"},
+        "sourceScope": "item",
+    })
+    assert "chart" in out
+    assert out["chart"]["chartType"] == "grouped-bar"
+    assert len(out["chart"]["series"]) == 2
+
+
+def test_render_chart_stacked_bar():
+    """Stacked-bar chart validates correctly."""
+    h = _chart_handler()
+    out = h({
+        "chartType": "stacked-bar",
+        "title": "CU Stacked",
+        "series": [
+            {"name": "Interactive", "data": [{"x": "Sales", "y": 300}, {"x": "HR", "y": 200}]},
+            {"name": "Background", "data": [{"x": "Sales", "y": 200}, {"x": "HR", "y": 100}]},
+        ],
+        "axisLabels": {"x": "Workspace", "y": "CU Seconds"},
+        "sourceScope": "item",
+    })
+    assert "chart" in out
+    assert out["chart"]["chartType"] == "stacked-bar"

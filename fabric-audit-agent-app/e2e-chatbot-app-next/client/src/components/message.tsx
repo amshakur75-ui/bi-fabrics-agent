@@ -17,6 +17,7 @@ import {
   McpToolInput,
   McpApprovalActions,
 } from './elements/mcp-tool';
+import { Chart, type RenderChartOutput } from './elements/chart';
 import { MessageActions } from './message-actions';
 import { PreviewAttachment } from './preview-attachment';
 import equal from 'fast-deep-equal';
@@ -395,6 +396,29 @@ const ToolPartRenderer = ({
     }
     return state;
   })();
+
+  // render_chart: render the chart component directly instead of raw JSON
+  if (
+    toolName === 'render_chart' &&
+    effectiveState === 'output-available' &&
+    output != null &&
+    !errorText
+  ) {
+    const chartOutput =
+      typeof output === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(output) as RenderChartOutput;
+            } catch {
+              return null;
+            }
+          })()
+        : (output as RenderChartOutput);
+
+    if (chartOutput && ('chart' in chartOutput || 'fallback' in chartOutput)) {
+      return <Chart output={chartOutput} />;
+    }
+  }
 
   if (isMcpApproval) {
     return (

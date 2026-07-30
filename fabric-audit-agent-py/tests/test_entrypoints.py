@@ -128,7 +128,7 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
                           "describe_source", "sample_events", "capacity_diagnostics", "analyze_dax",
                           "diagnose", "whats_changed", "user_timeline", "run_kql", "query_library",
                           "run_sql", "run_dax", "describe_sql_table", "describe_semantic_model",
-                          "classify_query_target"}
+                          "classify_query_target", "render_chart"}
 
     # capacity_peaks: calendar-day peaks, two lenses -- date/threshold/lens/scope/baseCu, none required
     assert set(tools["capacity_peaks"]["properties"]) == {

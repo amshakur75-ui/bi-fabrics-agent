@@ -2281,6 +2281,115 @@ def create_tool_definitions(base_dir=None):
             return {"error": "question is required"}
         return _classify_target(question)
 
+    # ------------------------------------------------------------------
+    # Phase 8: render_chart — visualization data contract
+    # ------------------------------------------------------------------
+    _CHART_TYPES = ("line", "bar", "grouped-bar", "stacked-bar", "pie")
+    _CHART_SCOPES = ("capacity", "item", "user")
+
+    def render_chart_handler(_input=None):
+        """Validate a chart specification and return it for the frontend to render.
+        The agent calls this AFTER obtaining query results; it packages the data into
+        the chart data contract.  Validation rules:
+
+        1. chartType must be one of the allowed types.
+        2. series must be a non-empty list of {name, data:[{x,y}]}.
+        3. sourceScope must be one of the allowed scopes (singular — one scope per chart).
+        4. isProxy defaults to True when sourceScope is 'user' (user-scoped data is proxy-
+           attributed by default) unless explicitly set False.
+        5. Empty/thin-data fallback: when ALL series collectively have <= 1 total data point,
+           the tool returns a plain-text answer instead of a chart spec — a single-bar chart
+           would be misleading.
+
+        Returns the validated chart spec (chartType, title, series, axisLabels, sourceScope,
+        isProxy) as the tool output; the frontend picks it up and renders it.
+        """
+        inp = _input or {}
+
+        # -- required fields --
+        chart_type = inp.get("chartType")
+        if chart_type not in _CHART_TYPES:
+            return {"error": f"chartType must be one of {_CHART_TYPES}, got {chart_type!r}"}
+
+        title = inp.get("title")
+        if not title or not str(title).strip():
+            return {"error": "title is required"}
+
+        series = inp.get("series")
+        if not series or not isinstance(series, list) or len(series) == 0:
+            return {"error": "series must be a non-empty list of {name, data:[{x,y}]}"}
+
+        # validate series shape
+        for i, s in enumerate(series):
+            if not isinstance(s, dict):
+                return {"error": f"series[{i}] must be a dict, got {type(s).__name__}"}
+            if not s.get("name"):
+                return {"error": f"series[{i}].name is required"}
+            data = s.get("data")
+            if not isinstance(data, list):
+                return {"error": f"series[{i}].data must be a list of {{x, y}}"}
+            for j, pt in enumerate(data):
+                if not isinstance(pt, dict):
+                    return {"error": f"series[{i}].data[{j}] must be a dict with x and y"}
+                if "x" not in pt or "y" not in pt:
+                    return {"error": f"series[{i}].data[{j}] must have both x and y"}
+
+        # -- axis labels --
+        axis_labels = inp.get("axisLabels")
+        if not isinstance(axis_labels, dict):
+            axis_labels = {"x": "", "y": ""}
+
+        # -- sourceScope validation (singular — one scope per chart, enforced at tool level) --
+        source_scope = inp.get("sourceScope")
+        if source_scope not in _CHART_SCOPES:
+            return {"error": f"sourceScope must be one of {_CHART_SCOPES}, got {source_scope!r}"}
+
+        # -- isProxy: default True for user scope unless explicitly False --
+        is_proxy = inp.get("isProxy")
+        if is_proxy is None:
+            is_proxy = True if source_scope == "user" else False
+        else:
+            is_proxy = bool(is_proxy)
+
+        # -- Task 8.4: empty / thin-data fallback --
+        total_points = sum(len(s.get("data") or []) for s in series)
+        if total_points <= 1:
+            # A single-bar chart (or zero bars) would be misleading — fall back to text.
+            if total_points == 0:
+                fallback_text = f"{title}: no data points available to chart."
+            else:
+                # Exactly 1 data point — surface the value as text
+                for s in series:
+                    for pt in (s.get("data") or []):
+                        fallback_text = (
+                            f"{title}: {s['name']} — {pt.get('x')}: {pt.get('y')}"
+                            f" (single data point; chart not rendered)"
+                        )
+                        break
+                    else:
+                        continue
+                    break
+            return {
+                "fallback": True,
+                "text": fallback_text,
+                "reason": "too few data points to render a meaningful chart",
+                "totalPoints": total_points,
+            }
+
+        # -- build validated chart spec --
+        chart_spec = {
+            "chartType": chart_type,
+            "title": str(title).strip(),
+            "series": series,
+            "axisLabels": {
+                "x": str(axis_labels.get("x", "")),
+                "y": str(axis_labels.get("y", "")),
+            },
+            "sourceScope": source_scope,
+            "isProxy": is_proxy,
+        }
+        return {"chart": chart_spec}
+
     return [
         {
             "name": "run_audit",
@@ -2910,5 +3019,80 @@ def create_tool_definitions(base_dir=None):
                 "required": ["question"],
             },
             "handler": classify_target_handler,
+        },
+        {
+            "name": "render_chart",
+            "description": (
+                "Render query results as an interactive chart in the chat UI. Call this AFTER "
+                "obtaining data from another tool (run_kql, spike_events, capacity_peaks, etc.) "
+                "to visualize the results. Validates the data contract and scope consistency; "
+                "returns a chart spec the frontend renders. Falls back to plain text when data "
+                "is empty or has only 1 data point. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "chartType": {
+                        "type": "string",
+                        "enum": ["line", "bar", "grouped-bar", "stacked-bar", "pie"],
+                        "description": "Chart type to render.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Chart title (displayed above the chart).",
+                    },
+                    "series": {
+                        "type": "array",
+                        "description": (
+                            "Data series to chart. Each entry: {name: string, data: [{x, y}]}. "
+                            "For pie charts, use a single series with category labels as x values."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Series name (shown in legend)."},
+                                "data": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "x": {"description": "X-axis value (category label, date, or number)."},
+                                            "y": {"type": "number", "description": "Y-axis value (numeric)."},
+                                        },
+                                        "required": ["x", "y"],
+                                    },
+                                },
+                            },
+                            "required": ["name", "data"],
+                        },
+                    },
+                    "axisLabels": {
+                        "type": "object",
+                        "description": "Axis labels.",
+                        "properties": {
+                            "x": {"type": "string", "description": "X-axis label."},
+                            "y": {"type": "string", "description": "Y-axis label."},
+                        },
+                    },
+                    "sourceScope": {
+                        "type": "string",
+                        "enum": ["capacity", "item", "user"],
+                        "description": (
+                            "The scope of ALL data in this chart — must be consistent across all "
+                            "series. 'capacity' = capacity-level metrics, 'item' = per-item metrics, "
+                            "'user' = per-user metrics. Mixing scopes in one chart is rejected."
+                        ),
+                    },
+                    "isProxy": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether the data is proxy-attributed (defaults to true for user scope). "
+                            "When true, the chart renders a visible badge/footnote explaining the proxy caveat."
+                        ),
+                    },
+                },
+                "required": ["chartType", "title", "series", "sourceScope"],
+            },
+            "handler": render_chart_handler,
         },
     ]
