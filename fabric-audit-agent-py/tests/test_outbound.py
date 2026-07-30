@@ -45,11 +45,12 @@ def test_email_notify_no_spurious_disclosure_on_clean_payload():
 
 
 # ---- refusals ----
-def test_teams_notify_refused_disabled():
+def test_teams_notify_dispatches_when_enabled():
+    """Phase 9: teams_notify is now ENABLED (primary delivery channel)."""
     captured, sink = _capturing_sink()
     out = dispatch_outbound("teams_notify", _envelope(), sinks={"teams": sink})
-    assert out["dispatched"] is False and "Phase 7" in out["reason"]
-    assert captured == []   # nothing sent
+    assert out["dispatched"] is True and out["delivered"] is True
+    assert len(captured) == 1   # payload was delivered to the sink
 
 
 def test_ado_create_ticket_refused_disabled():

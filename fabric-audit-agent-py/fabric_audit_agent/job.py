@@ -205,10 +205,10 @@ def _build_failure_delivery(env):
 
 
 def _alert_failure(exc, env, now_iso=None):
-    """Post a minimal failure card so a crashed sweep is never silent. Never raises; never
+    """Post a minimal failure card so a crashed sweep/check is never silent. Never raises; never
     masks the original error (caller re-raises regardless of the return value). Routes to BOTH
-    the existing Teams path (→ Phase 7 broadens this) and the Phase 6 email channel; each is
-    independently gated, failure-isolated, and inert unless its channel is configured."""
+    Teams (primary) and email (secondary); each is independently gated, failure-isolated, and
+    inert unless its channel is configured."""
     from datetime import datetime, timezone
     at = now_iso if now_iso is not None else datetime.now(timezone.utc).isoformat()
     # build_teams_card reads ONLY envelope["summary"]/["data"] — the error text MUST be inside
@@ -217,7 +217,7 @@ def _alert_failure(exc, env, now_iso=None):
                         f"{type(exc).__name__}: {exc}")}
     delivered = False
 
-    # Teams path (existing; inert unless TEAMS_WEBHOOK_URL is set).
+    # Teams path (primary; inert unless TEAMS_WEBHOOK_URL is set).
     if env.get("TEAMS_WEBHOOK_URL"):
         try:
             from .egress import apply_egress_controls, disclosure_line
@@ -232,7 +232,7 @@ def _alert_failure(exc, env, now_iso=None):
         except Exception:
             pass
 
-    # Email path (Phase 6; inert unless SMTP is configured). Routed through the outbound allowlist,
+    # Email path (secondary; inert unless SMTP is configured). Routed through the outbound allowlist,
     # which gates the card before the email adapter (which self-gates again) sends it.
     try:
         from .outbound import dispatch_outbound
@@ -414,20 +414,47 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
         raise
     _write_outputs(out_dir, envelope)
     _maybe_alert(envelope, prev_history, env)
+    # Task 9.4: check whether Tier 2 is still running (dead-man's-switch for the cheap check).
+    _check_tier2_health(env)
     return envelope
 
 
+def _check_tier2_health(env):
+    """Task 9.4: check Tier 2 heartbeat; alert if stale. Failure-isolated — never fails the sweep."""
+    try:
+        status = _check_tier2_heartbeat(env)
+        if status.get("stale"):
+            reason = status.get("reason", "Tier 2 heartbeat is stale")
+            _alert_failure(RuntimeError(reason), env)
+    except Exception:
+        pass
+
+
 def _maybe_alert(envelope, prev_history, env):
-    """Phase 6: on a MATERIAL change vs the previous run, surface an alert via the outbound
-    allowlist (email; inert unless SMTP configured). Failure-isolated — an alert-path error must
-    never fail the sweep. Read-only: this surfaces findings, it never acts."""
+    """Phase 9: on a MATERIAL change vs the previous run, surface an alert via the outbound
+    allowlist — Teams (primary) + email (secondary). Both are independently gated, failure-isolated,
+    and inert unless their channel is configured. An alert-path error must never fail the sweep.
+    Read-only: this surfaces findings, it never acts."""
     try:
         from .automation.alerting import decide_alert
         from .outbound import dispatch_outbound
         from .adapters.delivery_email import create_email_delivery
         decision = decide_alert(envelope, prev_history)
         if decision["alert"]:
-            dispatch_outbound("email_notify", envelope, sinks={"email": create_email_delivery(env)})
+            # Teams (primary channel) — inert unless TEAMS_WEBHOOK_URL is set.
+            try:
+                if env.get("TEAMS_WEBHOOK_URL"):
+                    from .adapters.clients import PlainJsonHttp
+                    from .adapters.delivery_teams import create_teams_delivery
+                    teams_sink = create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
+                    dispatch_outbound("teams_notify", envelope, sinks={"teams": teams_sink})
+            except Exception:
+                pass
+            # Email (secondary channel) — inert unless SMTP configured.
+            try:
+                dispatch_outbound("email_notify", envelope, sinks={"email": create_email_delivery(env)})
+            except Exception:
+                pass
         return decision
     except Exception:
         return None
@@ -442,6 +469,118 @@ def job_main():
         raise
     print(envelope["summary"])
     return envelope
+
+
+# ---- Tier 2: cheap deterministic check (Phase 9 Task 9.2) ----
+
+def _tier2_delivery_sinks(env):
+    """Build the delivery sinks for Tier 2 alerts — Teams (primary) + email (secondary).
+    Each is independently inert unless configured."""
+    sinks = {}
+    if env.get("TEAMS_WEBHOOK_URL"):
+        from .adapters.clients import PlainJsonHttp
+        from .adapters.delivery_teams import create_teams_delivery
+        sinks["teams"] = create_teams_delivery(PlainJsonHttp(), env["TEAMS_WEBHOOK_URL"])
+    from .adapters.delivery_email import create_email_delivery
+    sinks["email"] = create_email_delivery(env)
+    return sinks
+
+
+def _tier2_heartbeat_store(env):
+    """Simple heartbeat store: writes a timestamp to a JSON file on each Tier 2 run.
+    The daily full sweep checks this file for staleness (Task 9.4)."""
+    path = env.get("FABRIC_TIER2_HEARTBEAT_PATH")
+    if not path:
+        return None
+
+    def write(timestamp):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            import json as _json
+            _json.dump({"lastRun": timestamp, "tier": "tier2"}, fh)
+        os.replace(tmp, path)
+
+    def read():
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (FileNotFoundError, ValueError):
+            return None
+
+    return {"write": write, "read": read}
+
+
+def _check_tier2_heartbeat(env):
+    """Task 9.4: Check whether the Tier 2 check has run recently. Returns a diagnostic dict.
+
+    Called from the daily full sweep (``run_unified_job``). If the heartbeat is stale
+    (older than 1 hour — 4 missed 15-minute checks), fires a failure alert so a silently
+    stopped Tier 2 job is detected."""
+    store = _tier2_heartbeat_store(env)
+    if store is None:
+        return {"checked": False, "reason": "no heartbeat path configured"}
+    state = store["read"]()
+    if state is None:
+        return {"checked": True, "stale": True, "reason": "no heartbeat file found — Tier 2 may never have run"}
+    last_run = state.get("lastRun")
+    if not last_run:
+        return {"checked": True, "stale": True, "reason": "heartbeat file has no lastRun"}
+    try:
+        from datetime import datetime, timezone
+        # Parse ISO timestamp
+        last_dt = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
+        age_minutes = (datetime.now(timezone.utc) - last_dt).total_seconds() / 60
+        stale = age_minutes > 60  # 1 hour = 4 missed 15-min checks
+        result = {"checked": True, "stale": stale, "lastRun": last_run,
+                  "ageMinutes": round(age_minutes, 1)}
+        if stale:
+            result["reason"] = (f"Tier 2 heartbeat is {round(age_minutes, 0)} minutes old "
+                                "(threshold: 60 min). The Tier 2 check may have silently stopped.")
+        return result
+    except Exception as exc:
+        return {"checked": True, "stale": True, "reason": f"heartbeat parse error: {exc}"}
+
+
+def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=None,
+                  heartbeat_store=None, config=None, tenant=None, scope=None):
+    """Tier 2 entry point: cheap deterministic check, no LLM calls.
+
+    Builds real adapters from environment when ports are not injected. Same DI pattern as
+    ``run_job`` / ``run_unified_job`` — pass any port to override for tests.
+    """
+    env = env if env is not None else os.environ
+    if collector is None:
+        collector = build_collector_from_env(env, window="15m")
+    if delivery_sinks is None:
+        delivery_sinks = _tier2_delivery_sinks(env)
+    if heartbeat_store is None:
+        heartbeat_store = _tier2_heartbeat_store(env)
+
+    from .automation.tier2_check import run_tier2_check
+    return run_tier2_check(
+        collector,
+        delivery_sinks=delivery_sinks,
+        findings_store=findings_store,
+        heartbeat_store=heartbeat_store,
+        config=config,
+        tenant=tenant,
+        scope=scope,
+    )
+
+
+def tier2_main():
+    """The deployed Databricks wheel-task entry for Tier 2 (pyproject: fabric-audit-tier2)."""
+    env = os.environ
+    try:
+        result = run_tier2_job(env=env)
+    except Exception as exc:
+        _alert_failure(exc, env)
+        raise
+    triggered = result.get("triggered", False)
+    n = len(result.get("triggers", []))
+    print(f"[tier2] triggered={triggered} triggers={n} delivered={result.get('delivered', {})}")
+    return result
 
 
 if __name__ == "__main__":

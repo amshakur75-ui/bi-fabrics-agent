@@ -54,9 +54,10 @@ resources:
               AUDIT_HISTORY_PATH: /Volumes/${var.catalog}/${var.schema}/reports/history/history.json
               FABRIC_DELTA_CATALOG: ${var.catalog}
               FABRIC_DELTA_SCHEMA: ${var.schema}
+              FABRIC_TIER2_HEARTBEAT_PATH: /Volumes/${var.catalog}/${var.schema}/reports/tier2_heartbeat.json
               # --- Uncomment each line AFTER you create the matching secret (see PHASE3-DATABRICKS.md) ---
               # DATABRICKS_CLAUDE_ENDPOINT: "databricks-claude-3-7-sonnet"   # in-tenant Claude (confirm name under Serving)
-              # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"   # Teams alerts -> Phase 7
+              TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"   # Phase 9: Teams primary alert channel (Power Automate Workflows webhook — logic.azure.com URL)
               # ANTHROPIC_API_KEY: "{{secrets/fabric-audit/ANTHROPIC_API_KEY}}"
               # --- Phase 6 email alerts. Email stays INERT until BOTH SMTP_HOST and SMTP_TO resolve.
               #     Create the secrets first (see below), then uncomment and redeploy. Referencing a
@@ -93,7 +94,58 @@ resources:
       schedule:
         quartz_cron_expression: ${var.schedule_cron}
         timezone_id: UTC
-        pause_status: PAUSED              # unpause after a successful manual run
+        # PAUSED: do NOT unpause until Phase 5 Delta history store (Tasks 5.1/5.2) is deployed.
+        # The sweep writes history via store["append"]; with the current local-JSON store, history
+        # is lost on every cluster restart (ephemeral storage). Unpause only once store_delta.py
+        # is wired and the run_history Delta table holds durable state.
+        pause_status: PAUSED
+
+    # ---- Phase 9 Tier 2: cheap deterministic check (no LLM, every 15 minutes) ----
+    fabric_audit_tier2:
+      name: fabric-audit-tier2
+      job_clusters:
+        - job_cluster_key: tier2
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            data_security_mode: SINGLE_USER
+            spark_env_vars:
+              FABRIC_CSV_PATHS: /Volumes/${var.catalog}/${var.schema}/raw/capacity_metrics/data.csv
+              FABRIC_DELTA_CATALOG: ${var.catalog}
+              FABRIC_DELTA_SCHEMA: ${var.schema}
+              TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
+              FABRIC_TIER2_HEARTBEAT_PATH: /Volumes/${var.catalog}/${var.schema}/reports/tier2_heartbeat.json
+              # --- Uncomment once SP secrets exist (same as the full sweep) ---
+              # FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
+              # FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
+              # FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
+              # FABRIC_CAPACITY_EVENTS_CLUSTER: "https://<eventhouse>.kusto.fabric.microsoft.com"
+              # FABRIC_CAPACITY_EVENTS_DB: "<capacity-events-db>"
+              # --- Email (secondary, same as full sweep) ---
+              # SMTP_HOST: "{{secrets/fabric-audit/SMTP_HOST}}"
+              # SMTP_TO: "{{secrets/fabric-audit/SMTP_TO}}"
+      tasks:
+        - task_key: tier2_check
+          job_cluster_key: tier2
+          python_wheel_task:
+            package_name: fabric_audit_agent
+            entry_point: fabric-audit-tier2
+          libraries:
+            - whl: ./dist/*.whl
+            # - pypi: { package: "requests" }            # Teams push
+            # - pypi: { package: "msal" }                # SP auth (KQL)
+            # - pypi: { package: "azure-kusto-data" }    # Capacity Events KQL
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"   # every 15 minutes
+        timezone_id: UTC
+        # PAUSED: same prerequisite as the full sweep — unpause once Delta store + SP secrets are live.
+        pause_status: PAUSED
 
 targets:
   dev:

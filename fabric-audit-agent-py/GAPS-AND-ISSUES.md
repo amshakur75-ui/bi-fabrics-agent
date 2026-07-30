@@ -1383,9 +1383,11 @@ loop over multiple workspaces. Agent is blind to any workspace not explicitly co
 Both need their own brainstorming pass before building. Not blocked on any other task — can be
 designed any time, but implementation is Medium–Large per design.
 
-### E4 — No staleness check on dimensional data
-Workspace/item/capacity dimension data refreshes on a midnight cycle in the Metrics app. No check
-warns when dimensional data is stale relative to the telemetry window being analysed.
+### E4 — No staleness check on dimensional data — **STATUS: FIXED (2026-07-29, Phase 4 Task 4.8)**
+`staleness.py` added with `check_staleness()` and `maybe_stale_note()`. `collectedAt` timestamp
+propagated through `collector_rest.py` and `collector_merge.py`. Tool handlers (`list_workspaces`,
+`user_activity`) include `staleDataNote` when data exceeds 24h threshold. 18 tests in
+`tests/test_staleness_check.py`.
 
 ---
 
@@ -1505,6 +1507,20 @@ the deletion, so they can be swept up in the same pass.
 | N3 | `concentration.py`'s label now defaults to "monitored CU" for anything except an explicitly missing `attributionMode` (fixed alongside N7 in the same pass, since they interact) |
 | A3 | `attribution_rollup.py` now stamps `truncated: bool` on every item/user capped by `top_n` |
 | N22 | `agent_server/agent.py` now discloses when the shallow 6-step budget was exhausted without a full conclusion |
+| C2 | System prompt duplication — FIXED 2026-07-29 via ADR-001 (Task 1+2): prompt + loop moved OUT of MCP package INTO chat app; `fabric_audit_agent/agent/system_prompt.py` + `agent/loop.py` deleted |
+| N15 | Tool loop duplication — FIXED 2026-07-29 via Task 2: chat app's `_run_tool_loop` is production; package's `agent/loop.py` deleted |
+| N23 | Date-filter bug in capacity-overloads/spike tool — FIXED 2026-07-29: `_clip_series_to_window()` clips at source |
+| N5 | System item-kind exclusion in concentration detector — FIXED 2026-07-29: `detectors/system_item_kinds.py` |
+| N9 | 30% threshold unified onto `config["capacity"]["concentrationPct"]` — FIXED 2026-07-29 |
+| E1 | Concentration math source-consistency check — FIXED 2026-07-29: mixed-source flagging |
+| N6 | Item-kind exclusion in `user_concentration.py` — FIXED 2026-07-29: Option B cross-reference |
+| N8 | Item-kind exclusion in `diagnose.py` hot-item/hot-user — FIXED 2026-07-29: Option B caller-side set |
+| N18 | Workspace-aware `enrich_items` lookup — FIXED 2026-07-29: tuple key with name-only fallback |
+| B4 | `assert_cu_consistency()` wired into `diagnose_throttle` — FIXED 2026-07-29 |
+| B2 | Blank ExecutingUser two-tier fallback — FIXED 2026-07-29: activity cross-ref → item owner, `attributionSource` tracking |
+| D4 | Dead Node.js reference app deleted + README cleanup — FIXED 2026-07-29 |
+| E4 | Staleness check on dimensional data — FIXED 2026-07-29: `staleness.py`, 24h threshold, `staleDataNote` in tool responses |
+| N2 | FUAM integration decision — CLOSED 2026-07-29: No, not now (adds external dependency without closing existing gaps) |
 
 **Note on origin:** OB-F1 (wrong proxy caveat direction), OB-F2 (opening-line-then-correction), and
 OB-F3 (unsolicited sizing) were all first observed in the July 21 chat, predating the formula-
@@ -1602,15 +1618,15 @@ to verify.
 | 31 | N15 — verify whether the chat app's tool loop still duplicates `agent/loop.py` (status unverified pending Claude Code's Task 1/2 architecture work — see tasks/todo.md) | Code | Verify first |
 | 32 | Group 5/6 measures still open (Usage variance, P95 exact formula, basecore/non-billable splits, `Cumulative CU Usage % Preview`/`(s)`) — now have official qualitative descriptions or real measure names but not exact formulas (Section 12.11) | Research | Low priority |
 | 33 | Pass rate vs. capacity-wide Success% reconciliation (Section 12.10; 2.1pp gap, unexplained, not yet used by agent) | Research | Low priority |
-| 34 | B2 — blank ExecutingUser cross-ref fallback — needs its own dedicated pass (requires wiring two new data sources -- Activity Events cross-reference + REST API owner lookup -- into the attribution pipeline; genuinely needs design decisions, not a quick patch) | Code | Medium |
+| 34 | ~~B2~~ — DONE 2026-07-29: two-tier fallback (Activity Events cross-ref → item owner), `attributionSource` tracking, 37 tests | Code | Done |
 | 35 | UX1/UX2 — check cards + loading indicator — needs its own dedicated pass (real frontend/React work needing the frontend-design skill and live browser rendering to verify; not something to draft blind) | Frontend | Medium |
 | 36 | UX3/UX4 — audience views wired to chat — same reasoning as UX1/UX2 above | Code + frontend | Medium |
-| 37 | N2 — FUAM integration | Code | Large |
-| 38 | E3 — multi-workspace loop | Code | Medium |
-| 39 | E4 — staleness check | Code | Small |
+| 37 | ~~N2~~ — CLOSED 2026-07-29: decision is "No, not now" — adds external dependency without closing existing gaps | Decision | Done |
+| 38 | E3 — multi-workspace loop — SCOPED 2026-07-29: two distinct designs (live cross-workspace vs historical batch), needs brainstorming pass | Code | Medium |
+| 39 | ~~E4~~ — DONE 2026-07-29: `staleness.py`, 24h threshold, `staleDataNote` propagated through tools | Code | Done |
 | 40 | N4 — verify 3 deploy integration points | Deploy | Verify only |
 | 41 | ~~D3~~ — DROPPED 2026-07-29 per explicit instruction. No `.docx` file exists anywhere in the accessible filesystem; confirmed via an exhaustive search (repo tree + full user directory + a broad `*.docx` glob). Nothing to update, nothing to delete. | Docs | Dropped |
-| 42 | D4 — delete dead Node.js reference app + README/STATUS.md cleanup (agreed, deferred until build complete) | Docs/cleanup | Small |
+| 42 | ~~D4~~ — DONE 2026-07-29: Node.js dir deleted (commit fb3a783), README updated (test count 1187, chat app section) | Docs/cleanup | Done |
 
 ---
 

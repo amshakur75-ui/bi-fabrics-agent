@@ -12,8 +12,12 @@ execution. Phase 10 is explicitly excluded (needs admin/tenant action outside th
 - **Phase 3:** Task 3.1 (EV2) confirmed BLOCKED on real usage — `_conversation_audit_log()` writes
   to stdout only, no persistent store exists. Documented in GAPS-AND-ISSUES.md.
   Task 3.2 (stress-test bank) remains blocked on redeploy.
-- **Phase 4:** In progress.
-- **Phases 5–9:** Full task breakdowns written 2026-07-29 evening; not started yet.
+- **Phase 4:** DONE — all tasks complete (4.1 B2 blank-user fallback, 4.3 UX reconciliation,
+  4.4 D3 dropped, 4.5 D4 Node cleanup, 4.6 N2 FUAM decision, 4.7 E3 scoped, 4.8 staleness check,
+  4.9 CI/CD, 4.10 observability). Task 4.2 (N4 deploy verification) blocked on redeploy.
+- **Phase 5:** DONE — Delta store adapter (`store_delta.py`), DDL script, env vars wired.
+- **Phase 6:** DONE — `context_findings.py` query + format, findings store, system prompt updated.
+- **Phases 7–9:** In progress (agents building Phase 7 NL-to-query + Phase 9 alerting in parallel).
   Phase 9's cadence/channel decision is confirmed — two-tier design, Teams primary.
 - **Phase 10:** Excluded from autonomous execution entirely.
 

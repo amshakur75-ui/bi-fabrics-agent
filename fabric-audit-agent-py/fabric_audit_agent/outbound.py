@@ -4,9 +4,10 @@ Outbound is CLOSED BY CONSTRUCTION: only a registered, ENABLED action type can s
 payload is routed through the Phase 5.2 egress gate before any sink emits. Nothing data-mutating is
 registrable — the agent surfaces findings, it never acts, writes, scales, or remediates.
 
-``teams_notify`` / ``ado_create_ticket`` are registered-but-DISABLED placeholders that light up in
-Phase 7 (admin-consent channels). Flipping ``enabled`` is a deliberate, reviewed change — and even
-then nothing sends unless the caller also supplies the matching sink, so a stray flag alone is inert.
+``teams_notify`` is ENABLED (Phase 9 — Teams is the primary delivery channel); ``ado_create_ticket``
+remains registered-but-DISABLED (→ Phase 10). Flipping ``enabled`` is a deliberate, reviewed change
+— and even then nothing sends unless the caller also supplies the matching sink, so a stray flag
+alone is inert.
 """
 from .egress import apply_egress_controls, disclosure_line
 
@@ -16,7 +17,7 @@ from .egress import apply_egress_controls, disclosure_line
 # may ever appear here — outbound is surface-only.
 _ALLOWLIST = {
     "email_notify": {"enabled": True, "sink": "email"},
-    "teams_notify": {"enabled": False, "sink": "teams"},        # -> Phase 7
+    "teams_notify": {"enabled": True, "sink": "teams"},         # Phase 9: Teams primary channel
     "ado_create_ticket": {"enabled": False, "sink": "ticket"},  # -> Phase 7
 }
 
