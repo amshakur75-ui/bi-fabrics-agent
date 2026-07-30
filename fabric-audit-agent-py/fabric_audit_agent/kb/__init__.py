@@ -11,6 +11,11 @@ from .lineage import LINEAGE_PLAYBOOKS
 from .security import SECURITY_PLAYBOOKS
 from .cost import COST_PLAYBOOKS
 from .meta import META_PLAYBOOKS
+from .metric_definitions import (
+    METRIC_DEFINITIONS, MetricValue, get_metric, is_proxy, is_verified,
+    DOMINANT_ITEM_SHARE_PCT,
+    PCT_BASE_LIFETIME, PCT_BASE_CONVERTED, PCT_BASE_TIMEPOINT,
+)
 
 _ALL = {
     **CAPACITY_PLAYBOOKS, **MODEL_PLAYBOOKS, **REPORT_PLAYBOOKS, **PIPELINE_PLAYBOOKS,

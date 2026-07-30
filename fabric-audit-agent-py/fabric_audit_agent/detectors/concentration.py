@@ -95,6 +95,27 @@ def detect_concentration(facts, config=None):
             "background": it.get("background") or False, "owner": it.get("owner"),
             "attributionMode": it.get("attributionMode"),
         }
+        # GAP-4 (N24, 2026-07-30): strengthen the proxy caveat on every fired concentration
+        # alert -- additive field, does not alter any existing evidence key.
+        # I1 fix (2026-07-30): gate the wording on attributionMode instead of stamping it
+        # unconditionally. attributionMode is None on the branch reserved (see the "capacity CU"
+        # vs "monitored CU" label above) for authoritative CSV/Capacity-Metrics data -- an
+        # authoritative alert must NOT carry a CpuTimeMs-proxy caveat at all. "cost-duration"
+        # rows are attributed via DurationMs (N7's fallback mode), not CpuTimeMs, so they need
+        # their own accurate wording naming the right field.
+        _attribution_mode = it.get("attributionMode")
+        if _attribution_mode == "cost-cpu":
+            evidence["proxyWarning"] = (
+                "User attribution is based on CpuTimeMs proxy. XMLA Read Operations can "
+                "undercount true CU by 10-25×. Validate in the Metrics app."
+            )
+        elif _attribution_mode == "cost-duration":
+            evidence["proxyWarning"] = (
+                "User attribution is based on DurationMs proxy (wall-clock duration, not CPU "
+                "time -- a weaker proxy than CpuTimeMs). Validate in the Metrics app."
+            )
+        # else: attributionMode is None -- authoritative CSV/Capacity-Metrics data; no proxy
+        # warning applies.
         if mixed_sources:
             evidence["mixedSources"] = True
             evidence["mixedSourcesNote"] = (

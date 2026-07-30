@@ -34,34 +34,47 @@ burndown percentages, throttle verdicts — all wrong by a factor of 2.
 
 ---
 
-### GAP-2: N14 — Wire kb/metric_definitions.py into the live pipeline
+### GAP-2: N14 — Wire kb/metric_definitions.py into the live pipeline — **[x] RESOLVED 2026-07-30: exports, tests, AND tools.py wiring all done**
 **Files:** `fabric_audit_agent/kb/__init__.py`, `fabric_audit_agent/kb/metric_definitions.py`,
-`fabric_audit_agent/tools.py`
+`fabric_audit_agent/tools.py`, `tests/test_metric_definitions_wiring.py`
 **Why critical:** `METRIC_DEFINITIONS`, `MetricValue`, and all validated formulas exist in the
-file but are unreachable. `kb/__init__.py` doesn't export `metric_definitions`. Nothing imports
-it. The grounding schema does nothing at runtime.
+file but were unreachable. `kb/__init__.py` didn't export `metric_definitions`. Nothing imported
+it. The grounding schema did nothing at runtime.
 
 **Tasks:**
-- [ ] Add `metric_definitions` exports to `kb/__init__.py`:
+- [x] Add `metric_definitions` exports to `kb/__init__.py`:
       ```python
       from .metric_definitions import (
           METRIC_DEFINITIONS, MetricValue, get_metric, is_proxy, is_verified,
-          DOMINANT_ITEM_SHARE_PCT,
+          DOMINANT_ITEM_SHARE_PCT, PCT_BASE_LIFETIME, PCT_BASE_CONVERTED,
       )
       ```
-- [ ] In `tools.py`'s `capacity_peaks_handler` and `capacity_overloads_handler`: wrap CU%
-      figures in `MetricValue.from_definition("sku_cu_pct", value, confidence=..., unit="%")`
-      before returning in the envelope. This is the first wiring point — it gives every
-      capacity-level CU% figure its formula, source, and metric_type automatically.
-- [ ] In `tools.py`'s user attribution tools: wrap `sharePct` in
-      `MetricValue.from_definition("user_cpu_share_pct", ...)` with `metric_type="proxy_cpu"`.
-      This structurally enforces the proxy label on every per-user figure.
-- [ ] In `tools.py`'s `render_chart_handler`: use `mv.is_proxy()` and `mv.display_caveat()`
-      to set `isProxy` and generate the proxy badge text, rather than hardcoding per-tool logic.
-- [ ] Add a test: constructing a `MetricValue` for an unknown metric name raises `KeyError`
-      (the "fail loudly" contract from the docstring).
-- [ ] Add a test: `MetricValue.is_proxy()` returns True for `proxy_cpu`/`proxy_dur` types,
-      False for `true_CU`.
+      Done — all eight names confirmed to exist in `metric_definitions.py` before export.
+- [x] **DONE 2026-07-30 (second half, previously deferred)** — Added two missing catalog
+      entries (`pct_base_lifetime`, `pct_base_converted`) and wired
+      `MetricValue.from_definition()` metadata ADDITIVELY (new sibling `metrics` keys only,
+      every pre-existing output key unchanged) into: `capacity_peaks_handler` (per-row
+      pctBaseLifetime/pctBaseConverted), `capacity_overloads_handler` (per-window totalCuPct
+      -> `sku_cu_pct`), `user_activity_handler` + `list_workspaces_handler` (per-user/per-item
+      `sharePct` -> `user_cpu_share_pct`/`user_duration_share_pct`, dispatched on
+      `attributionMode`), and `capacity_diagnostics_handler` (`throttleDecomposition`'s three
+      threshold signals + `minutesToBurndown`, found to be the actual reachable emission point
+      for those metrics — not the two named handlers originally assumed). `render_chart_handler`
+      now derives `isProxy`'s default and a new additive `proxyCaveat` field from
+      `MetricValue.is_proxy()`/`.display_caveat()` instead of a hardcoded per-tool boolean.
+      NOT wired (reported, not invented): `concentration_threshold_pct`/`dominant_item_share_pct`
+      (gates.py constants never surface as a tool output key anywhere) and
+      `cumulative_carry_forward_pct`/`overage_add_ms`/`overage_burndown_ms` (only ever consumed
+      as internal/input fields, never echoed back in any tool's output); `interactiveCuPct`/
+      `backgroundCuPct` on overloads windows (bespoke derived estimate, no catalog entry).
+- [x] Add a test: constructing a `MetricValue` for an unknown metric name raises `KeyError` —
+      `tests/test_kb.py::test_metric_value_from_definition_unknown_name_raises_keyerror`.
+- [x] Add a test: `MetricValue.is_proxy()` returns True for `proxy_cpu`/`proxy_dur` types,
+      False for `true_CU` — `tests/test_kb.py::test_metric_value_is_proxy`.
+- [x] Add a regression test proving the additive-only invariant for at least one peaks and one
+      overloads call — `tests/test_metric_definitions_wiring.py` (12 tests: pre-existing keys
+      unchanged, new `metrics` keys correct, unknown-metric KeyError still fires, render_chart
+      proxy derivation).
 
 ---
 
@@ -86,7 +99,7 @@ Full fix spec: `tasks/post-phase9-sprint.md` Part B, section B1.
 
 ## PRIORITY 2 — High: wrong output reaching users
 
-### GAP-4: N24 — Strengthen proxy labeling for user attribution
+### GAP-4: N24 — Strengthen proxy labeling for user attribution — **[x] RESOLVED 2026-07-30 (eval case deferred)**
 **Files:** `fabric-audit-agent-app/agent_server/system_prompt.py`,
 `fabric_audit_agent/detectors/concentration.py`
 **Why high:** Live validation confirmed 23.5× gap between CpuTimeMs and true billed CU for
@@ -94,45 +107,43 @@ XMLA Read Operations. The current proxy caveat exists but is not strong enough �
 tell users what to do about it or how unreliable the ranking can be for specific operation types.
 
 **Tasks:**
-- [ ] Add to `system_prompt.py` (find the existing proxy-caveat section, strengthen it):
-      ```
-      - When reporting per-user attribution: always include this exact phrase in the response
-        (not buried in a footnote): "These are CPU-time rankings from monitored telemetry —
-        not billed CU. For XMLA or composite model operations the gap can exceed 10×. Use
-        the Capacity Metrics app Timepoint Item Detail page to confirm which users are the
-        true heaviest consumers before taking any action."
-      - Never present a per-user CU-sec figure and a capacity-level CU% figure in the same
-        table row without a clear label distinguishing them. They are not the same quantity.
-      ```
-- [ ] In `concentration.py`: when a concentration alert fires, add a `proxyWarning` field
-      to the evidence: `"proxyWarning": "User attribution is based on CpuTimeMs proxy. XMLA
-      Read Operations can undercount true CU by 10-25×. Validate in the Metrics app."`
-- [ ] New eval case: ask "who's using the most capacity?" — expected response must include
-      the proxy validation instruction, not just a caveat footnote
+- [x] Added to `system_prompt.py` (strengthened the existing STOP-gates/proxy-caveat section,
+      Investigation Mode block): the exact required phrase for per-user attribution, plus the
+      never-blend-in-one-row rule. See `agent_server/system_prompt.py`, new bullet after the
+      "Per-user shares are monitored-CU proxy..." rule.
+- [x] In `concentration.py`: concentration alerts now carry a `proxyWarning` field in evidence
+      (additive-only, verbatim required text) — see `detectors/concentration.py`.
+- [ ] **DEFERRED 2026-07-30** — New eval case ("who's using the most capacity?"). Session brief
+      for this pass scoped GAP-4 to the two edits above only, and explicitly barred touching
+      `test_eval_agent.py`/`eval_score.py`. Left for a follow-up session.
 
 ---
 
-### GAP-5: N25 — Fix per-user "% of base" and "Lifetime %" column labeling
+### GAP-5: N25 — Fix per-user "% of base" and "Lifetime %" column labeling — **[x] RESOLVED 2026-07-30 as system-prompt-only (tools.py rename correctly REJECTED — see note)**
 **Files:** `fabric_audit_agent/tools.py` (capacity_peaks_handler / capacity_overloads_handler),
 `fabric-audit-agent-app/agent_server/system_prompt.py`
 **Why high:** "Lifetime % 129.1%" on a per-user operation looks like throttling but means
 "this single operation's total lifetime CU cost equals 129% of one 30-second window budget."
 Very easy to misread as the user caused 129% utilization.
 
+**2026-07-30 correction:** this task's original instruction to rename tool output keys
+(`pctOfBase` → `opSizePctOfWindow`, `lifetimePct` → `lifetimeBudgetPct`) does NOT match the real
+code. The actual keys emitted by `tools.py` are `pctBaseLifetime` and `pctBaseConverted`
+(confirmed at `tools.py:1244,1248,1265-1268`), not `pctOfBase`/`lifetimePct`. Renaming
+non-existent keys would have been a no-op; renaming the REAL keys would have broken tests and
+callers. Per explicit instruction this session, the rename task below was NOT executed — only
+the system-prompt documentation task was done, using the real key names.
+
 **Tasks:**
-- [ ] In `tools.py`: rename the column headers in the peaks/overloads tool output:
-      - `"pctOfBase"` → `"opSizePctOfWindow"` (operation size as % of one 30-sec budget)
-      - `"lifetimePct"` → `"lifetimeBudgetPct"` (lifetime cost as % of one window budget)
-- [ ] Add to `system_prompt.py` (near the existing % of base rules):
-      ```
-      - When Lifetime % > 100% on a per-user or per-operation table: always state explicitly
-        that this means "the operation's total CU cost exceeded one full 30-second window
-        budget over its lifetime" — NOT that the user or operation caused 100%+ capacity
-        utilization. These are very different claims. Never present the two (per-user
-        lifetime % and capacity CU%) in the same table without making this distinction clear.
-      ```
-- [ ] New eval case: response with a per-user Lifetime % > 100% must include the above
-      clarification inline, not just in end caveats
+- [ ] **REJECTED 2026-07-30 — do not do this.** In `tools.py`: rename the column headers in the
+      peaks/overloads tool output (`"pctOfBase"` → `"opSizePctOfWindow"`, `"lifetimePct"` →
+      `"lifetimeBudgetPct"`). These key names don't exist in the code; the real keys
+      (`pctBaseLifetime`, `pctBaseConverted`) must not be renamed — would break tests/callers.
+- [x] Added to `system_prompt.py` (near the existing % of base / SP4-SP5 rules): two new rules
+      documenting `pctBaseLifetime` ("Lifetime %") and `pctBaseConverted` ("% of base") using the
+      real key names, verbatim text as specified.
+- [ ] **DEFERRED 2026-07-30** — New eval case. Same reasoning as GAP-4's deferred eval case
+      (out of scope for this session; `test_eval_agent.py`/`eval_score.py` off-limits).
 
 ---
 
@@ -217,7 +228,7 @@ Acceptance check: the grep at the bottom of Part A must return zero hits.
 
 ## PRIORITY 4 — Code quality: wiring and correctness
 
-### GAP-11: N6/N8 — Item-kind exclusion still partial
+### GAP-11: N6/N8 — Item-kind exclusion still partial — **[x] RESOLVED 2026-07-30: confirmed fully applied, not partial**
 **Files:** `fabric_audit_agent/detectors/user_concentration.py`,
 `fabric_audit_agent/investigation/diagnose.py`
 **Details:** Task 8.1 and 8.2 from `tasks/todo.md` are marked DONE but this was the
@@ -226,11 +237,18 @@ Acceptance check: the grep at the bottom of Part A must return zero hits.
 inline hot-item/hot-user check exclude them? If either is still open, fix it.
 
 **Tasks:**
-- [ ] Read `user_concentration.py` directly — confirm EventStream/Activator users are excluded
-- [ ] Read `diagnose.py`'s inline concentration check — confirm same exclusion applies
-- [ ] If either is still open: implement using the same `system_item_kinds.py` exclusion set
-      that `concentration.py` already uses
-- [ ] Regression test: a known EventStream-only user does not appear in concentration alerts
+- [x] Read `user_concentration.py` directly — confirmed: line 18 imports `is_system_item_kind`;
+      lines 46-51 build `system_item_names` from `facts["items"]`; lines 53-58 define
+      `_is_pure_system_user()`; line 60 filters; line 62 early-returns when empty. Full exclusion.
+- [x] Read `diagnose.py`'s inline concentration check — confirmed: lines 261-271 and 297-303
+      exclude events whose item is in `system_item_names` (passed in) from both the hot-item and
+      hot-user totals (N8 fix, Task 8.2, 2026-07-29). Full exclusion, not partial.
+- [x] Both files already implement the exclusion — no code change needed. GAPS-AND-ISSUES.md's
+      N6/N8 entries were stale (dated the same evening, before the fix commit); updated below.
+- [x] Regression test: already covered by `tests/test_n6_user_concentration_item_kind.py` and
+      `tests/test_concentration_unification.py` (existing, passing).
+
+**Status note (2026-07-30): confirmed fully applied 2026-07-30, not partial.**
 
 ---
 
@@ -402,7 +420,7 @@ Execute in this order to minimize rework:
 
 **fabric-audit-agent-py:**
 - `fabric_audit_agent/kb/__init__.py` (GAP-2)
-- `fabric_audit_agent/kb/metric_definitions.py` (GAP-2, no changes needed to file itself)
+- `fabric_audit_agent/kb/metric_definitions.py` (GAP-2, 2026-07-30: added pct_base_lifetime/pct_base_converted)
 - `fabric_audit_agent/tools.py` (GAP-1, GAP-2, GAP-5)
 - `fabric_audit_agent/pipeline.py` (GAP-3, GAP-19)
 - `fabric_audit_agent/job.py` (GAP-3, GAP-9, GAP-10, GAP-13)

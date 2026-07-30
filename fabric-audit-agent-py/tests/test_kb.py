@@ -1,4 +1,29 @@
-from fabric_audit_agent.kb import get_remediation
+import pytest
+
+from fabric_audit_agent.kb import MetricValue, get_remediation
+from fabric_audit_agent.confidence import ClaimConfidence
+
+
+def test_metric_value_from_definition_unknown_name_raises_keyerror():
+    """N14: MetricValue.from_definition() must fail loudly for an unknown metric name, not
+    silently construct an unlabeled value (docstring's "fail loudly" contract)."""
+    with pytest.raises(KeyError):
+        MetricValue.from_definition("not_a_real_metric", 42, confidence=ClaimConfidence.LIKELY)
+
+
+def test_metric_value_is_proxy():
+    """N14: is_proxy() is True for proxy_cpu/proxy_dur metric types, False for true_CU."""
+    proxy_cpu_value = MetricValue.from_definition(
+        "user_cpu_share_pct", 12.3, confidence=ClaimConfidence.PROXY)
+    assert proxy_cpu_value.is_proxy() is True
+
+    proxy_dur_value = MetricValue.from_definition(
+        "user_duration_share_pct", 12.3, confidence=ClaimConfidence.PROXY)
+    assert proxy_dur_value.is_proxy() is True
+
+    true_cu_value = MetricValue.from_definition(
+        "sku_cu_pct", 12.3, confidence=ClaimConfidence.VALIDATED)
+    assert true_cu_value.is_proxy() is False
 
 
 def test_known_flag_returns_playbook():

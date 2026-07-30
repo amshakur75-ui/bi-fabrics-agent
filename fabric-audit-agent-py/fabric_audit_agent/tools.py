@@ -5,12 +5,15 @@ READ-ONLY — the handler only reads (mock) telemetry and writes findings to loc
 mutating any estate. ``data_agent.build_data_agent_manifest`` strips the handler for the
 published manifest (keeps name/description/input_schema).
 """
+import dataclasses
 import json
 import math
 import os
 from datetime import datetime, timezone
 
 from .adapters import create_mock_collector, create_stub_reasoner
+from .confidence import ClaimConfidence as _ClaimConfidence
+from .kb import MetricValue as _MetricValue, get_metric as _get_metric
 from .dax import analyze_dax as _analyze_dax
 from .staleness import maybe_stale_note as _maybe_stale_note
 from .adapters.collector_activity_events import create_activity_event_collector as _create_activity_event_collector
@@ -337,6 +340,111 @@ def _build_collector(env, window=None):
     return build_collector_from_env(env, window=window)
 
 
+# ---------------------------------------------------------------------------
+# GAP-2 wiring (N14, 2026-07-30): attach kb/metric_definitions.py provenance to the live tool
+# output, additively -- never replaces or renames an existing scalar output key. See
+# GAPS-AND-ISSUES.md N14 and tasks/open-gaps-plan.md for the background.
+# ---------------------------------------------------------------------------
+
+def _mv_dict(name, value, *, confidence, unit=""):
+    """Build a MetricValue from a METRIC_DEFINITIONS entry and serialize it to a plain dict
+    (JSON-safe: ClaimConfidence is a str Enum so it round-trips through json.dumps as its plain
+    string value). Raises KeyError for an unknown metric name -- same fail-loud contract as
+    MetricValue.from_definition itself; callers must not swallow it into a silent fallback."""
+    return dataclasses.asdict(_MetricValue.from_definition(name, value, confidence=confidence, unit=unit))
+
+
+def _mv_dict_light(name, value, *, confidence, unit=""):
+    """Same shape as ``_mv_dict`` but WITHOUT the (often long) prose ``notes`` field -- I4 fix
+    (2026-07-30): stamping the full MetricValue, notes included, onto EVERY per-row 'metrics'
+    entry duplicated the catalog's prose once per row (e.g. capacity_peaks at default top_n=20
+    grew a ~3.4KB fixture payload to ~20KB). Adds ``metricName`` so a caller can look the full
+    definition (formula/notes/source) up once from the response's top-level ``metricsCatalog``
+    instead of carrying it on every row. Use this (not ``_mv_dict``) for any per-row/per-window
+    stamp inside a loop; reserve ``_mv_dict`` for single, non-repeated stamps."""
+    d = _mv_dict(name, value, confidence=confidence, unit=unit)
+    d.pop("notes", None)
+    d["metricName"] = name
+    return d
+
+
+def _metrics_catalog(names):
+    """Build a ``{metric_name: full KB definition}`` catalog for the given metric names,
+    attached ONCE per response (I4 fix) instead of duplicating formula/notes/source prose on
+    every row stamped via ``_mv_dict_light``. Silently skips an unknown name rather than
+    raising -- this is a display convenience, not the fail-loud provenance path itself
+    (``_mv_dict``/``_mv_dict_light`` already raised loudly if the name were bad)."""
+    out = {}
+    for n in names:
+        m = _get_metric(n)
+        if m is not None:
+            out[n] = dict(m)
+    return out
+
+
+def _share_pct_metric(attribution_mode, share_pct):
+    """Return the {sharePct: <metric dict>} provenance for a per-user/per-item monitored-CU
+    share, dispatching on attributionMode (N7): 'cost-cpu' -> user_cpu_share_pct (true CpuTimeMs),
+    'cost-duration' -> user_duration_share_pct (DurationMs fallback, weaker proxy). Returns None
+    when share_pct is missing or attributionMode isn't one of the two known cost modes (e.g.
+    'frequency' mode has no cost-based share to attribute) -- callers attach nothing rather than
+    guessing. Both branches are always ClaimConfidence.PROXY: a per-user/item monitored-CU figure
+    can never be VALIDATED as authoritative billed CU (gates.py TRUE_CU_PER_USER_PERMANENTLY_BLOCKED)."""
+    if share_pct is None:
+        return None
+    if attribution_mode == "cost-cpu":
+        return _mv_dict("user_cpu_share_pct", share_pct, confidence=_ClaimConfidence.PROXY, unit="%")
+    if attribution_mode == "cost-duration":
+        return _mv_dict("user_duration_share_pct", share_pct, confidence=_ClaimConfidence.PROXY, unit="%")
+    return None
+
+
+def _with_share_metric(d):
+    """Return a shallow copy of ``d`` with a ``metrics.sharePct`` provenance entry attached, or
+    ``d`` unchanged (same object, no copy) when no share metric applies -- keeps the diff against
+    the pre-wiring output minimal for rows that carry no attributable share. Never mutates ``d``
+    in place: these dicts may originate from a cached/shared collector fixture."""
+    if not isinstance(d, dict):
+        return d
+    m = _share_pct_metric(d.get("attributionMode"), d.get("sharePct"))
+    if m is None:
+        return d
+    return {**d, "metrics": {"sharePct": m}}
+
+
+_THROTTLE_THRESHOLD_METRIC_NAMES = {
+    # tools.py's throttle.py decompose_throttle() stage2 key -> KB metric name. Each of the
+    # three carries its OWN health_state_smoothing_window (10min/60min/24h) -- preserved by
+    # from_definition, never flattened to one shared window (N20).
+    "interactiveDelay": "interactive_delay_threshold_pct",
+    "interactiveRejection": "interactive_rejection_threshold_pct",
+    "backgroundRejection": "background_rejection_threshold_pct",
+}
+
+
+def _attach_throttle_metrics(throttle_decomposition):
+    """Attach metric provenance to a freshly-built decompose_throttle() result, in place. Safe to
+    mutate: this dict is newly constructed per-call by _decompose_throttle, never a shared/cached
+    fixture. Additive only -- every existing key (fired/maxPct/etc.) is left exactly as-is; only
+    new sibling 'metrics' keys are added."""
+    if not isinstance(throttle_decomposition, dict):
+        return
+    stage2 = throttle_decomposition.get("stage2")
+    if isinstance(stage2, dict):
+        for stage2_key, metric_name in _THROTTLE_THRESHOLD_METRIC_NAMES.items():
+            sig = stage2.get(stage2_key)
+            if isinstance(sig, dict) and sig.get("maxPct") is not None:
+                sig["metrics"] = {
+                    "maxPct": _mv_dict(metric_name, sig["maxPct"],
+                                       confidence=_ClaimConfidence.LIKELY, unit="%"),
+                }
+    if throttle_decomposition.get("minutesToBurndown") is not None:
+        throttle_decomposition["metrics"] = {
+            "minutesToBurndown": _mv_dict("minutes_to_burndown", throttle_decomposition["minutesToBurndown"],
+                                          confidence=_ClaimConfidence.LIKELY, unit="minutes"),
+        }
+
+
 def create_tool_definitions(base_dir=None):
     base = base_dir if base_dir is not None else _BASE
 
@@ -401,20 +509,28 @@ def create_tool_definitions(base_dir=None):
         for item in items:
             ws = item.get("workspace") or "Unknown"
             entry = ws_map.setdefault(ws, {"workspace": ws, "items": [], "totalCuSeconds": 0})
-            entry["items"].append({
+            _item_share = round(item.get("sharePct", 0), 1)
+            _ws_item = {
                 "name": item.get("name"),
                 "cuSeconds": item.get("cuSeconds", 0),
-                "sharePct": round(item.get("sharePct", 0), 1),
+                "sharePct": _item_share,
                 "topUsers": item.get("topUsers", []),
                 "userCount": item.get("userCount", 0),
-            })
+            }
+            # GAP-2 (N14) wiring: attach provenance for this item's monitored-CU share, dispatched
+            # on the source item's attributionMode (cost-cpu vs cost-duration, N7) -- additive
+            # "metrics" sibling key; the four existing keys above are unchanged.
+            _share_metric = _share_pct_metric(item.get("attributionMode"), _item_share)
+            if _share_metric is not None:
+                _ws_item["metrics"] = {"sharePct": _share_metric}
+            entry["items"].append(_ws_item)
             entry["totalCuSeconds"] += item.get("cuSeconds", 0)
 
         workspaces = sorted(ws_map.values(), key=lambda x: -x["totalCuSeconds"])
         capped_workspaces, cap_meta = _cap_rows(workspaces)
         result = {
             "workspaces": capped_workspaces,
-            "topUsers": users[:10],
+            "topUsers": [_with_share_metric(u) for u in users[:10]],
             "totalWorkspaces": len(workspaces),
             "totalItems": len(items),
             "source": "Log Analytics + Eventhouse (merged)",
@@ -440,13 +556,15 @@ def create_tool_definitions(base_dir=None):
         stale_note = _maybe_stale_note(facts, label="User activity data")
         if who:
             u = next((x for x in users if _user_matches(x.get("user"), who)), None)
-            result = {"user": who, "found": u is not None, "detail": u,
+            # GAP-2 (N14) wiring: additive "metrics.sharePct" provenance, dispatched on the
+            # user's own attributionMode; "detail" keeps its exact prior value/shape otherwise.
+            result = {"user": who, "found": u is not None, "detail": _with_share_metric(u),
                     "source": source, "coverage": cov,
                     "cuUnit": cu_unit, "denominator": denominator}
             if stale_note:
                 result["staleDataNote"] = stale_note
             return result
-        result = {"topUsers": users[:10], "userCount": len(users),
+        result = {"topUsers": [_with_share_metric(x) for x in users[:10]], "userCount": len(users),
                 "source": source, "coverage": cov,
                 "cuUnit": cu_unit, "denominator": denominator}
         if stale_note:
@@ -1223,6 +1341,7 @@ def create_tool_definitions(base_dir=None):
                 }
             # ts is the operation END (TimeGenerated); derive the start from duration so the row
             # reads "start -> end" like the Metrics app. Attach display twins (never do tz math).
+            _used_metric_names = set()
             for p in peaks:
                 add_display_time(p, "ts", "whenDisplay")   # the timepoint / end
                 end_dt_row = parse_iso_utc(p.get("ts"))
@@ -1232,6 +1351,29 @@ def create_tool_definitions(base_dir=None):
                     if start_disp:
                         p["startDisplay"] = start_disp
                     p["durationSeconds"] = round(dur_ms / 1000.0, 1)
+                # GAP-2 (N14) wiring: attach kb/metric_definitions.py provenance for the three
+                # "% of base" lens columns, additively -- pctBaseLifetime/pctBaseConverted/
+                # pctBaseTimepoint keep their exact existing values/types; this only adds a
+                # sibling "metrics" key. I4 fix (2026-07-30): use the LIGHT stamp (no per-row
+                # "notes" prose -- that duplicated the catalog once per row and bloated the
+                # payload ~6x at default top_n); the full definition is attached once below as
+                # "metricsCatalog", referenced by each row's "metricName".
+                _row_metrics = {}
+                if p.get("pctBaseLifetime") is not None:
+                    _row_metrics["pctBaseLifetime"] = _mv_dict_light(
+                        "pct_base_lifetime", p["pctBaseLifetime"],
+                        confidence=_ClaimConfidence.LIKELY, unit="%")
+                if p.get("pctBaseConverted") is not None:
+                    _row_metrics["pctBaseConverted"] = _mv_dict_light(
+                        "pct_base_converted", p["pctBaseConverted"],
+                        confidence=_ClaimConfidence.LIKELY, unit="%")
+                if p.get("pctBaseTimepoint") is not None:
+                    _row_metrics["pctBaseTimepoint"] = _mv_dict_light(
+                        "pct_base_timepoint", p["pctBaseTimepoint"],
+                        confidence=_ClaimConfidence.LIKELY, unit="%")
+                if _row_metrics:
+                    p["metrics"] = _row_metrics
+                    _used_metric_names.update(m["metricName"] for m in _row_metrics.values())
             # Deterministic distinct-user rollup so the agent NEVER hand-counts "users over X%" in
             # prose (that produced visible recount fumbling). One entry per user among the returned
             # ops, ranked by their peak lifetime %. The agent renders this verbatim.
@@ -1271,6 +1413,11 @@ def create_tool_definitions(base_dir=None):
                 "cuUnit": "cuSeconds (CPU-time proxy; not authoritative billed capacity CU)",
             }, rows_key="peaks", kql=meta["eventKql"], extra={"windowLabel": meta["windowLabel"]})
             out["tier"] = meta["tier"]
+            if _used_metric_names:
+                # I4 fix: full formula/notes/source provenance attached ONCE per response instead
+                # of once per row (see _mv_dict_light docstring). Keyed by the same metricName
+                # each row's "metrics.<col>.metricName" points back to.
+                out["metricsCatalog"] = _metrics_catalog(_used_metric_names)
             if base_cu is None:
                 out["pctBaseNote"] = (f"Base capacity unknown -- SKU came back as {sku!r} (non-standard, "
                                       "e.g. a trial name), no FABRIC_BASE_CU env is set, and no baseCu "
@@ -1333,6 +1480,18 @@ def create_tool_definitions(base_dir=None):
                     disp = _to_display(iso)
                     if disp:
                         w["windowStartDisplay"] = disp
+                # GAP-2 (N14) wiring: totalCuPct is the SAME formula as kb's sku_cu_pct
+                # (capacityUnitMs / (baseCapacityUnits*1000*30) * 100 -- see overloads.py's own
+                # docstring). interactiveCuPct/backgroundCuPct have no METRIC_DEFINITIONS entry
+                # (they're a derived estimate bespoke to this handler, already documented in the
+                # handler's own "note" field) -- not catalogued here, reported instead of invented.
+                if w.get("totalCuPct") is not None:
+                    # I4 fix: light stamp per window (no per-row "notes" duplication across up
+                    # to `top_windows` (default 50) rows); full definition attached once below.
+                    w["metrics"] = {
+                        "totalCuPct": _mv_dict_light("sku_cu_pct", w["totalCuPct"],
+                                                     confidence=_ClaimConfidence.LIKELY, unit="%"),
+                    }
             out = {
                 "overloads": windows,
                 "date": date_label,
@@ -1350,6 +1509,8 @@ def create_tool_definitions(base_dir=None):
                          "interactive and covers system/refresh/dataflow/OneLake/ML work, NOT user "
                          "queries -- do not blame a user for a background-dominated window"),
             }
+            if any(w.get("metrics") for w in windows):
+                out["metricsCatalog"] = _metrics_catalog(["sku_cu_pct"])
             if base_cu is None:
                 out["splitNote"] = (f"SKU {sku!r} unknown -- interactive/background split omitted; "
                                     "total CU% still shown.")
@@ -1535,8 +1696,14 @@ def create_tool_definitions(base_dir=None):
         # the already-collected .show sections.
         try:
             events, series, meta = _resolve_event_sources(days=1, order="recent")
-            result["throttleDecomposition"] = _decompose_throttle(
+            _throttle_decomp = _decompose_throttle(
                 series, events, has_real_cost=(meta["tier"] != "operationLevel"))
+            # GAP-2 (N14) wiring: attach kb/metric_definitions.py provenance for the three
+            # throttle-threshold signals (stage2.*.maxPct) and the burndown passthrough
+            # (minutesToBurndown), additively, in place -- this dict is freshly built per call,
+            # not shared/cached, so mutating it here is safe. Existing keys are untouched.
+            _attach_throttle_metrics(_throttle_decomp)
+            result["throttleDecomposition"] = _throttle_decomp
         except Exception as exc:
             errors["throttleDecomposition"] = str(exc)
         # Task 6: time-to-throttle forecast -- reuses the same live series as the decomposition
@@ -2345,11 +2512,32 @@ def create_tool_definitions(base_dir=None):
             return {"error": f"sourceScope must be one of {_CHART_SCOPES}, got {source_scope!r}"}
 
         # -- isProxy: default True for user scope unless explicitly False --
+        # GAP-2 (N14) wiring: the default and the badge text now both derive from a
+        # kb/metric_definitions.py MetricValue (user_cpu_share_pct is the representative
+        # proxy_cpu definition for a user-scoped chart) via .is_proxy()/.display_caveat(),
+        # instead of a hardcoded per-tool boolean literal -- so a future scope/tool can't forget
+        # the proxy label. The 'value' passed to from_definition is a throwaway placeholder;
+        # only is_proxy()/display_caveat() are used here, never mv.value.
         is_proxy = inp.get("isProxy")
+        proxy_caveat = ""
         if is_proxy is None:
-            is_proxy = True if source_scope == "user" else False
+            if source_scope == "user":
+                _rep_mv = _MetricValue.from_definition(
+                    "user_cpu_share_pct", 0.0, confidence=_ClaimConfidence.PROXY)
+                is_proxy = _rep_mv.is_proxy()
+                proxy_caveat = _rep_mv.display_caveat()
+            else:
+                is_proxy = False
         else:
             is_proxy = bool(is_proxy)
+            # I2 fix (2026-07-30): the CPU-time-proxy wording is only true for a user/item-scoped
+            # chart. A capacity-scoped CU% chart is true_CU (see kb sku_cu_pct) -- if a caller
+            # explicitly (and wrongly) passes isProxy=true for a capacity-scoped chart, do NOT
+            # assert the CpuTimeMs-proxy caveat; that would be false for that scope regardless of
+            # what the caller claimed.
+            if is_proxy and source_scope in ("user", "item"):
+                proxy_caveat = _MetricValue.from_definition(
+                    "user_cpu_share_pct", 0.0, confidence=_ClaimConfidence.PROXY).display_caveat()
 
         # -- Task 8.4: empty / thin-data fallback --
         total_points = sum(len(s.get("data") or []) for s in series)
@@ -2388,6 +2576,8 @@ def create_tool_definitions(base_dir=None):
             "sourceScope": source_scope,
             "isProxy": is_proxy,
         }
+        if proxy_caveat:
+            chart_spec["proxyCaveat"] = proxy_caveat
         return {"chart": chart_spec}
 
     return [

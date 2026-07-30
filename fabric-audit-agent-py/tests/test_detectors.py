@@ -192,6 +192,39 @@ def test_concentration_evidence_sharePct_is_int_when_whole():
     assert ev["sharePct"] == 70 and isinstance(ev["sharePct"], int)
 
 
+# I1 fix (2026-07-30): proxyWarning must be gated on attributionMode, not stamped unconditionally.
+def test_concentration_proxy_warning_cost_cpu_names_cpu_time_ms():
+    ev = detect_concentration({"items": [{"name": "X", "workspace": "W", "sharePct": 70.0,
+                                          "users": 1, "attributionMode": "cost-cpu"}]})[0]["evidence"]
+    assert "CpuTimeMs" in ev["proxyWarning"]
+
+
+def test_concentration_proxy_warning_cost_duration_names_duration_ms_not_cpu():
+    ev = detect_concentration({"items": [{"name": "X", "workspace": "W", "sharePct": 70.0,
+                                          "users": 1, "attributionMode": "cost-duration"}]})[0]["evidence"]
+    assert "DurationMs" in ev["proxyWarning"]
+    # must not claim attribution IS BASED ON CpuTimeMs (the cost-cpu wording) for this mode --
+    # mentioning CpuTimeMs only as a comparison point ("weaker proxy than CpuTimeMs") is fine.
+    assert "based on CpuTimeMs" not in ev["proxyWarning"]
+
+
+def test_concentration_no_proxy_warning_for_authoritative_none_mode():
+    """attributionMode is None on the branch reserved for authoritative CSV/Capacity-Metrics
+    data (see the 'capacity CU' vs 'monitored CU' label) -- an authoritative alert must not
+    carry a proxy caveat at all."""
+    ev = detect_concentration({"items": [{"name": "X", "workspace": "W", "sharePct": 70.0,
+                                          "users": 1, "attributionMode": None}]})[0]["evidence"]
+    assert "proxyWarning" not in ev
+
+
+def test_concentration_no_proxy_warning_for_frequency_mode():
+    """'frequency' mode (op-count only, no cost signal) is neither cost-cpu nor cost-duration --
+    stamping a CpuTimeMs/DurationMs caveat on it would misdescribe what backs the number."""
+    ev = detect_concentration({"items": [{"name": "X", "workspace": "W", "sharePct": 70.0,
+                                          "users": 1, "attributionMode": "frequency"}]})[0]["evidence"]
+    assert "proxyWarning" not in ev
+
+
 def test_blast_radius_edges_null_and_isolated_node():
     iso = {"lineage": {"nodes": [{"id": "a", "name": "A", "type": "Dataset", "status": "Failed", "workspace": "W"}], "edges": None}}
     flags = detect_blast_radius(iso)

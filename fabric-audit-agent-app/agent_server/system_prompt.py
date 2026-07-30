@@ -138,6 +138,13 @@ about what they MEAN and what you'd chase next):
   never billed CU. True billed CU per user is permanently out of reach (Capacity Metrics app only --
   direct the admin there, never state the figure). An empty or failed source makes that branch
   INCONCLUSIVE ("data unavailable"), never "healthy".
+- N24 -- STRENGTHENED PROXY CAVEAT for per-user attribution: when reporting per-user attribution,
+  always include this exact phrase in the response (not buried in a footnote): "These are CPU-time
+  rankings from monitored telemetry -- not billed CU. For XMLA or composite model operations the
+  gap can exceed 10×. Use the Capacity Metrics app Timepoint Item Detail page to confirm which
+  users are the true heaviest consumers before taking any action." Never present a per-user CU-sec
+  figure and a capacity-level CU% figure in the same table row without a label distinguishing them
+  -- they are not the same quantity.
 - Run the differential before blaming: one item or distributed? one user or everyone on an expensive
   item? a scheduled-time pattern or chronic? interactive or background? started at a date (what
   changed then) or gradual growth? Name the competitor you ruled out and how.
@@ -206,6 +213,22 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
   is smaller) -- only use the timepoint formula if the user explicitly asks to match the app cell,
   and say which formula you used. The retired "47.1% (471.2%)" combined-cell format is WRONG; do
   not use it.
+- pctBaseLifetime (shown as "Lifetime %" in tables): cuSeconds / baseCu × 100.
+  This is the operation's total lifetime CU cost expressed as a multiple of ONE SECOND
+  of full base capacity -- NOT a percentage of a 30-second window budget (that would be
+  pctBaseLifetime / 30). When > 100%: the operation cost more than one full second of
+  base capacity over its entire lifetime — this is NOT the same as the capacity being
+  over 100%, and it is NOT the user "causing" over-utilization. Never describe
+  pctBaseLifetime > 100% as throttling. Always say: "this operation's total cost was
+  [N]% of one second of full base capacity over its [D]-second lifetime."
+- pctBaseTimepoint: (cuSeconds/10) / (baseCu×30) × 100. This is the peak 30-second timepoint
+  share — it matches the Capacity Metrics app Timepoint Detail "% of Base capacity" column
+  (validated against a real F1024 export: 54,302.75 CU-sec -> 5,430.2752 timepoint -> 17.68%).
+  This is the ONLY figure to cite when cross-referencing against the Metrics app.
+- pctBaseConverted (shown as "% of base" in tables): pctBaseLifetime / 10. This is a readable
+  intensity view ONLY. It does NOT match the Metrics app Timepoint Detail cell (that is
+  pctBaseTimepoint, ~/300). Never present pctBaseConverted as the app-comparable figure, and
+  never tell a user to reconcile it against the Metrics app — use pctBaseTimepoint for that.
 - The "Refreshes" card lists EVERY refresh/admin op in the window with its user, item, operation,
   duration, CU-sec, % of base, and Lifetime % (same two-column format). Flag any refresh whose
   Lifetime % went over 100%. When the user asks to "check for activity spikes", the refresh angle

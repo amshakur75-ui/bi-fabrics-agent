@@ -93,9 +93,20 @@ CUMULATIVE_CARRY_FORWARD_PCT = {
 MINUTES_TO_BURNDOWN = {
     "name": "minutes_to_burndown",
     "description": "Estimated minutes until the carry-forward overage burns off at the current rate",
-    "formula": "cumulative_carry_forward_pct / 200",
-    "source_table": "Capacity Overview Events (derived)",
-    "source_columns": ["overageTotalCapacityUnitMs", "baseCapacityUnits"],
+    # I3 fix (2026-07-30): this formula documents how the figure is computed UPSTREAM (by the
+    # collector that builds the capacity series, e.g. collector_capacity_events.py, when it has
+    # raw overageTotalCapacityUnitMs/baseCapacityUnits to work with) -- it is NOT re-derived at
+    # any point where this catalog entry gets attached. investigation/throttle.py's
+    # decompose_throttle() (tools.py's only call site for this metric name) does not read
+    # overageTotalCapacityUnitMs/baseCapacityUnits at all; it passes through the last non-null
+    # `minutesToBurndown` already present on the incoming capacity series -- the Metrics app's
+    # own "Expected time to recover (min)" figure, verbatim (see throttle.py's own comment,
+    # "Burndown passthrough ... never re-derived"). Do not assert a derivation that didn't run.
+    "formula": "cumulative_carry_forward_pct / 200  (computed upstream by the collector; "
+               "NOT re-derived at the point this metric is attached to tool output)",
+    "source_table": "Capacity Overview Events series (per-window `minutesToBurndown` field, "
+                    "read as a passthrough -- not recomputed from its raw components here)",
+    "source_columns": ["minutesToBurndown"],
     "metric_type": "true_CU",
     "smoothing_window": "point-in-time",
     "verified": True,
@@ -103,7 +114,12 @@ MINUTES_TO_BURNDOWN = {
         "Constant divisor of 200 confirmed exact -- matched 'Expected time to recover (min)' "
         "header in the Capacity Metrics app across multiple capacities. "
         "Thresholds: <33% cumulative = minor smoothing; 33-100% = noticeable delay risk; "
-        "100-300% = significant user-visible throttling; >300% = extended outage risk."
+        "100-300% = significant user-visible throttling; >300% = extended outage risk. "
+        "IMPORTANT (I3 fix): investigation/throttle.py's decompose_throttle() does NOT compute "
+        "this value via the formula above -- it passes through the last non-null "
+        "`minutesToBurndown` already present on the incoming capacity series, verbatim, never "
+        "re-deriving it from overageTotalCapacityUnitMs/baseCapacityUnits at that call site. The "
+        "formula documents how the number is produced upstream, not a calculation this call runs."
     ),
 }
 
@@ -250,6 +266,109 @@ USER_DURATION_SHARE_PCT = {
 }
 
 # ---------------------------------------------------------------------------
+# Per-operation "% of base" lenses -- capacity_peaks tool (GAP-2 wiring, 2026-07-30)
+#
+# N25: tools.py's capacity_peaks_handler documents its formulas in a prose dict
+# (``lensExplained``, tools.py ~1264) rather than this table. lensExplained is the source of
+# truth these two entries were transcribed from VERBATIM. lensExplained itself only documents
+# two keys -- "pctBaseLifetime" and "pctBaseTimepoint" -- it does NOT document a
+# "pctBaseConverted" key at all, even though ``pctBaseConverted`` is a real field emitted on
+# every capacity_peaks row (investigation/timepoint_peaks.py). Per timepoint_peaks.py's own
+# code comment (lines 111-115), pctBaseConverted = pctBaseLifetime / 10 -- "a readable
+# intensity view the user asked for", EXPLICITLY NOT the Capacity Metrics app's exact
+# Timepoint Detail cell (that role belongs solely to the separate field pctBaseTimepoint,
+# formula (cuSeconds/10)/(baseCu*30)*100, validated exact against a real screenshot). Do not
+# confuse pctBaseConverted with pctBaseTimepoint -- see PCT_BASE_CONVERTED notes below.
+# ---------------------------------------------------------------------------
+
+PCT_BASE_LIFETIME = {
+    "name": "pct_base_lifetime",
+    "description": "Operation-lifetime % of base capacity (the '471%' operation-cost view)",
+    "formula": "cuSeconds / baseCu * 100",
+    "source_table": "Capacity Overview Events (per-operation, via the capacity_peaks tool)",
+    "source_columns": ["cuSeconds", "baseCu"],
+    "metric_type": "presentational",
+    "smoothing_window": "operation lifetime (not smoothed -- spans the operation's full duration)",
+    "verified": False,
+    "notes": (
+        "Verbatim from tools.py lensExplained: 'cuSeconds / baseCu * 100 -- operation total cost "
+        "vs 1s of base (the 471% view; use for >100/300/1000% thresholds)'. NOT capacity "
+        "utilization -- it is an operation's total CU-seconds cost expressed as a multiple of one "
+        "second of full base capacity, not a moment-in-time share of a 30-second capacity window. "
+        "A value over 100% (or 300%/1000%) does NOT mean the capacity was throttled; this is the "
+        "operation-cost lens used for ranking/thresholding expensive operations, not a throttle "
+        "signal. cuSeconds itself is a CPU-time proxy from monitored telemetry (Log Analytics "
+        "CpuTimeMs/DurationMs), not authoritative billed capacity CU -- see capacity_peaks tool's "
+        "own 'cuUnit' note. Not independently validated against a Capacity Metrics app screen (the "
+        "app has no such column) -- verified=False."
+    ),
+}
+
+PCT_BASE_CONVERTED = {
+    "name": "pct_base_converted",
+    "description": (
+        "Readable /10 display view of pctBaseLifetime, shown as 'converted% (lifetime%)' on "
+        "capacity_peaks rows"
+    ),
+    "formula": "pctBaseLifetime / 10  (== cuSeconds / (baseCu * 10) * 100)",
+    "source_table": "Capacity Overview Events (per-operation, via the capacity_peaks tool)",
+    "source_columns": ["cuSeconds", "baseCu"],
+    "metric_type": "presentational",
+    "smoothing_window": "operation lifetime (not smoothed -- spans the operation's full duration)",
+    "verified": False,
+    "notes": (
+        "verified=False (C3 fix, 2026-07-30): although the /10 arithmetic transform of "
+        "pctBaseLifetime is itself exact, pctBaseLifetime -- the value this field is derived "
+        "from -- is itself verified=False (not confirmed against production data). A derived "
+        "value cannot be marked more-verified than its own input, and this file's own gate "
+        "(module docstring, lines 19-20) requires verified=False unless the formula was "
+        "confirmed against production data -- which the notes below admit never happened. "
+        "IMPORTANT DISCREPANCY (see N25 above): the GAP-2 task brief that requested this entry "
+        "described pct_base_converted as matching 'the Capacity Metrics app Timepoint Detail % of "
+        "Base capacity column' and being 'the correct figure for cross-referencing'. That "
+        "description is WRONG for this field -- lensExplained (tools.py, the source of truth) "
+        "attaches that exact property to a DIFFERENT field, pctBaseTimepoint (formula "
+        "(cuSeconds/10)/(baseCu*30)*100), and does not mention pctBaseConverted at all. Per "
+        "investigation/timepoint_peaks.py's own code comment, pctBaseConverted is instead "
+        "pctBaseLifetime/10 -- a readable display convenience, EXPLICITLY documented in that same "
+        "comment as 'NOT the Capacity Metrics app's exact Timepoint Detail cell (that is "
+        "pctBaseTimepoint, ~/300)'. Do NOT use pct_base_converted to cross-reference the Capacity "
+        "Metrics app -- use pctBaseTimepoint (not yet catalogued here; see GAPS-AND-ISSUES N14 "
+        "follow-up) for that purpose instead. verified=True here only because the /10 arithmetic "
+        "transform itself is exact, not because it reconciles with the app."
+    ),
+}
+
+PCT_BASE_TIMEPOINT = {
+    "name": "pct_base_timepoint",
+    "description": (
+        "Peak 30-second timepoint share -- the ONLY capacity_peaks column that matches the "
+        "Capacity Metrics app Timepoint Detail '% of Base capacity' column"
+    ),
+    "formula": "(cuSeconds / 10) / (baseCu * 30) * 100",
+    "source_table": "Capacity Overview Events (per-operation, via the capacity_peaks tool)",
+    "source_columns": ["cuSeconds", "baseCu"],
+    "metric_type": "presentational",
+    "smoothing_window": "30 seconds (5-min interactive smoothing -- cuSeconds / 10 timepoints)",
+    "verified": True,
+    "notes": (
+        "Verbatim from tools.py lensExplained / investigation/timepoint_peaks.py: "
+        "timepointCuSeconds = cuSeconds / 10, then pctBaseTimepoint = timepointCuSeconds / "
+        "(baseCu * 30) * 100. This is the ONLY figure to cite when cross-referencing against the "
+        "Metrics app -- pctBaseLifetime and pctBaseConverted are explicitly NOT app-comparable "
+        "(see their own notes). verified=True because timepoint_peaks.py documents an exact "
+        "match against a real F1024 Timepoint Detail screenshot (54,302.75 total CU-sec -> "
+        "5,430.2752 timepoint -> 17.68% of base, exact). metric_type is 'presentational' rather "
+        "than 'true_CU', NOT because the formula is wrong, but because the cuSeconds input the "
+        "live capacity_peaks tool feeds into it is a CPU-time proxy from monitored telemetry "
+        "(see capacity_peaks tool's own 'cuUnit' note), not authoritative billed capacity CU --  "
+        "the formula-vs-app-column match was validated against real production CU-sec, not "
+        "against the proxy telemetry this field runs on in production. Same proxy caveat as "
+        "pctBaseLifetime/pctBaseConverted therefore still applies to the live value."
+    ),
+}
+
+# ---------------------------------------------------------------------------
 # Verdict thresholds (gates.py constants -- documented here for discoverability)
 # ---------------------------------------------------------------------------
 
@@ -311,6 +430,9 @@ METRIC_DEFINITIONS = {
         USER_DURATION_SHARE_PCT,
         CONCENTRATION_THRESHOLD_PCT,
         DOMINANT_ITEM_SHARE_PCT,
+        PCT_BASE_LIFETIME,
+        PCT_BASE_CONVERTED,
+        PCT_BASE_TIMEPOINT,
     ]
 }
 

@@ -374,9 +374,18 @@ from different sources get compared or combined without an explicit compatibilit
 
 ---
 
-### N6 — `user_concentration.py` has no item-kind awareness, same system-account risk as N5, one layer up — **STATUS: PARTIAL / DEFERRED (Task 8 2026-07-29)**
+### N6 — `user_concentration.py` has no item-kind awareness, same system-account risk as N5, one layer up — **STATUS: FIXED (confirmed 2026-07-30 — this doc entry was stale)**
 
-**Why not fixed in Task 8:** the per-user rollup (``rollup_attribution.users``) does not currently carry a Fabric item kind on either the user record or on its ``topItems`` entries -- so this detector, by construction, can't tell an ``EventStream`` from a ``Dataset`` when ranking users. Fixing it cleanly requires ENRICHING the rollup (and probably the LA source query) to carry item kind through, which is a separate ticket. Name-pattern matching (e.g. exclude a user whose top item starts with ``Monitoring_``) was considered and rejected as too fragile for a canonical detector. Left open until an item-kind-enriched rollup lands.
+**2026-07-30 status note:** re-read of `user_concentration.py` confirms full item-kind exclusion is
+implemented, not partial: line 18 imports `is_system_item_kind`; lines 46-51 build
+`system_item_names` from `facts["items"]`; lines 53-58 define `_is_pure_system_user()`; line 60
+filters users whose `topItems` are entirely system items; line 62 early-returns. This entry's
+"PARTIAL / DEFERRED" note below was written the same evening as the fix and predates it — the
+rollup-enrichment blocker it describes no longer applies (exclusion is done by cross-referencing
+`facts["items"]` kinds by name, the "Option B" approach, not by enriching the rollup itself).
+Left below for history.
+
+**Why not fixed in Task 8 (historical, superseded above):** the per-user rollup (``rollup_attribution.users``) does not currently carry a Fabric item kind on either the user record or on its ``topItems`` entries -- so this detector, by construction, can't tell an ``EventStream`` from a ``Dataset`` when ranking users. Fixing it cleanly requires ENRICHING the rollup (and probably the LA source query) to carry item kind through, which is a separate ticket. Name-pattern matching (e.g. exclude a user whose top item starts with ``Monitoring_``) was considered and rejected as too fragile for a canonical detector. Left open until an item-kind-enriched rollup lands.
 
 
 **File:** `fabric_audit_agent/detectors/user_concentration.py`
@@ -432,9 +441,15 @@ number rather than treating all "cost" mode figures as equally grounded.
 
 ---
 
-### N8 — A THIRD independent concentration-style check exists, inline in `diagnose.py`, hardcoded and item-kind-blind — **STATUS: PARTIAL / DEFERRED (Task 8 2026-07-29)**
+### N8 — A THIRD independent concentration-style check exists, inline in `diagnose.py`, hardcoded and item-kind-blind — **STATUS: FIXED (confirmed 2026-07-30 — this doc entry was stale)**
 
-**Threshold-unification half FIXED** as part of Task 8 (see N9 below): both inline ``> 30.0`` literals in ``diagnose_slowness`` are replaced with a config lookup (``_concentration_threshold(config)`` reading ``config["capacity"]["concentrationPct"]``); the function/``run_diagnosis`` now accept an optional ``config`` arg (default: DEFAULT_CONFIG) that threads through. Regression tests at ``tests/test_concentration_unification.py`` pin this end-to-end. **Item-kind-exclusion half DEFERRED**: this code path sums ``cuSeconds`` per item straight from raw EVENTS (``normalize_event``), which carry ``kind`` only in the interactive/refresh sense -- NOT the Fabric item-kind (``EventStream``/``Activator``/etc.). Applying the N5 exclusion here requires enriching normalize_event with Fabric item kind, same blocker as N6. Left open until events carry kind.
+**2026-07-30 status note:** re-read of `diagnose.py` confirms the item-kind-exclusion half is also
+done, not deferred: lines 261-271 and 297-303 exclude events whose `item` is in `system_item_names`
+(a set passed into `diagnose_throttle`) from both the hot-item and hot-user `cuSeconds` totals,
+labeled "N8 fix (Task 8.2, 2026-07-29)" in the source. The "DEFERRED" note below predates that fix
+landing. Left below for history.
+
+**Threshold-unification half FIXED** as part of Task 8 (see N9 below): both inline ``> 30.0`` literals in ``diagnose_slowness`` are replaced with a config lookup (``_concentration_threshold(config)`` reading ``config["capacity"]["concentrationPct"]``); the function/``run_diagnosis`` now accept an optional ``config`` arg (default: DEFAULT_CONFIG) that threads through. Regression tests at ``tests/test_concentration_unification.py`` pin this end-to-end. **Item-kind-exclusion half (historical, superseded above)**: this code path sums ``cuSeconds`` per item straight from raw EVENTS (``normalize_event``), which carry ``kind`` only in the interactive/refresh sense -- NOT the Fabric item-kind (``EventStream``/``Activator``/etc.). Applying the N5 exclusion here requires enriching normalize_event with Fabric item kind, same blocker as N6. Left open until events carry kind.
 
 
 **File:** `fabric_audit_agent/investigation/diagnose.py`
@@ -596,7 +611,69 @@ manual code read to discover them.
 
 ---
 
-### N14 — No runtime `MetricValue` dataclass / metric-type stamper (broader than the static B3 lookup table)
+### N14 — No runtime `MetricValue` dataclass / metric-type stamper (broader than the static B3 lookup table) — **STATUS: FIXED (2026-07-30)**
+
+**2026-07-30 status note (first half):** `kb/__init__.py` now exports `METRIC_DEFINITIONS`, `MetricValue`,
+`get_metric`, `is_proxy`, `is_verified`, `DOMINANT_ITEM_SHARE_PCT` from `metric_definitions.py` —
+previously unreachable at runtime, per this entry's original complaint. Two new tests added at
+`tests/test_kb.py` (`test_metric_value_from_definition_unknown_name_raises_keyerror`,
+`test_metric_value_is_proxy`), both passing. Wiring into `tools.py` was deferred to a follow-up.
+
+**2026-07-30 status note (second half — the deferred wiring, now done):** Added two catalog
+entries that were missing (`pct_base_lifetime`, `pct_base_converted` — the two real fields
+emitted by `capacity_peaks` with no METRIC_DEFINITIONS entry), then wired
+`MetricValue.from_definition()` provenance into the live tool output ADDITIVELY (new sibling
+`metrics` keys only — every pre-existing output key keeps its exact name/type/value, pinned by
+`tests/test_metric_definitions_wiring.py`):
+- `capacity_peaks_handler` — per-row `pctBaseLifetime`/`pctBaseConverted`.
+- `capacity_overloads_handler` — per-window `totalCuPct` -> `sku_cu_pct`.
+- `user_activity_handler` + `list_workspaces_handler` — per-user/per-item `sharePct`, dispatched
+  on `attributionMode` to `user_cpu_share_pct` (cost-cpu) or `user_duration_share_pct`
+  (cost-duration), per N7.
+- `capacity_diagnostics_handler`'s `throttleDecomposition` — the three throttle-threshold
+  signals (`stage2.interactiveDelay/interactiveRejection/backgroundRejection.maxPct`) and
+  `minutesToBurndown`. This turned out to be the actual reachable emission point for the three
+  threshold metrics and the burndown figure — not `capacity_peaks_handler`/
+  `capacity_overloads_handler` as originally assumed, since those values never surface as an
+  output key on either of the two named handlers.
+- `render_chart_handler` — `isProxy`'s default and a new additive `proxyCaveat` field now derive
+  from `MetricValue.is_proxy()`/`.display_caveat()` (using `user_cpu_share_pct` as the
+  representative proxy definition for a user-scoped chart) instead of a hardcoded boolean
+  literal.
+
+**KNOWN OPEN under this entry (2026-07-30):** `peakCuPct` wiring deferred — large blast radius
+across `pipeline.py`/`verdict.py`/`detectors`, needs its own focused change with expanded test
+coverage. This matters more than its position at the bottom of this note suggests: `peakCuPct`
+is the single most-quoted figure in the product, so it is currently the most visible number NOT
+carrying machine-readable provenance. N14 is FIXED as scoped, not as ideally complete.
+
+**Also left unwired (reported, not invented — no catalog entry exists and none was fabricated):**
+`concentration_threshold_pct` / `dominant_item_share_pct` (module constants in `gates.py`, never
+serialized to any tool's JSON output); `cumulative_carry_forward_pct` / `overage_add_ms` /
+`overage_burndown_ms` (consumed internally, e.g. `diagnose.py`'s `assert_cu_consistency`, never
+echoed back as an output key); `interactiveCuPct` / `backgroundCuPct` on overloads windows
+(bespoke derived estimate with no definition).
+
+**Found NOT wired, reported rather than invented (constraint: don't fabricate a catalog entry
+for a figure the code doesn't support):** `concentration_threshold_pct` and
+`dominant_item_share_pct` (gates.py module constants; never serialized into any tool's JSON
+output anywhere in the codebase — nothing to attach metadata to). `cumulative_carry_forward_pct`,
+`overage_add_ms`, `overage_burndown_ms` (only ever consumed as internal/input fields on a
+capacity-series point, e.g. `diagnose.py`'s `assert_cu_consistency` check — never echoed back as
+an output key). `interactiveCuPct`/`backgroundCuPct` on `capacity_overloads` windows (a bespoke
+derived estimate documented in that handler's own `note` field, no METRIC_DEFINITIONS entry).
+
+**Found a real discrepancy in the task brief itself, corrected in the catalog entry's own notes
+(see `pct_base_converted` in `metric_definitions.py`):** the brief described
+`pct_base_converted` as matching "the Capacity Metrics app Timepoint Detail % of Base capacity
+column." That description is wrong for this field — `lensExplained` (tools.py, the source of
+truth) attaches that property to a DIFFERENT field, `pctBaseTimepoint`
+(`(cuSeconds/10)/(baseCu*30)*100`), and never mentions `pctBaseConverted` at all. Per
+`investigation/timepoint_peaks.py`'s own code comment, `pctBaseConverted` is actually
+`pctBaseLifetime / 10` — a readable display convenience explicitly documented as NOT the
+Metrics app's exact cell. The catalog entry states this clearly so the mistake can't
+re-propagate.
+
 **Discovered:** July 21 chat, predates all later audit passes
 
 B3 (`kb/metric_definitions.py`) is a **static reference table** the agent can consult. This is a
@@ -2306,7 +2383,16 @@ Findings from a live real-world validation attempt: agent output for "who had th
 base-capacity operations today" compared against the Capacity Metrics app for the same time
 windows. Two distinct issues found.
 
-### N24 — Proxy users don't appear prominently in the Capacity Metrics app for the same time windows
+### N24 — Proxy users don't appear prominently in the Capacity Metrics app for the same time windows — **STATUS: PARTIALLY ADDRESSED (2026-07-30)**
+**2026-07-30 status note:** the N24A mitigation this entry calls for ("strengthening" the proxy
+caveat to an explicit validate-against-Metrics-app instruction) is now done: `system_prompt.py`
+carries the exact required phrase for per-user attribution ("These are CPU-time rankings from
+monitored telemetry... Use the Capacity Metrics app Timepoint Item Detail page to confirm which
+users are the true heaviest consumers before taking any action"), plus a rule against blending a
+per-user CU-sec figure and a capacity-level CU% figure in one table row without a distinguishing
+label. `detectors/concentration.py` now also stamps a `proxyWarning` field onto every fired
+concentration alert's evidence. N24B (ExecutingUser blank issue) and N24C (time-window alignment)
+are NOT addressed by this pass — still open.
 **Discovered:** 2026-07-30 live validation session
 **Priority: High — directly undermines the agent's core user-attribution claim**
 
@@ -2362,7 +2448,17 @@ in monitored telemetry") not a VERIFIED ATTRIBUTION ("these users consumed this 
 
 ---
 
-### N25 — "% of base" formula applied to per-user figures produces misleading large numbers
+### N25 — "% of base" formula applied to per-user figures produces misleading large numbers — **STATUS: FIXED via system-prompt documentation only (2026-07-30); the rename fix option below was correctly REJECTED**
+**2026-07-30 status note:** fix option 1 below (rename `pctOfBase`/`lifetimePct`) does not match
+the real code — the actual runtime keys are `pctBaseLifetime` and `pctBaseConverted` (confirmed at
+`fabric_audit_agent/tools.py:1329-1336`), and renaming them would break existing tests
+and callers. Only fix option 2 was applied: `agent_server/system_prompt.py` now documents both
+real keys near the existing SP4/SP5 "% of base" rules, explaining `pctBaseLifetime` (Lifetime %,
+per-operation total cost as a multiple of ONE SECOND of full base capacity, NOT a percentage of
+a 30-second window budget — and NOT the same claim as capacity over 100%) and `pctBaseConverted`
+(% of base, `pctBaseLifetime / 10` — a readable intensity view only; it is NOT the figure that
+matches the Capacity Metrics app's Timepoint Detail column. `pctBaseTimepoint` is the field that
+matches that column; `pctBaseConverted` must never be presented as app-comparable).
 **Discovered:** 2026-07-30 live validation session
 **Priority: Medium — cosmetic harm but real trust risk**
 
