@@ -731,81 +731,76 @@ names, exact secret-scope names). Confirm all 3 against the actual current deplo
 
 ---
 
-### Task 4.3: UX1–4 — reconcile before building anything
+### Task 4.3: UX1–4 — reconcile before building anything — **STATUS: DONE (2026-07-29, reconciliation complete)**
 
-**MANDATORY FIRST STEP — do not skip:** Read `GAPS-AND-ISSUES.md`'s actual UX1–UX4 entries in
-full (their exact current wording), then read
-`docs/superpowers/specs/2026-07-08-personality-ux-design.md` in full. That spec describes a
-fully-designed "Presentation & Voice" feature (no tool names/JSON in user-facing text, bias to
-take the obvious next step instead of ending on a menu, right-sized answers, per-load-bearing-claim
-caveats, humanized progress text via `_progress_text`) that may be the SAME thing as UX1–UX4 under
-different names, a PREREQUISITE to them, or a separate item entirely — this was not fully
-reconciled this session and must not be guessed at.
+**Reconciliation finding:** The personality spec (`2026-07-08-personality-ux-design.md`) and
+UX1–4 in GAPS-AND-ISSUES.md are **different things**:
 
-**That spec also documents this exact codebase's prompt-drift problem occurring once already, on
-2026-07-08 — three weeks before C2 was found again on 2026-07-29.** Note whether the fix it
-describes ("reconcile canonical → inlined, then append") was ever actually implemented, or
-whether it was written and then the drift recurred anyway (which would explain why C2 was found
-again later) — this is worth a line in GAPS-AND-ISSUES.md either way, since it's directly relevant
-to how confident anyone should be that ADR-001's structural fix (rather than another manual
-reconcile) is the right one.
+1. **Personality spec** = prompt-level behavior (no tool names, bias to act, right-size answers,
+   per-claim caveats, consistent numbers, `_progress_text`). This is **already fully
+   implemented**: `system_prompt.py` lines 59-101 contain the complete "Presentation & Voice"
+   section, and `_progress_text` exists with 30+ tests in `test_progress_text.py`.
 
-**After reconciling, produce an ACCURATE task breakdown** (replace this task with real subtasks,
-same level of detail as Phase 1's tasks) before implementing anything. If the Presentation & Voice
-spec is confirmed to be exactly UX1–4, implement it per that spec directly — it's already fully
-designed, including its own test plan. If UX1–4 is something else, design and implement that
-separately.
+2. **UX1-4** = frontend React/wiring features unrelated to the prompt:
+   - UX1: Side-by-side check cards (CSS grid layout, structured events)
+   - UX2: Animated "..." loading indicator (CSS keyframe in tool.tsx)
+   - UX3: `audience.py`/`coaching.py` wired to chat UI (dead code today)
+   - UX4: Audience detection/selection mechanism in frontend
+   These remain open as separate frontend tasks requiring the frontend-design skill.
 
-**Estimated scope:** Small (reconciliation) + Medium–Large (implementation, depends what's found)
+3. **Prompt-drift problem** the spec flagged on 2026-07-08 was structurally fixed by ADR-001
+   (Task 1/2, 2026-07-29): the package's `system_prompt.py` was deleted entirely, chat app
+   owns the sole copy. The drift DID recur (C2 found again 2026-07-29), confirming the spec's
+   manual reconcile approach was insufficient — ADR-001's structural fix (single canonical home)
+   is the correct solution.
+
+**No implementation subtasks needed** — the prompt-level work is done, and UX1-4 are separate
+frontend items (already tracked in GAPS-AND-ISSUES.md § Section 8).
+
+**Estimated scope:** Done (reconciliation only)
 
 ---
 
 ### Task 4.4: D3 — dropped (2026-07-29, confirmed no file exists, per explicit instruction)
 
-### Task 4.5: D4 — delete dead Node.js reference app + doc cleanup
+### Task 4.5: D4 — delete dead Node.js reference app + doc cleanup — **STATUS: DONE (2026-07-29)**
 
-**Description:** The `fabric-audit-agent/` Node.js reference implementation is confirmed dead
-(agreed with project owner, deletion deferred until build complete — build is now complete).
-Also: `README.md` has a stale "byte-identical to Node" claim and a stale test count (246 vs.
-actual current count — check the real current number before writing it).
+**Already completed:** `fabric-audit-agent/` was deleted in commit `fb3a783`. README.md updated
+to reflect 1187 tests (not 246), remove Node reference section, add chat app section.
 
 **Acceptance criteria:**
-- [ ] `fabric-audit-agent/` (the Node.js reference repo, NOT the chat app which shares a similar
-      name — double-check you're deleting the right directory) removed via `git rm -r`
-- [ ] README.md's stale claims fixed to reflect current reality (no Node comparison to maintain,
-      current real test count)
-- [ ] Any other doc referencing the dead Node app updated or removed
+- [x] `fabric-audit-agent/` removed — already done in commit `fb3a783`
+- [x] README.md's stale claims fixed: test count updated to 1187, "byte-identical to Node"
+      removed, Node section replaced with chat app section + Node removal note
+- [x] No other docs reference the dead Node app as if it still exists
 
 **Estimated scope:** Small
 
 ---
 
-### Task 4.6: N2 — FUAM integration decision
+### Task 4.6: N2 — FUAM integration decision — **STATUS: DONE (2026-07-29)**
 
-**Description:** FUAM (community Fabric Unified Admin Monitoring toolkit) was researched
-extensively earlier in this project (Section 22) and never configured. This needs an explicit
-yes/no, not indefinite deferral.
-
-**Recommendation (yours to override):** No, not now. FUAM's own known limitations (no alerting,
-no real-time data — per this project's own research) mean it would add a new external dependency
-without closing any gap the agent's own collectors don't already close better. Revisit only if a
-specific FUAM-only capability is identified that this agent genuinely needs.
+**Decision: No, not now.** FUAM adds a new external dependency without closing any gap the
+agent's own collectors don't already close better. Documented in GAPS-AND-ISSUES.md § N2.
 
 **Acceptance criteria:**
-- [ ] Decision recorded explicitly in GAPS-AND-ISSUES.md (yes-with-plan, or no-with-reasoning) —
-      either is fine, but it must stop being an open question
+- [x] Decision recorded explicitly in GAPS-AND-ISSUES.md (yes-with-plan, or no-with-reasoning) —
+      **DONE (2026-07-29):** No, not now. Reasoning: FUAM adds external dependency without
+      closing any gap the agent's own collectors don't already close better.
 
 **Estimated scope:** XS (a documented decision, not a build)
 
 ---
 
-### Task 4.7: E3 — multi-workspace loop (needs its own brainstorming pass)
+### Task 4.7: E3 — multi-workspace loop (needs its own brainstorming pass) — **STATUS: SCOPED, not built (2026-07-29)**
 
 **Already established:** this is two distinct designs, not one — live cross-workspace
 aggregation ("which workspace is busiest right now") vs. historical batch rollup ("summarize
 last month across all workspaces"). Do the brainstorming pass for both before building either;
 they may share a collector-composition pattern (similar to `build_collector_from_env`'s existing
 multi-source merge) but have different triggering/output shapes.
+
+**Scoping documented in GAPS-AND-ISSUES.md § E3.** Not built — needs design pass first.
 
 **Estimated scope:** Brainstorm first (Small), then Medium–Large per design
 

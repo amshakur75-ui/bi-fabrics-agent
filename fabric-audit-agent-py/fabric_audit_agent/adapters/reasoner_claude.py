@@ -49,6 +49,7 @@ def _first_text(resp):
 
 def create_claude_reasoner(client, model=DEFAULT_MODEL, config=None, max_flags=50):
     config = config if config is not None else DEFAULT_CONFIG
+    reasoner = {}
 
     def reason(facts, flags):
         if not flags:
@@ -63,6 +64,8 @@ def create_claude_reasoner(client, model=DEFAULT_MODEL, config=None, max_flags=5
                 system=_SYSTEM,
                 messages=[{"role": "user", "content": json.dumps(sanitized, ensure_ascii=False)}],
             )
+            # Capture token usage from the API response when available.
+            _capture_usage(resp, reasoner)
             enriched = json.loads(_extract_json_array(_first_text(resp)))
         except Exception:
             # Network error, API error, or JSON parse failure — fall back to KB below.
@@ -94,4 +97,22 @@ def create_claude_reasoner(client, model=DEFAULT_MODEL, config=None, max_flags=5
             out.append(finding)
         return out
 
-    return {"reason": reason}
+    reasoner["reason"] = reason
+    return reasoner
+
+
+def _capture_usage(resp, reasoner):
+    """Extract token usage from the API response (dict or SDK object) and store it on the
+    reasoner dict as ``lastUsage``. Tolerant of missing/malformed usage — never raises."""
+    try:
+        usage = resp.get("usage") if isinstance(resp, dict) else getattr(resp, "usage", None)
+        if usage is None:
+            return
+        input_tokens = (usage.get("input_tokens") if isinstance(usage, dict)
+                        else getattr(usage, "input_tokens", None))
+        output_tokens = (usage.get("output_tokens") if isinstance(usage, dict)
+                         else getattr(usage, "output_tokens", None))
+        if input_tokens is not None or output_tokens is not None:
+            reasoner["lastUsage"] = {"inputTokens": input_tokens, "outputTokens": output_tokens}
+    except Exception:
+        pass

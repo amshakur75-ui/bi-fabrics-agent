@@ -8,6 +8,7 @@ Precedence is **first-non-empty-wins**, so order collectors authoritative-first:
 ``[csv, list_usages, workspace_monitoring]`` keeps the CSV's real CU ``sharePct`` while picking
 up sku/quota from List Usages and ``topUsers`` from Workspace Monitoring.
 """
+from datetime import datetime, timezone
 
 _EMPTY = (None, "", [])
 
@@ -26,12 +27,19 @@ def _item_key(it):
 def merge_facts_list(facts_list):
     capacity, items = {}, {}
     extra = {"models": [], "reports": [], "pipelines": [], "users": []}
+    # Track the earliest collectedAt across sources — the merged result is only
+    # as fresh as the OLDEST contributing source.
+    collected_at = None
     for f in facts_list or []:
         _merge_into(capacity, f.get("capacity") or {})
         for it in f.get("items") or []:
             _merge_into(items.setdefault(_item_key(it), {}), it)
         for key in extra:
             extra[key].extend(f.get(key) or [])
+        ca = f.get("collectedAt")
+        if ca is not None:
+            if collected_at is None or ca < collected_at:
+                collected_at = ca
 
     merged = {}
     if capacity:
@@ -41,6 +49,8 @@ def merge_facts_list(facts_list):
     for key, rows in extra.items():
         if rows:
             merged[key] = rows
+    if collected_at is not None:
+        merged["collectedAt"] = collected_at
     return merged
 
 
@@ -78,6 +88,10 @@ def create_merged_collector(collectors):
             # Surface coverage gaps so the agent can say "a source was unreachable" rather than
             # silently reporting a partial picture (which would skew CU shares / denominators).
             merged["sourcesFailed"] = failed
+        # Ensure a collectedAt timestamp exists even when no individual source provided one
+        # (e.g. CSV-only collectors pre-dating the timestamp feature).
+        if "collectedAt" not in merged:
+            merged["collectedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return merged
 
     return {"collect": collect}

@@ -1351,7 +1351,8 @@ Four Unity Catalog Delta tables:
 All four: explicit 90-day time-travel retention via `ALTER TABLE`. No partitioning — liquid
 clustering + predictive optimization handles layout.
 
-### N2 — FUAM never configured
+### N2 — FUAM never configured — **DECISION: No, not now (2026-07-29)**
+
 **File:** `fabric_audit_agent/sources.py`
 
 FUAM descriptor present, comment: `"future (Phase 3 B3): descriptor present so coverage names the
@@ -1361,9 +1362,26 @@ Monitoring's 30-day limit.
 
 Grants needed: Storage Blob Data Reader on OneLake + Viewer on FUAM workspace.
 
-### E3 — No multi-workspace loop
+**Decision (2026-07-29):** Not pursuing FUAM integration now. FUAM's own known limitations (no
+alerting, no real-time data — per Section 22's research) mean it would add a new external
+dependency without closing any gap the agent's own collectors don't already close better. The
+agent already has its own capacity-events, Log Analytics, and Activity Events collectors that
+cover the same data with better freshness. Revisit only if a specific FUAM-only capability is
+identified that this agent genuinely needs and cannot build itself.
+
+### E3 — No multi-workspace loop — **NEEDS DESIGN (2026-07-29)**
 WM collector queries a single `FABRIC_KUSTO_CLUSTER` + `FABRIC_KUSTO_DB`. No orchestration to
 loop over multiple workspaces. Agent is blind to any workspace not explicitly configured.
+
+**Scoping note (2026-07-29):** This is two distinct designs, not one:
+1. **Live cross-workspace aggregation** ("which workspace is busiest right now") — a runtime
+   orchestrator that queries N workspaces in parallel and merges results. May share a
+   collector-composition pattern with `build_collector_from_env`'s existing multi-source merge.
+2. **Historical batch rollup** ("summarize last month across all workspaces") — a scheduled
+   sweep that aggregates historical data across workspaces into a single report.
+
+Both need their own brainstorming pass before building. Not blocked on any other task — can be
+designed any time, but implementation is Medium–Large per design.
 
 ### E4 — No staleness check on dimensional data
 Workspace/item/capacity dimension data refreshes on a midnight cycle in the Metrics app. No check

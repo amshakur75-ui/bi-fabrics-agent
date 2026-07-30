@@ -20,17 +20,18 @@ hot item, two-way in Teams.
 > actions are writing its own findings and sending notifications — it never edits, refreshes,
 > scales, or deletes anything in the estate.
 
-**Status:** code-complete and verified — **246 tests pass** (1 skipped: the optional `mcp` SDK),
-behaviour pinned to the Node reference by adversarial parity review, audit output byte-identical
-to Node. Runs fully offline on mock adapters today; live deployment needs environment wiring
-(Entra service-principal credentials, confirmed API endpoints, Delta/UC store) per `DEPLOYMENT.md`.
+**Status:** code-complete and verified — **1187 tests pass** across the MCP tools package.
+The companion chat app (`fabric-audit-agent-app/`) adds 114 tests. Both packages deploy as
+Databricks Apps (MCP server + chat agent). Runs fully offline on mock adapters today; live
+deployment needs environment wiring (Entra service-principal credentials, confirmed API endpoints,
+Delta/UC store) per `DEPLOYMENT.md`.
 
 **Quick start**
 ```
 cd fabric-audit-agent-py
 python -m venv .venv
 .venv/Scripts/python -m pip install -e .[dev]   # Windows  (Linux/Databricks: .venv/bin/python)
-.venv/Scripts/python -m pytest -q               # 246 tests, no env or API key required
+.venv/Scripts/python -m pytest -q               # 1187 tests, no env or API key required
 .venv/Scripts/python run.py audit               # sample run on mock data
 ```
 
@@ -49,13 +50,13 @@ It auto-maps your columns (printing exactly which column fed which field), write
 is gitignored, so real company numbers are **never** pushed — only the blank
 `my-estate.example.json` template is tracked. Tweak the JSON and re-run `python run.py mytest`.
 
-### `fabric-audit-agent/` — Node reference (origin)
+### `fabric-audit-agent-app/` — Chat agent (Databricks App)
 
-The original self-contained Node implementation (557 tests) that the Python build was ported
-from. Kept as the reference spec / answer key — **not** the deployment target.
-```
-cd fabric-audit-agent
-npm install && npm test     # 557 tests, no env required
-npm run audit               # sample run on mock data
-```
-- Overview: `fabric-audit-agent/README.md` · Deployment notes: `fabric-audit-agent/DEPLOYMENT.md`
+The conversational chat interface deployed as a Databricks App (`fabric-audit-agent`). Implements
+the Responses Agent protocol, calls the MCP server's tools over HTTP/OAuth, and owns the system
+prompt, investigation loop, and agent-case eval suite per ADR-001.
+
+### Node reference (removed)
+
+The original Node.js implementation (`fabric-audit-agent/`) was the porting reference and has
+been deleted now that the Python build is complete and independently verified.

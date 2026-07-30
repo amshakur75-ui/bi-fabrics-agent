@@ -14,11 +14,27 @@ group can call the Power BI / Fabric Admin APIs — a bare Managed Identity cann
 """
 import json
 import os
+import time
 
 from .pipeline import run_audit
 from .config import DEFAULT_CONFIG, merge_config
 from .reasoner_stub import create_stub_reasoner
 from .identity import resolve_identity, emit_identity_audit
+
+def _append_error_record(store, t0):
+    """Append a minimal observability record on sweep failure. Failure-isolated — never raises."""
+    from datetime import datetime, timezone
+    try:
+        if store is not None:
+            store["append"]({
+                "runAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "durationMs": round((time.monotonic() - t0) * 1000),
+                "errored": True,
+                "tokenUsage": None,
+            })
+    except Exception:
+        pass
+
 
 _REST_ENV = {
     "capacityUrl": "FABRIC_CAPACITY_URL",
@@ -79,6 +95,14 @@ def _default_delivery(env):
 
 
 def _default_store(env):
+    catalog = env.get("FABRIC_DELTA_CATALOG")
+    schema = env.get("FABRIC_DELTA_SCHEMA")
+    if catalog and schema:
+        try:
+            from .adapters.store_delta import create_delta_store
+            return create_delta_store(catalog, schema)
+        except (ImportError, RuntimeError):
+            pass
     from .adapters.store_local import create_local_store
     return create_local_store(env.get("AUDIT_HISTORY_PATH", "/tmp/fabric-audit/history.json"))
 
@@ -94,8 +118,13 @@ def run_job(collector=None, reasoner=None, delivery=None, store=None,
     reasoner = reasoner if reasoner is not None else _default_reasoner(env, config)
     delivery = delivery if delivery is not None else _default_delivery(env)
     store = store if store is not None else _default_store(env)
-    return run_audit(collector, reasoner, delivery, store=store, config=config,
-                     agent_id=agent_id, tenant=tenant, now=now)
+    t0 = time.monotonic()
+    try:
+        return run_audit(collector, reasoner, delivery, store=store, config=config,
+                         agent_id=agent_id, tenant=tenant, now=now)
+    except Exception:
+        _append_error_record(store, t0)
+        raise
 
 
 # ---- no-permission CSV sweep (host on Databricks today; live sources plug in later) ----
@@ -158,8 +187,13 @@ def run_csv_job(csv_paths=None, out_dir=None, env=None, reasoner=None, delivery=
         store = _default_store(env)
 
     from .adapters.collector_csv import create_csv_collector
-    envelope = run_audit(create_csv_collector(paths), reasoner, delivery, store=store,
-                         config=config, agent_id=agent_id, tenant=tenant, now=now)
+    t0 = time.monotonic()
+    try:
+        envelope = run_audit(create_csv_collector(paths), reasoner, delivery, store=store,
+                             config=config, agent_id=agent_id, tenant=tenant, now=now)
+    except Exception:
+        _append_error_record(store, t0)
+        raise
     _write_outputs(out_dir, envelope)
     return envelope
 
@@ -371,8 +405,13 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
     # the run (pipeline.py), so store["history"]() afterward would include it. decide_alert needs
     # the PREVIOUS run to detect resolved/verdict/SLA change against.
     prev_history = store["history"]()
-    envelope = run_audit(collector, reasoner, delivery, store=store, config=config,
-                         agent_id=agent_id, tenant=tenant, now=now)
+    t0 = time.monotonic()
+    try:
+        envelope = run_audit(collector, reasoner, delivery, store=store, config=config,
+                             agent_id=agent_id, tenant=tenant, now=now)
+    except Exception:
+        _append_error_record(store, t0)
+        raise
     _write_outputs(out_dir, envelope)
     _maybe_alert(envelope, prev_history, env)
     return envelope

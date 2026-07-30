@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from .adapters import create_mock_collector, create_stub_reasoner
 from .dax import analyze_dax as _analyze_dax
+from .staleness import maybe_stale_note as _maybe_stale_note
 from .adapters.collector_activity_events import create_activity_event_collector as _create_activity_event_collector
 from .pipeline import run_audit
 from .sources import resolve_sources as _resolve_sources_registry
@@ -407,13 +408,17 @@ def create_tool_definitions(base_dir=None):
 
         workspaces = sorted(ws_map.values(), key=lambda x: -x["totalCuSeconds"])
         capped_workspaces, cap_meta = _cap_rows(workspaces)
-        return _finish({
+        result = {
             "workspaces": capped_workspaces,
             "topUsers": users[:10],
             "totalWorkspaces": len(workspaces),
             "totalItems": len(items),
             "source": "Log Analytics + Eventhouse (merged)",
-        }, rows_key="workspaces", extra=cap_meta)
+        }
+        stale_note = _maybe_stale_note(facts, label="Workspace data")
+        if stale_note:
+            result["staleDataNote"] = stale_note
+        return _finish(result, rows_key="workspaces", extra=cap_meta)
 
     def user_activity_handler(_input=None):
         """Return ranked top users (no arg) or a specific user's detail (user arg).
@@ -428,14 +433,21 @@ def create_tool_definitions(base_dir=None):
         who = (_input or {}).get("user")
         cu_unit = "cuSeconds (CPU-time proxy; not authoritative capacity CU)"
         denominator = "monitored user-attributable activity"
+        stale_note = _maybe_stale_note(facts, label="User activity data")
         if who:
             u = next((x for x in users if _user_matches(x.get("user"), who)), None)
-            return {"user": who, "found": u is not None, "detail": u,
+            result = {"user": who, "found": u is not None, "detail": u,
                     "source": source, "coverage": cov,
                     "cuUnit": cu_unit, "denominator": denominator}
-        return {"topUsers": users[:10], "userCount": len(users),
+            if stale_note:
+                result["staleDataNote"] = stale_note
+            return result
+        result = {"topUsers": users[:10], "userCount": len(users),
                 "source": source, "coverage": cov,
                 "cuUnit": cu_unit, "denominator": denominator}
+        if stale_note:
+            result["staleDataNote"] = stale_note
+        return result
 
     def investigate_user_handler(_input=None):
         """Investigate a specific user's contribution to capacity: assembles evidence, baselines,

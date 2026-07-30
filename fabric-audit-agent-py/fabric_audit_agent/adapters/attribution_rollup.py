@@ -17,7 +17,101 @@ Tolerance (why this exists):
 CPU/duration time is a **proxy** for CU (engine time, AS-only scope): it ranks the driving users
 correctly but is not the authoritative capacity CU share. That share comes from Capacity
 Metrics / Capacity Events and wins on merge.
+
+B2 blank-user fallback (Task 4.1):
+  When ``ExecutingUser``/``Identity`` is blank, two fallback tiers attempt resolution:
+    1. **Activity Events cross-reference** — match by item name + timestamp (±60 s) against
+       ``activity_events`` (the mapped Activity Events list). Strongest non-direct source.
+    2. **Item owner fallback** — use ``configuredBy`` / ``owner`` from ``items_metadata``.
+       Weaker: item owner ≠ who ran this specific operation, but better than blank.
+  Each user entry carries ``attributionSource``: ``"direct"`` | ``"activity-crossref"`` |
+  ``"item-owner"`` | ``"unresolved"``.
 """
+from datetime import datetime
+
+# Attribution-source strength: lower = stronger (direct beats all).
+_ATTRIBUTION_STRENGTH = {"direct": 0, "activity-crossref": 1, "item-owner": 2, "unresolved": 3}
+
+
+def _stronger_source(a, b):
+    """Return the stronger (more specific/trustworthy) attribution source."""
+    return a if _ATTRIBUTION_STRENGTH.get(a, 99) <= _ATTRIBUTION_STRENGTH.get(b, 99) else b
+
+
+def _parse_ts(val):
+    """Best-effort ISO-8601 timestamp parse. Returns ``datetime`` or ``None``."""
+    if not val:
+        return None
+    s = str(val).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _ts_delta_seconds(a, b):
+    """Absolute difference in seconds between two datetimes, tz-tolerant. None on failure."""
+    if a is None or b is None:
+        return None
+    # Make both offset-aware or both offset-naive so subtraction doesn't raise.
+    if a.tzinfo and not b.tzinfo:
+        a = a.replace(tzinfo=None)
+    elif b.tzinfo and not a.tzinfo:
+        b = b.replace(tzinfo=None)
+    try:
+        return abs((a - b).total_seconds())
+    except TypeError:
+        return None
+
+
+def resolve_blank_user(name, ws, ts_str, activity_events, items_metadata,
+                       window_seconds=60):
+    """Resolve a blank user identity via two fallback tiers.
+
+    Tier 1 — Activity Events cross-reference: match by item name (+ workspace when both are
+    known) and timestamp within ``±window_seconds``. Picks the closest match.
+
+    Tier 2 — Item owner: ``configuredBy`` or ``owner`` from ``items_metadata``.
+
+    Returns ``(user_string_or_None, attribution_source)``.
+    """
+    # Tier 1: cross-reference against Activity Events by item + timestamp
+    if activity_events and ts_str:
+        row_ts = _parse_ts(ts_str)
+        if row_ts is not None:
+            best_user, best_delta = None, window_seconds + 1
+            for ae in activity_events:
+                if ae.get("item") != name:
+                    continue
+                ae_ws = ae.get("workspace")
+                if ae_ws is not None and ws is not None and str(ae_ws).lower() != str(ws).lower():
+                    continue
+                ae_user = str(ae.get("user") or ae.get("UserId") or "").strip()
+                if not ae_user:
+                    continue
+                ae_ts = _parse_ts(ae.get("time") or ae.get("CreationTime"))
+                delta = _ts_delta_seconds(row_ts, ae_ts)
+                if delta is not None and delta <= window_seconds and delta < best_delta:
+                    best_delta = delta
+                    best_user = ae_user
+            if best_user:
+                return best_user, "activity-crossref"
+
+    # Tier 2: item owner fallback
+    if items_metadata:
+        for it in items_metadata:
+            if it.get("name") != name:
+                continue
+            it_ws = it.get("workspace")
+            if it_ws is not None and ws is not None and str(it_ws).lower() != str(ws).lower():
+                continue
+            owner = it.get("configuredBy") or it.get("owner")
+            if owner:
+                return str(owner).strip(), "item-owner"
+
+    return None, "unresolved"
 
 
 def identity_email(value):
@@ -40,7 +134,8 @@ def _row(r, *names):
     return None
 
 
-def rollup_attribution(rows, top_n=3, ws_label=""):
+def rollup_attribution(rows, top_n=3, ws_label="",
+                       activity_events=None, items_metadata=None):
     """rows -> ``{"items": [...], "users": [...]}``. Pure; safe on empty/malformed input.
 
     N7 fix: ``attributionMode`` now distinguishes ``"cost-cpu"`` (true ``CpuTimeMs``) from
@@ -51,9 +146,14 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
     A3 fix: each item/user now carries ``truncated`` (bool) — True when more distinct
     users/items existed than ``top_n`` kept, so downstream logic and responses can say
     "showing top N of possibly more" instead of silently implying the list is complete.
+
+    B2 blank-user fallback (Task 4.1): when ``activity_events`` and/or ``items_metadata`` are
+    supplied, blank-user rows are resolved via two fallback tiers (Activity Events cross-
+    reference, then item owner). Every user entry carries ``attributionSource`` indicating how
+    the identity was determined.
     """
     groups = {}
-    by_user = {}   # user -> {cpu, items{name: cpu}, hasCpuTime} — the per-user rollup (who, and via what)
+    by_user = {}   # user -> {cpu, items{name: cpu}, hasCpuTime, source} — the per-user rollup
     for r in rows or []:
         if not isinstance(r, dict):
             continue   # defensive: never crash on a stray non-dict row from a real query
@@ -62,6 +162,15 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
             continue
         ws = _row(r, "Workspace", "workspace", "WorkspaceName", "PowerBIWorkspaceName") or ws_label
         user = identity_email(_row(r, "ExecutingUser", "user", "Identity"))
+
+        # B2: determine attribution source and resolve blank users via fallback tiers.
+        attr_source = "direct"
+        if not user or not str(user).strip():
+            ts_str = _row(r, "TimeGenerated", "Timestamp", "ts", "time", "CreationTime")
+            user, attr_source = resolve_blank_user(
+                name, ws, ts_str, activity_events, items_metadata,
+            )
+
         # Cost column is milliseconds (CpuTimeMs / DurationMs) -> convert to CU-seconds so this
         # matches ``normalize_event``'s scale (this rollup previously emitted MILLISECONDS labelled
         # as cuSeconds, ~1000x off from the event path). ``cuSeconds`` input is already seconds.
@@ -73,22 +182,33 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
         cpu = (raw_ms / 1000.0) if raw_ms is not None else (cs if cs is not None else 0)
         is_true_cpu = cpu_time_ms is not None
         g = groups.setdefault((str(ws).lower(), str(name).lower()),
-                              {"workspace": ws, "name": name, "users": {}, "cpu": 0, "hasCpuTime": False})
+                              {"workspace": ws, "name": name, "users": {}, "cpu": 0,
+                               "hasCpuTime": False, "userSources": {}})
         g["cpu"] += cpu
         g["hasCpuTime"] = g["hasCpuTime"] or is_true_cpu
         if user:
             g["users"][user] = g["users"].get(user, 0) + cpu
-            u = by_user.setdefault(user, {"user": user, "cpu": 0, "items": {}, "hasCpuTime": False})
+            # Track the strongest attribution source per user within this group.
+            prev = g["userSources"].get(user)
+            g["userSources"][user] = _stronger_source(attr_source, prev) if prev else attr_source
+
+            u = by_user.setdefault(user, {"user": user, "cpu": 0, "items": {},
+                                          "hasCpuTime": False, "source": attr_source})
             u["cpu"] += cpu
             u["hasCpuTime"] = u["hasCpuTime"] or is_true_cpu
             u["items"][name] = u["items"].get(name, 0) + cpu
+            # Update global per-user source if this row's source is stronger.
+            u["source"] = _stronger_source(attr_source, u["source"])
 
     total = sum(g["cpu"] for g in groups.values())
 
     items = []
     for g in groups.values():
-        ranked = sorted(({"user": u, "cuSeconds": round(c, 3)} for u, c in g["users"].items()),
-                        key=lambda x: -x["cuSeconds"])
+        ranked = sorted(
+            ({"user": u, "cuSeconds": round(c, 3),
+              "attributionSource": g["userSources"].get(u, "direct")}
+             for u, c in g["users"].items()),
+            key=lambda x: -x["cuSeconds"])
         user_count = len(ranked)
         items.append({
             "workspace": g["workspace"], "name": g["name"], "cuSeconds": round(g["cpu"], 3),
@@ -109,6 +229,7 @@ def rollup_attribution(rows, top_n=3, ws_label=""):
             "topItems": top_items[:top_n], "itemCount": item_count,
             "attributionMode": "cost-cpu" if u["hasCpuTime"] else "cost-duration",
             "truncated": item_count > top_n,
+            "attributionSource": u.get("source", "direct"),
         })
     users.sort(key=lambda x: -x["cuSeconds"])
 

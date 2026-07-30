@@ -360,7 +360,7 @@ def _scrub_secrets(text):
     return out
 
 
-def _conversation_audit_log(question, trajectory, text):
+def _conversation_audit_log(question, trajectory, text, duration_ms=None, errored=False):
     """Print one `[conversation]` audit line for the eval-flywheel miner (built later). NEVER
     include tool `input`/args (a trajectory entry is `{"tool","input"}` -- only the name is
     extracted) or the full answer (only its length) -- see the anti-exfil discipline in the
@@ -375,6 +375,8 @@ def _conversation_audit_log(question, trajectory, text):
         "toolCount": len(tools_called),
         "abstainedHint": bool(_ABSTAIN_HINT_RE.search(text or "")),
         "answerChars": len(text or ""),
+        "durationMs": duration_ms,
+        "errored": errored,
     }
     print(f"[conversation] {json.dumps(payload, ensure_ascii=False)}")
 
@@ -425,10 +427,18 @@ async def _run(request, on_tool=None):
     messages = _messages_from_request(request)
     question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     budget = _step_budget(question)
-    result = await _run_tool_loop(
-        _build_claude_client(ws), model=_MODEL, system=build_system_prompt(),
-        messages=messages, tools=tools, dispatch=dispatch,
-        max_steps=budget, on_tool=on_tool)
+    t0 = time.monotonic()
+    errored = False
+    try:
+        result = await _run_tool_loop(
+            _build_claude_client(ws), model=_MODEL, system=build_system_prompt(),
+            messages=messages, tools=tools, dispatch=dispatch,
+            max_steps=budget, on_tool=on_tool)
+    except Exception:
+        errored = True
+        raise
+    finally:
+        duration_ms = round((time.monotonic() - t0) * 1000)
     # N22 fix: the step budget is a silent, keyword-based classifier (see _INVESTIGATION_HINTS) --
     # a two-part question phrased just differently enough to miss every keyword gets only 6 steps
     # with zero indication anything was capped. Disclose ONLY when the shallow budget was actually
@@ -444,7 +454,8 @@ async def _run(request, on_tool=None):
     # Plain-language investigation trail (no tool names/inputs) — surfaced via custom_outputs.
     result["trail"] = _plain_trail(result.get("trajectory"))
     try:
-        _conversation_audit_log(question, result.get("trajectory") or [], result.get("text") or "")
+        _conversation_audit_log(question, result.get("trajectory") or [], result.get("text") or "",
+                                duration_ms=duration_ms, errored=errored)
     except Exception as exc:
         # Failure-isolated: the emit must never break a conversation, and the except must never
         # log the raw question or `str(exc)` (which could echo the offending input back into the

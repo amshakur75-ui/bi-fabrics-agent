@@ -1,10 +1,10 @@
-name: CI (fabric-audit-agent-py)
+name: CI
 
-# Runs the read-only Fabric audit agent's offline test suite on every push/PR.
-# The matrix pins Python 3.10 (the package's stated minimum, requires-python >=3.10)
-# alongside 3.12 specifically so the query/windows.py `Z`-suffix normalization
-# (datetime.fromisoformat rejects a trailing "Z" before 3.11) is exercised on 3.10,
-# where it is load-bearing — not only on 3.12 where "Z" parses natively.
+# Runs the offline test suites for both packages on every push/PR.
+# The py-package matrix pins Python 3.10 (its stated minimum, requires-python >=3.10)
+# alongside 3.12 so the query/windows.py Z-suffix normalization (datetime.fromisoformat
+# rejects trailing "Z" before 3.11) is exercised on 3.10 where it is load-bearing.
+# The app package requires >=3.11, so its tests run on 3.12 only.
 
 on:
   push:
@@ -12,7 +12,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  test-py:
+    name: fabric-audit-agent-py (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -29,4 +30,20 @@ jobs:
       - name: Install (offline core + dev)
         run: pip install -e ".[dev]"
       - name: Run test suite
-        run: python -m pytest -q
+        run: python -m pytest tests/ -x -q
+
+  test-app:
+    name: fabric-audit-agent-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install MCP tools package (needed by app tests)
+        run: pip install -e "./fabric-audit-agent-py[dev]"
+      - name: Install chat app
+        run: pip install -e "./fabric-audit-agent-app" && pip install pytest
+      - name: Run test suite
+        working-directory: fabric-audit-agent-app
+        run: python -m pytest tests/ -x -q

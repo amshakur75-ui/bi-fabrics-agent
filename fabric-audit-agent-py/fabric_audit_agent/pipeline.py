@@ -4,6 +4,7 @@ All I/O is injected via ports (dict-style: ``{"method": callable}``, matching th
 reasoner), so the same core runs against mock or real adapters. Sync (the stub + adapters
 are synchronous in Python).
 """
+import time
 from datetime import datetime, timezone
 
 from .detectors import detect_all
@@ -60,6 +61,7 @@ def _type_of(f):
 def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
               agent_id=None, now=None, config=None, tenant=None):
     config = config or DEFAULT_CONFIG
+    t0 = time.monotonic()
     run_at = now if now is not None else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     now_ms = _parse_ms(run_at)
     # Unparseable run_at -> 0 (JS gets NaN). Both disable snooze-expiry (nowMs>0 is false for
@@ -101,6 +103,8 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
         forecast = forecast_capacity([*history, {"metrics": {"peakCuPct": peak}}])
         outcomes = assess_outcomes(findings, history, peak)
         anomalies = detect_anomalies(facts, history)
+        duration_ms = round((time.monotonic() - t0) * 1000)
+        token_usage = reasoner.get("lastUsage") if isinstance(reasoner, dict) else None
         store["append"]({
             "runAt": run_at,
             "tenant": resolved_tenant,
@@ -109,6 +113,10 @@ def run_audit(collector, reasoner, delivery, store=None, lifecycle_store=None,
             # SLA-breach increases against the previous run. Additive; older records omit them.
             "verdictDecision": verdict["decision"],
             "slaBreachedCount": summarize_sla(findings)["breachedCount"],
+            # Observability (Task 4.10): wall-clock duration, error flag, and token usage per run.
+            "durationMs": duration_ms,
+            "errored": False,
+            "tokenUsage": token_usage,
             "findings": [
                 *[{"key": f.get("key"), "level": f["score"]["level"], "where": f.get("where"), "what": f.get("what"), "suppressed": False} for f in findings],
                 *[{"key": f.get("key"), "level": f["score"]["level"], "where": f.get("where"), "what": f.get("what"), "suppressed": True} for f in suppressed],

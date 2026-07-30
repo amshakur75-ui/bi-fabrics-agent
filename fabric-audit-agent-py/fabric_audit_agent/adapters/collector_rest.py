@@ -8,6 +8,8 @@ Endpoints are representative; verify exact paths against the live Fabric/Power B
 at deploy. If a domain URL isn't configured, the domain is passed as ``[]``/``{}`` so
 ``to_facts`` tolerates it.
 """
+from datetime import datetime, timezone
+
 from ..mappers import to_facts
 from ..query.redact import redact_secrets
 
@@ -72,6 +74,8 @@ def create_rest_collector(http, config):
             "access": access_raw,
             "usage": usage_raw,
         }
-        return to_facts(raw)
+        facts = to_facts(raw)
+        facts["collectedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return facts
 
     return {"collect": collect}
