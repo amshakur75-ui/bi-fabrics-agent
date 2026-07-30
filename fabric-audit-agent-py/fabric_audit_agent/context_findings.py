@@ -55,7 +55,7 @@ def create_findings_store_delta(catalog, schema, *, spark=None):
     Returns ``{"query": fn, "write": fn}`` — the query side for Phase 6, the write
     side for pipeline.py to persist individual findings after each run.
     """
-    table = f"{catalog}.{schema}.audit_findings"
+    table = f"`{catalog}`.`{schema}`.audit_findings"
 
     def _get_spark():
         nonlocal spark

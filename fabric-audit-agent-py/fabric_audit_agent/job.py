@@ -460,8 +460,25 @@ def _maybe_alert(envelope, prev_history, env):
         return None
 
 
+def _merge_named_params_into_env():
+    """Parse ``--KEY=VALUE`` named parameters from sys.argv into os.environ.
+
+    Databricks serverless Python wheel tasks pass ``named_parameters`` as
+    ``--KEY=VALUE`` command-line arguments. Classic clusters use ``spark_env_vars``
+    instead. This bridges the two — the rest of the code reads ``os.environ``
+    regardless of compute type.
+    """
+    import sys
+    for arg in sys.argv[1:]:
+        if arg.startswith("--") and "=" in arg:
+            key, _, value = arg[2:].partition("=")
+            if key:
+                os.environ.setdefault(key, value)
+
+
 def job_main():
     """The deployed Databricks wheel-task entry (pyproject: fabric-audit-job)."""
+    _merge_named_params_into_env()
     try:
         envelope = run_unified_job()
     except Exception as exc:
@@ -571,6 +588,7 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
 
 def tier2_main():
     """The deployed Databricks wheel-task entry for Tier 2 (pyproject: fabric-audit-tier2)."""
+    _merge_named_params_into_env()
     env = os.environ
     try:
         result = run_tier2_job(env=env)

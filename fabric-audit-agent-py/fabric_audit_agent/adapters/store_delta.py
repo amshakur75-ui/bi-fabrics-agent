@@ -9,6 +9,29 @@ Requires the Databricks Runtime (PySpark + Delta). Not importable in a plain-Pyt
 """
 import json
 
+_SCHEMA = None
+
+def _get_schema():
+    global _SCHEMA
+    if _SCHEMA is not None:
+        return _SCHEMA
+    try:
+        from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType
+        _SCHEMA = StructType([
+            StructField("run_at", StringType(), True),
+            StructField("tenant", StringType(), True),
+            StructField("peak_cu_pct", DoubleType(), True),
+            StructField("verdict_decision", StringType(), True),
+            StructField("sla_breached_count", IntegerType(), True),
+            StructField("duration_ms", DoubleType(), True),
+            StructField("errored", BooleanType(), True),
+            StructField("token_usage", StringType(), True),
+            StructField("findings_json", StringType(), True),
+        ])
+    except ImportError:
+        pass
+    return _SCHEMA
+
 
 def _to_delta_row(run):
     """Convert a pipeline run record (camelCase dict) to a Delta-friendly flat row."""
@@ -47,7 +70,7 @@ def create_delta_store(catalog, schema, *, spark=None, keep=180):
 
     ``spark`` is injected for testability; defaults to the active SparkSession at call time.
     """
-    table = f"{catalog}.{schema}.run_history"
+    table = f"`{catalog}`.`{schema}`.run_history"
 
     def _get_spark():
         nonlocal spark
@@ -78,7 +101,8 @@ def create_delta_store(catalog, schema, *, spark=None, keep=180):
     def append(run):
         s = _get_spark()
         row = _to_delta_row(run)
-        df = s.createDataFrame([row])
+        schema = _get_schema()
+        df = s.createDataFrame([row], schema=schema) if schema else s.createDataFrame([row])
         df.write.mode("append").saveAsTable(table)
 
         count = s.table(table).count()

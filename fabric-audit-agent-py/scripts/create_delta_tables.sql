@@ -1,6 +1,6 @@
 -- Phase 5 Delta tables for the Fabric Audit Agent.
 -- Run once in a Databricks notebook or SQL warehouse against Unity Catalog.
--- Replace ${catalog} and ${schema} with actual values (default: main.bi_fabrics_agent).
+-- Replace ${catalog} and ${schema} with actual values (default: shakur-main.bi-fabrics-audit).
 --
 -- All four tables: liquid clustering (no partition columns), 90-day retention.
 

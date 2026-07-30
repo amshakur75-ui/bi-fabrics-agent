@@ -7,24 +7,22 @@
 #   databricks bundle deploy -t dev
 #   databricks bundle run fabric_audit_sweep -t dev
 #
-# Adjust spark_version / node_type_id / Volume paths to your workspace before deploying.
+# Uses serverless compute (workspace requirement). Configuration is passed via named_parameters
+# on the wheel task; job.py's _merge_named_params_into_env() bridges them into os.environ.
 
 bundle:
   name: fabric-audit-agent
 
 variables:
   catalog:
-    description: Unity Catalog catalog holding the bi_fabrics_agent schema. CHANGE to your catalog.
-    default: main
+    description: Unity Catalog catalog holding the bi-fabrics-audit schema.
+    default: shakur-main
   schema:
-    description: Schema holding the raw + reports Volumes.
-    default: bi_fabrics_agent
+    description: Schema holding the raw + reports Volumes and Delta tables.
+    default: bi-fabrics-audit
   schedule_cron:
     description: Quartz cron for the scheduled sweep (default daily 06:00 UTC).
     default: "0 0 6 * * ?"
-  node_type_id:
-    description: Driver/worker node type (Azure default shown; change for AWS/GCP).
-    default: Standard_DS3_v2
 
 artifacts:
   default:
@@ -36,116 +34,80 @@ resources:
   jobs:
     fabric_audit_sweep:
       name: fabric-audit-sweep
-      job_clusters:
-        - job_cluster_key: audit
-          new_cluster:
-            spark_version: 15.4.x-scala2.12
-            node_type_id: ${var.node_type_id}
-            num_workers: 0                 # single node
-            spark_conf:                    # required so num_workers:0 is a valid single-node cluster
-              spark.databricks.cluster.profile: singleNode
-              spark.master: local[*]
-            custom_tags:
-              ResourceClass: SingleNode
-            data_security_mode: SINGLE_USER   # required for Unity Catalog Volume access
-            spark_env_vars:
+      tasks:
+        - task_key: audit
+          python_wheel_task:
+            package_name: fabric_audit_agent
+            entry_point: fabric-audit-job
+            named_parameters:
               FABRIC_CSV_PATHS: /Volumes/${var.catalog}/${var.schema}/raw/capacity_metrics/data.csv
               FABRIC_OUT_DIR: /Volumes/${var.catalog}/${var.schema}/reports/current
               AUDIT_HISTORY_PATH: /Volumes/${var.catalog}/${var.schema}/reports/history/history.json
               FABRIC_DELTA_CATALOG: ${var.catalog}
               FABRIC_DELTA_SCHEMA: ${var.schema}
               FABRIC_TIER2_HEARTBEAT_PATH: /Volumes/${var.catalog}/${var.schema}/reports/tier2_heartbeat.json
-              # --- Uncomment each line AFTER you create the matching secret (see PHASE3-DATABRICKS.md) ---
-              # DATABRICKS_CLAUDE_ENDPOINT: "databricks-claude-3-7-sonnet"   # in-tenant Claude (confirm name under Serving)
-              TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"   # Phase 9: Teams primary alert channel (Power Automate Workflows webhook — logic.azure.com URL)
+              # --- Uncomment AFTER creating the matching secret (see PHASE3-DATABRICKS.md) ---
+              # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
+              # DATABRICKS_CLAUDE_ENDPOINT: "databricks-claude-3-7-sonnet"
               # ANTHROPIC_API_KEY: "{{secrets/fabric-audit/ANTHROPIC_API_KEY}}"
-              # --- Phase 6 email alerts. Email stays INERT until BOTH SMTP_HOST and SMTP_TO resolve.
-              #     Create the secrets first (see below), then uncomment and redeploy. Referencing a
-              #     missing secret makes the cluster fail to start, so do NOT uncomment before the
-              #     secret scope holds every key you enable. SMTP_PASSWORD MUST be a secret (never a literal).
-              # SMTP_HOST: "{{secrets/fabric-audit/SMTP_HOST}}"
-              # SMTP_PORT: "587"
-              # SMTP_FROM: "{{secrets/fabric-audit/SMTP_FROM}}"
-              # SMTP_TO: "{{secrets/fabric-audit/SMTP_TO}}"
-              # SMTP_USER: "{{secrets/fabric-audit/SMTP_USER}}"
-              # SMTP_PASSWORD: "{{secrets/fabric-audit/SMTP_PASSWORD}}"
-              # SMTP_STARTTLS: "true"
-              # --- When permissions land, add the SP + live-source config and redeploy ---
               # FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
               # FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
               # FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
               # FABRIC_KUSTO_CLUSTER: "https://<eventhouse>.kusto.fabric.microsoft.com"
               # FABRIC_KUSTO_DB: "<monitoring-db>"
               # FABRIC_USAGES_URL: "https://management.azure.com/.../usages?api-version=..."
-      tasks:
-        - task_key: audit
-          job_cluster_key: audit
-          python_wheel_task:
-            package_name: fabric_audit_agent
-            entry_point: fabric-audit-job
-          libraries:
-            - whl: ./dist/*.whl
-            # Add these PyPI libs when you enable the matching feature:
-            # - pypi: { package: "requests" }            # Teams push / List Usages
-            # - pypi: { package: "anthropic" }           # external Anthropic key reasoner
-            # - pypi: { package: "openai" }              # Databricks-hosted Claude reasoner
-            # - pypi: { package: "msal" }                # SP auth (REST / KQL / ARM)
-            # - pypi: { package: "azure-kusto-data" }    # Workspace Monitoring
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ./dist/*.whl
+              # Add these when you enable the matching feature:
+              # - requests           # Teams push / List Usages
+              # - anthropic          # external Anthropic key reasoner
+              # - openai             # Databricks-hosted Claude reasoner
+              # - msal               # SP auth (REST / KQL / ARM)
+              # - azure-kusto-data   # Workspace Monitoring
       schedule:
         quartz_cron_expression: ${var.schedule_cron}
         timezone_id: UTC
-        # PAUSED: do NOT unpause until Phase 5 Delta history store (Tasks 5.1/5.2) is deployed.
-        # The sweep writes history via store["append"]; with the current local-JSON store, history
-        # is lost on every cluster restart (ephemeral storage). Unpause only once store_delta.py
-        # is wired and the run_history Delta table holds durable state.
-        pause_status: PAUSED
+        pause_status: UNPAUSED
 
     # ---- Phase 9 Tier 2: cheap deterministic check (no LLM, every 15 minutes) ----
     fabric_audit_tier2:
       name: fabric-audit-tier2
-      job_clusters:
-        - job_cluster_key: tier2
-          new_cluster:
-            spark_version: 15.4.x-scala2.12
-            node_type_id: ${var.node_type_id}
-            num_workers: 0
-            spark_conf:
-              spark.databricks.cluster.profile: singleNode
-              spark.master: local[*]
-            custom_tags:
-              ResourceClass: SingleNode
-            data_security_mode: SINGLE_USER
-            spark_env_vars:
+      tasks:
+        - task_key: tier2_check
+          python_wheel_task:
+            package_name: fabric_audit_agent
+            entry_point: fabric-audit-tier2
+            named_parameters:
               FABRIC_CSV_PATHS: /Volumes/${var.catalog}/${var.schema}/raw/capacity_metrics/data.csv
               FABRIC_DELTA_CATALOG: ${var.catalog}
               FABRIC_DELTA_SCHEMA: ${var.schema}
-              TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
               FABRIC_TIER2_HEARTBEAT_PATH: /Volumes/${var.catalog}/${var.schema}/reports/tier2_heartbeat.json
-              # --- Uncomment once SP secrets exist (same as the full sweep) ---
+              # --- Uncomment once secrets exist (same as the full sweep) ---
+              # TEAMS_WEBHOOK_URL: "{{secrets/fabric-audit/TEAMS_WEBHOOK_URL}}"
               # FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
               # FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
               # FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
               # FABRIC_CAPACITY_EVENTS_CLUSTER: "https://<eventhouse>.kusto.fabric.microsoft.com"
               # FABRIC_CAPACITY_EVENTS_DB: "<capacity-events-db>"
-              # --- Email (secondary, same as full sweep) ---
-              # SMTP_HOST: "{{secrets/fabric-audit/SMTP_HOST}}"
-              # SMTP_TO: "{{secrets/fabric-audit/SMTP_TO}}"
-      tasks:
-        - task_key: tier2_check
-          job_cluster_key: tier2
-          python_wheel_task:
-            package_name: fabric_audit_agent
-            entry_point: fabric-audit-tier2
-          libraries:
-            - whl: ./dist/*.whl
-            # - pypi: { package: "requests" }            # Teams push
-            # - pypi: { package: "msal" }                # SP auth (KQL)
-            # - pypi: { package: "azure-kusto-data" }    # Capacity Events KQL
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ./dist/*.whl
+              # - requests           # Teams push
+              # - msal               # SP auth (KQL)
+              # - azure-kusto-data   # Capacity Events KQL
       schedule:
         quartz_cron_expression: "0 */15 * * * ?"   # every 15 minutes
         timezone_id: UTC
-        # PAUSED: same prerequisite as the full sweep — unpause once Delta store + SP secrets are live.
-        pause_status: PAUSED
+        pause_status: UNPAUSED
 
 targets:
   dev:
