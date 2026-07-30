@@ -251,6 +251,12 @@ async def _mcp_tools_and_dispatch(ws):
     if _STATE["tools"] is not None and now - _STATE["tools_at"] < _TOOLS_TTL_SEC:
         return _STATE["tools"], _STATE["dispatch"]
 
+    try:
+        from mcp.client import streamable_http as _sh
+        if not hasattr(_sh, "streamablehttp_client") and hasattr(_sh, "streamable_http_client"):
+            _sh.streamablehttp_client = _sh.streamable_http_client
+    except Exception:
+        pass
     from databricks_mcp import DatabricksMCPClient
     mcp = DatabricksMCPClient(server_url=_MCP_URL, workspace_client=ws)
     listed = await mcp.alist_tools()
