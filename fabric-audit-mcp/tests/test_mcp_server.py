@@ -13,7 +13,7 @@ params on every tool and lost required-enforcement.
 """
 import inspect
 
-from fabric_audit_agent.mcp_server import _make_tool_fn
+from fabric_audit_mcp.mcp_server import _make_tool_fn
 
 
 def _capturing_handler():

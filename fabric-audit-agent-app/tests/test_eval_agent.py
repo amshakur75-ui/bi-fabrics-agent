@@ -107,11 +107,11 @@ def test_windowed_raw_events_case_passes_structured_start_end(monkeypatch):
 
 def test_runbook_files_exist_and_name_real_tools():
     """The three investigation runbooks must exist and each must name at least one real tool.
-    Runbook files live in the MCP package's docs (tools-side); the assertion still holds
-    because they name tools that exist there."""
-    # From the app's tests/ dir, walk up to the repo root then over to the MCP package.
-    repo_root = pathlib.Path(__file__).resolve().parents[2]
-    runbooks_dir = repo_root / "fabric-audit-agent-py" / "docs" / "runbooks"
+    Runbook files live in the agent app's docs; the assertion still holds because they name
+    tools that exist in fabric_audit_agent.tools."""
+    # From the app's tests/ dir, walk up to the agent app root, then into docs/runbooks.
+    app_root = pathlib.Path(__file__).resolve().parents[1]
+    runbooks_dir = app_root / "docs" / "runbooks"
     required = ["throttle-investigation.md", "noisy-neighbor.md", "refresh-collision.md"]
     real_tools = {
         "investigate_capacity_spike", "spike_events", "user_spike_history",

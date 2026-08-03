@@ -39,9 +39,12 @@ console script after `pip install -e .`):
 | `dax "<measure>"` | DAX anti-pattern analysis |
 | `import` / `inspect` / `mytest` | CSV/`.vpax` import + diagnosis (local) |
 
-Production surfaces: `fabric_audit_agent/job.py` (`main` / `run_job` — the Databricks wheel-task
-sweep) and `fabric_audit_agent/mcp_server.py` (`main` / `build_mcp_server` — the MCP pull
-surface). `python -m pytest -q` runs the full suite (no env required).
+Production surfaces: `fabric_audit_agent/job.py` (`run_job` / `job_main` — the Databricks
+wheel-task sweep) and `fabric_audit_agent/watch_run.py` (`main` — the 5-min watcher Job). The
+**MCP pull surface** (`mcp_server.py` + `data_agent.py`) lives in the sibling **`fabric-audit-mcp/`**
+repo (ADR-002) and imports `create_tool_definitions` from `fabric_audit_agent.tools` via the
+installed wheel — the dependency flows one way only, `MCP → fabric_audit_agent`, never back.
+`python -m pytest -q` runs the full suite (no env required).
 
 ## Architecture
 
@@ -71,14 +74,16 @@ adapters). Nothing in the core knows about HTTP, files, or external services.
 
 ## Conversational / Pull Surface
 
-`tools.py` (`create_tool_definitions`) exposes the auditor as **18 read-only tools** (audit/verdict,
-user attribution, event depth + time windows, schema/sample grounding, capacity diagnostics,
-deduction, memory, per-user, ad-hoc KQL + query library — see `MCP-AGENT.md` for the full grouped
-list); `data_agent.py`
-(`build_data_agent_manifest`) produces
-the Fabric Data Agent / MCP manifest (handler stripped, `readOnly: true`); `mcp_server.py` serves
-it. `conversation.py` handles the Teams two-way surface (`build_concentration_alert`,
-`answer_question`). See `DEPLOYMENT.md`.
+`fabric_audit_agent/tools.py` (`create_tool_definitions`) exposes the auditor as read-only tools
+(audit/verdict, user attribution, event depth + time windows, schema/sample grounding, capacity
+diagnostics, deduction, memory, per-user, ad-hoc KQL + query library — see
+`fabric-audit-mcp/MCP-AGENT.md` for the full grouped list). `tools.py` stays in the **core**
+package because both the MCP server AND the agent brain (`agent_server/investigator.py`) import
+`create_tool_definitions`. The MCP wiring lives in the sibling **`fabric-audit-mcp/`** repo:
+`data_agent.py` (`build_data_agent_manifest`) produces the Fabric Data Agent / MCP manifest
+(handler stripped, `readOnly: true`), and `mcp_server.py` serves it — both importing from
+`fabric_audit_agent.tools`. `conversation.py` handles the Teams two-way surface
+(`build_concentration_alert`, `answer_question`). See `DEPLOYMENT.md`.
 
 ## Conventions (port fidelity)
 

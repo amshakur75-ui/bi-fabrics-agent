@@ -12,14 +12,18 @@ from fabric_audit_agent.entrypoints import (
     run_mine_queries_cli,
 )
 from fabric_audit_agent.tools import create_tool_definitions
-from fabric_audit_agent.mcp_server import manifest
+from fabric_audit_mcp.mcp_server import manifest
 from fabric_audit_agent.job import run_job, build_rest_config
 from fabric_audit_agent.adapters import create_stub_reasoner
 from fabric_audit_agent.config import DEFAULT_CONFIG
 from fabric_audit_agent.query.firewall import validate_adhoc_kql
+import fabric_audit_agent as _fa
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_REAL_LIBRARY = os.path.join(_REPO, "fabric_audit_agent", "query_library.json")
+# The real KQL catalog ships INSIDE the fabric_audit_agent package (agent app / installed wheel),
+# not beside these MCP-repo tests — resolve it from the package so the "don't touch the real file"
+# assertion checks the actual file the CLI would load.
+_REAL_LIBRARY = os.path.join(os.path.dirname(os.path.abspath(_fa.__file__)), "query_library.json")
 
 
 def _temp_base(tmp_path):
@@ -107,7 +111,7 @@ def test_mcp_manifest_is_read_only_and_strips_handler(tmp_path):
 
 def test_build_mcp_server_if_mcp_installed(tmp_path):
     pytest.importorskip("mcp")
-    from fabric_audit_agent.mcp_server import build_mcp_server
+    from fabric_audit_mcp.mcp_server import build_mcp_server
     assert build_mcp_server(base_dir=_temp_base(tmp_path)) is not None
 
 
@@ -117,7 +121,7 @@ def test_mcp_advertised_schemas_mirror_input_schema(tmp_path):
     Regression: a union-signature wrapper used to advertise phantom params on every tool and
     lose the `required` constraint on user_spike_history."""
     pytest.importorskip("mcp")
-    from fabric_audit_agent.mcp_server import build_mcp_server
+    from fabric_audit_mcp.mcp_server import build_mcp_server
 
     server = build_mcp_server(base_dir=_temp_base(tmp_path))
     tools = {t.name: t.parameters for t in server._tool_manager.list_tools()}
@@ -181,7 +185,7 @@ def test_mcp_required_param_enforced_and_call_flows(tmp_path):
     and a valid call must reach the real handler."""
     pytest.importorskip("mcp")
     import anyio
-    from fabric_audit_agent.mcp_server import build_mcp_server
+    from fabric_audit_mcp.mcp_server import build_mcp_server
 
     server = build_mcp_server(base_dir=_temp_base(tmp_path))
 

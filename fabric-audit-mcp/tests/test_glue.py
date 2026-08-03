@@ -1,4 +1,4 @@
-from fabric_audit_agent.data_agent import build_data_agent_manifest
+from fabric_audit_mcp.data_agent import build_data_agent_manifest
 from fabric_audit_agent.mappers import to_facts
 from fabric_audit_agent.mappers.capacity import map_capacity
 from fabric_audit_agent.eval import score_case, score_suite

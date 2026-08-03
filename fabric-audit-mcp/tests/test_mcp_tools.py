@@ -2016,7 +2016,7 @@ _PATTERNS_SCHEMA = {"type": "object", "properties": {
 def test_make_tool_fn_forwards_surge_users_and_cu_spike_pct():
     # _make_tool_fn derives the per-tool signature from input_schema; surgeUsers/cuSpikePct reach
     # the handler as the capacity_patterns schema advertises them.
-    from fabric_audit_agent.mcp_server import _make_tool_fn
+    from fabric_audit_mcp.mcp_server import _make_tool_fn
     captured = {}
 
     def handler(payload):
@@ -2031,7 +2031,7 @@ def test_make_tool_fn_forwards_surge_users_and_cu_spike_pct():
 
 def test_make_tool_fn_surge_users_zero_forwarded_not_dropped():
     # 0 is a meaningful threshold value (nullish, not falsy) -- must still be forwarded.
-    from fabric_audit_agent.mcp_server import _make_tool_fn
+    from fabric_audit_mcp.mcp_server import _make_tool_fn
     captured = {}
 
     def handler(payload):

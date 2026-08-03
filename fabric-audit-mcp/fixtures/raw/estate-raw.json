@@ -1,0 +1,72 @@
+{
+  "capacity": {
+    "value": [
+      {
+        "id": "C-001",
+        "displayName": "F64",
+        "sku": "F64",
+        "memoryGb": 64,
+        "peakCuPercent": 96,
+        "peakTimestamp": "2026-06-08T06:05:00.000Z",
+        "throttledMinutes": 42,
+        "tenantName": "Contoso"
+      }
+    ]
+  },
+  "refreshes": {
+    "value": [
+      { "groupName": "Finance", "datasetName": "Sales",    "scheduleTime": "06:00", "startTime": "2026-06-08T06:00:00.000Z", "endTime": "2026-06-08T06:47:00.000Z", "sizeBytes": 4200000000 },
+      { "groupName": "Finance", "datasetName": "Forecast", "scheduleTime": "06:00", "startTime": "2026-06-08T06:00:00.000Z", "endTime": "2026-06-08T06:31:00.000Z", "sizeBytes": 2100000000 },
+      { "groupName": "Ops",     "datasetName": "Logistics","scheduleTime": "06:00", "startTime": "2026-06-08T06:00:00.000Z", "endTime": "2026-06-08T06:22:00.000Z", "sizeBytes": 1400000000 }
+    ]
+  },
+  "datasets": {
+    "value": [
+      { "groupName": "Finance", "name": "Sales",     "sizeBytes": 4200000000, "relationshipsBidi": 9,  "autoTimeIntelligence": true,  "refreshFailureRatePct": 12, "observedAt": "2026-06-08T06:00:00.000Z" },
+      { "groupName": "HR",      "name": "Headcount", "sizeBytes":  300000000, "relationshipsBidi": 1,  "autoTimeIntelligence": false, "refreshFailureRatePct": 0,  "observedAt": "2026-06-08T09:00:00.000Z" }
+    ]
+  },
+  "reports": {
+    "value": [
+      { "groupName": "Finance", "name": "Exec Dashboard",  "visualCount": 41, "storageMode": "DirectQuery", "slowestVisualMs": 12000, "datasourceType": "Synapse: dw_sales" },
+      { "groupName": "Ops",     "name": "Logistics Live",  "visualCount": 12, "storageMode": "Import",      "slowestVisualMs": 1200,  "datasourceType": "Lakehouse: ops" }
+    ]
+  },
+  "pipelines": {
+    "value": [
+      { "groupName": "Finance", "name": "Nightly Load", "lastRunStatus": "Failed",    "failurePct": 18, "gatewayHealthy": false, "lastRunTime": "2026-06-08T02:14:00.000Z" },
+      { "groupName": "Ops",     "name": "Hourly Sync",  "lastRunStatus": "Succeeded", "failurePct": 2,  "gatewayHealthy": true,  "lastRunTime": "2026-06-08T08:00:00.000Z" }
+    ]
+  },
+  "lineage": {
+    "items": [
+      { "id": "pl-nightly", "itemType": "pipeline", "groupName": "Finance", "displayName": "Nightly Load",    "status": "Failed", "failedAt": "2026-06-08T02:14:00.000Z" },
+      { "id": "ds-sales",   "itemType": "dataset",  "groupName": "Finance", "displayName": "Sales",           "status": "OK" },
+      { "id": "rpt-exec",   "itemType": "report",   "groupName": "Finance", "displayName": "Exec Dashboard",  "status": "OK" }
+    ],
+    "links": [
+      { "source": "pl-nightly", "target": "ds-sales" },
+      { "source": "ds-sales",   "target": "rpt-exec" }
+    ]
+  },
+  "access": {
+    "adminGrants": [
+      { "workspace": "Finance", "principal": "ext-contractor@vendor.com", "role": "Admin", "grantedAt": "2026-06-07T22:10:00.000Z", "sensitive": true }
+    ],
+    "externalShares": [
+      { "workspace": "Finance", "item": "Exec Dashboard", "sharedWith": "partner@othercorp.com", "at": "2026-06-06T15:00:00.000Z" }
+    ],
+    "accessEvents": [
+      { "user": "jdoe", "workspace": "Finance", "count": 220, "baselineCount": 20 }
+    ]
+  },
+  "usage": {
+    "reportViews": [
+      { "groupName": "Ops",     "name": "Old Quarterly",  "views30d": 0 },
+      { "groupName": "Finance", "name": "Exec Dashboard", "views30d": 540 }
+    ],
+    "capacityUtil": [
+      { "id": "F64", "sku": "F64", "avgCuPercent": 3 }
+    ]
+  }
+}

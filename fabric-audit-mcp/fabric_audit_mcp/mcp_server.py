@@ -7,8 +7,8 @@ Port of the Node MCP/data-agent wiring. Uses the Python ``mcp`` package (lazy im
 import inspect
 import os
 
-from .tools import create_tool_definitions
-from .data_agent import build_data_agent_manifest
+from fabric_audit_agent.tools import create_tool_definitions
+from fabric_audit_mcp.data_agent import build_data_agent_manifest
 
 _JSON_TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 

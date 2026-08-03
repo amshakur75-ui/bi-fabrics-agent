@@ -1,0 +1,55 @@
+{
+  "capacity": {
+    "tenant": "Contoso", "capacityId": "F64", "sku": "F64", "memoryGB": 64,
+    "peakCuPct": 96, "peakAt": "2026-06-08T06:05:00.000Z", "throttleMinutes": 42,
+    "refreshes": [
+      { "workspace": "Finance", "dataset": "Sales", "scheduledAt": "06:00", "durationMin": 47, "sizeGB": 4.2 },
+      { "workspace": "Finance", "dataset": "Forecast", "scheduledAt": "06:00", "durationMin": 31, "sizeGB": 2.1 },
+      { "workspace": "Ops", "dataset": "Logistics", "scheduledAt": "06:00", "durationMin": 22, "sizeGB": 1.4 },
+      { "workspace": "HR", "dataset": "Headcount", "scheduledAt": "09:00", "durationMin": 6, "sizeGB": 0.3 }
+    ]
+  },
+  "models": [
+    { "workspace": "Finance", "name": "Sales", "sizeGB": 4.2, "bidirectionalRels": 9, "autoDateTime": true, "refreshFailRatePct": 12, "observedAt": "2026-06-08T06:00:00.000Z" },
+    { "workspace": "HR", "name": "Headcount", "sizeGB": 0.3, "bidirectionalRels": 1, "autoDateTime": false, "refreshFailRatePct": 0, "observedAt": "2026-06-08T09:00:00.000Z" }
+  ],
+  "reports": [
+    { "workspace": "Finance", "name": "Exec Dashboard", "visuals": 41, "mode": "DirectQuery", "slowestVisualMs": 12000, "source": "Synapse: dw_sales" },
+    { "workspace": "Ops", "name": "Logistics Live", "visuals": 12, "mode": "Import", "slowestVisualMs": 1200, "source": "Lakehouse: ops" }
+  ],
+  "pipelines": [
+    { "workspace": "Finance", "name": "Nightly Load", "lastStatus": "Failed", "failRatePct": 18, "gatewayHealthy": false, "lastRunAt": "2026-06-08T02:14:00.000Z" },
+    { "workspace": "Ops", "name": "Hourly Sync", "lastStatus": "Succeeded", "failRatePct": 2, "gatewayHealthy": true, "lastRunAt": "2026-06-08T08:00:00.000Z" }
+  ],
+  "lineage": {
+    "nodes": [
+      { "id": "pl-nightly", "type": "pipeline", "workspace": "Finance", "name": "Nightly Load", "status": "Failed", "failedAt": "2026-06-08T02:14:00.000Z" },
+      { "id": "ds-sales", "type": "dataset", "workspace": "Finance", "name": "Sales", "status": "OK" },
+      { "id": "rpt-exec", "type": "report", "workspace": "Finance", "name": "Exec Dashboard", "status": "OK" }
+    ],
+    "edges": [
+      { "from": "pl-nightly", "to": "ds-sales" },
+      { "from": "ds-sales", "to": "rpt-exec" }
+    ]
+  },
+  "access": {
+    "adminGrants": [
+      { "workspace": "Finance", "principal": "ext-contractor@vendor.com", "role": "Admin", "grantedAt": "2026-06-07T22:10:00.000Z", "sensitive": true }
+    ],
+    "externalShares": [
+      { "workspace": "Finance", "item": "Exec Dashboard", "sharedWith": "partner@othercorp.com", "at": "2026-06-06T15:00:00.000Z" }
+    ],
+    "accessEvents": [
+      { "user": "jdoe", "workspace": "Finance", "count": 220, "baselineCount": 20 }
+    ]
+  },
+  "usage": {
+    "reports": [
+      { "workspace": "Ops", "name": "Old Quarterly", "views30d": 0 },
+      { "workspace": "Finance", "name": "Exec Dashboard", "views30d": 540 }
+    ],
+    "capacities": [
+      { "id": "F64", "sku": "F64", "avgCuPct": 3 }
+    ]
+  }
+}

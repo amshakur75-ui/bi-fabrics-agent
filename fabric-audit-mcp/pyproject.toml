@@ -1,0 +1,31 @@
+[project]
+name = "fabric-audit-mcp"
+version = "1.9.15"
+description = "Thin MCP tool server — exposes the read-only Fabric/Power BI audit as MCP tools. All logic lives in the fabric-audit-agent wheel."
+requires-python = ">=3.10"
+dependencies = [
+    "fabric-audit-agent>=0.2.14",   # installs the fabric_audit_agent core package (the business logic)
+    # CAP IS LOAD-BEARING — do not relax to a bare `>=`. mcp 2.0.0 (2026-07-28) is a major rework of
+    # the SDK; FastMCP's server API (mcp.server.fastmcp) moved with it. An uncapped resolve silently
+    # pulls v2 on the next App rebuild and mcp_server.py breaks at import. Lift only after verifying
+    # mcp_server.py against the v2 API.
+    "mcp>=1.2,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "tzdata>=2024.1"]
+
+[project.scripts]
+fabric-audit-mcp = "fabric_audit_mcp.mcp_server:main"   # Databricks App entry (MCP server at /mcp)
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fabric_audit_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

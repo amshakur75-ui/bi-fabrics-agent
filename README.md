@@ -1,62 +1,163 @@
-# Corporate
+# bi-fabrics-audit-agent
 
-Private home for agents built to deploy inside the company's own infrastructure
-(Microsoft Fabric / Power BI / Azure / Databricks). Each agent is built and tested
-standalone — no external build-system dependencies.
+A read-only Microsoft Fabric and Power BI capacity audit agent. Detects throttling,
+oversized semantic models, and refresh contention. Produces an optimize-vs-size-up
+verdict through deterministic STOP gates. Monitors autonomously every 5 minutes and
+every hour. Delivers alerts via Teams (Phase 10).
 
-## Agents
+> **Read-only posture is absolute.** It reads telemetry/metadata and *advises*. Its only
+> outward actions are writing its own findings and sending notifications — it never edits,
+> refreshes, scales, or deletes anything in the estate.
 
-### `fabric-audit-agent-py/` — Fabric / Power BI capacity audit agent (Python · **primary**)
+---
 
-Read-only Microsoft **Fabric / Power BI capacity & performance audit agent** — the all-Python
-build that deploys to **Databricks** (a Python-wheel Job for the scheduled sweep + an MCP server
-for the conversational pull surface). Detects issues across 7 domains (capacity, semantic models,
-reports, pipelines, lineage, security, cost), explains root cause, prioritizes fixes for the
-Power BI team, coaches report authors, gives an evidence-backed **optimize-vs-size-up** capacity
-verdict, and runs the **30% concentration alert** — naming the **User → Item → Owner** driving a
-hot item, two-way in Teams.
+## Architecture
 
-> **Read-only posture is absolute.** It reads telemetry/metadata and *advises*. Its only outward
-> actions are writing its own findings and sending notifications — it never edits, refreshes,
-> scales, or deletes anything in the estate.
+Two components, one monorepo:
 
-**Status:** code-complete and verified — **1187 tests pass** across the MCP tools package.
-The companion chat app (`fabric-audit-agent-app/`) adds 114 tests. Both packages deploy as
-Databricks Apps (MCP server + chat agent). Runs fully offline on mock adapters today; live
-deployment needs environment wiring (Entra service-principal credentials, confirmed API endpoints,
-Delta/UC store) per `DEPLOYMENT.md`.
+### fabric-audit-agent-app/ — The Agent (complete, self-contained)
 
-**Quick start**
+Deployed on Databricks as the **fabric-audit-agent** App. Contains everything:
+
+- **Agent brain** (`agent_server/`) — system prompt, tool-calling loop, NL-to-query
+  skill, chart rendering
+- **Core logic** (`fabric_audit_agent/`) — investigation pipeline, detectors, autonomous
+  sweep jobs, memory (Delta tables), grounding schema, **the read-only tool definitions
+  (`tools.py` / `create_tool_definitions`)**, and all analysis
+- **Chat UI** (`e2e-chatbot-app-next/`) — React frontend users interact with
+
+The two Databricks Jobs also deploy from here (`databricks.yml`):
+- `fabric_audit_sweep` — full LLM-reasoned sweep, every hour
+- `fabric_audit_tier2` — deterministic gate check (no LLM), every 5 minutes
+
+### fabric-audit-mcp/ — The MCP Tool Server (thin satellite)
+
+Deployed on Databricks as the **mcp-bi-fabrics-auditor** App. Contains only:
+- `mcp_server.py` — the MCP protocol server (FastMCP), serving the tools at `/mcp`
+- `data_agent.py` — the Fabric Data Agent / MCP manifest builder
+
+It installs `fabric-audit-agent` as a wheel dependency and imports
+`create_tool_definitions` from `fabric_audit_agent.tools`. All business logic — including
+the tool handlers themselves — lives in the agent app; the MCP server is a protocol
+adapter on top of it.
+
+---
+
+## How they connect
+
+The agent app calls the MCP server over authenticated HTTP using `DatabricksMCPClient`.
+The MCP server handles tool calls by importing `create_tool_definitions` from the
+`fabric_audit_agent` package (installed from the agent app's wheel) and returning
+structured results. The agent brain (`investigator.py`) imports the same
+`create_tool_definitions` directly for its offline eval harness — so the tool logic has a
+single home in core, imported by both the brain and the MCP server.
+
 ```
-cd fabric-audit-agent-py
-python -m venv .venv
-.venv/Scripts/python -m pip install -e .[dev]   # Windows  (Linux/Databricks: .venv/bin/python)
-.venv/Scripts/python -m pytest -q               # 1187 tests, no env or API key required
-.venv/Scripts/python run.py audit               # sample run on mock data
+User
+  ↓
+fabric-audit-agent (chat app, Databricks App)
+  ↓  MCP HTTP + OAuth
+mcp-bi-fabrics-auditor (tool server, Databricks App)
+  ↓  imports create_tool_definitions from
+fabric_audit_agent package (installed from the agent app wheel)
+  ↓  reads from (read-only)
+Microsoft Fabric — Real-Time Hub, Workspace Monitoring, REST APIs, Azure ARM
 ```
 
-- Overview: `fabric-audit-agent-py/README.md`
-- Permissions + deployment: `fabric-audit-agent-py/DEPLOYMENT.md`
+The dependency flows one way only: **MCP → fabric_audit_agent**. The agent app never
+imports from the MCP package.
 
-**Validate on real data (local — nothing leaves the machine):**
+---
+
+## Data sources (all read-only)
+
+| Source | What it provides | True vs proxy |
+|---|---|---|
+| Real-Time Hub Capacity Overview Events | Capacity CU% per 30-second window | **True CU** — validated formula |
+| Workspace Monitoring Eventhouse | Per-user engine CPU time | Proxy (CpuTimeMs) |
+| Log Analytics PowerBIDatasetsWorkspace | Same per-user data, different path | Proxy (CpuTimeMs) |
+| Fabric REST API | Workspace, item, capacity metadata | Reference |
+| Power BI Activity Events | Per-user operation counts | Reference |
+| Azure ARM List Usages | Capacity SKU and state | Reference |
+| Capacity Metrics CSV / .vpax export | Offline fallback (no permissions needed) | True CU |
+
+---
+
+## Memory — Delta tables in Unity Catalog
+
+Four tables in `shakur-main.bi-fabrics-audit`, fully isolated from all other workspace data:
+
+| Table | Purpose | Write pattern |
+|---|---|---|
+| `run_history` | One row per sweep — heartbeat and observability | Append |
+| `audit_findings` | Findings per sweep — fed back as prior context (Phase 6) | Append |
+| `capacity_reporting` | Capacity-level metrics by date | Upsert |
+| `concentration_alerts` | Each concentration alert fired | Append |
+
+90-day retention, no partitioning (liquid clustering).
+
+---
+
+## Deployment
+
+```bash
+# Agent app (app + both Databricks jobs). Builds the fabric-audit-agent wheel.
+cd fabric-audit-agent-app
+python -m build
+databricks bundle deploy -t dev
+databricks apps deploy
+
+# MCP server (app only, no jobs). Installs the fabric-audit-agent wheel via requirements.
+cd fabric-audit-mcp
+databricks apps deploy
 ```
-cd fabric-audit-agent-py
-python run.py inspect data.csv                 # safe column stats first (no sensitive values)
-python run.py import "Capacity Metrics export.csv"   # also reads .vpax
-python run.py import data.csv Items.csv        # merge the two Capacity Metrics exports
+
+---
+
+## Development
+
+```bash
+# Install the core logic locally (needed for MCP-server development and its tests)
+cd fabric-audit-agent-app && pip install -e .
+
+# Agent app tests (core logic, brain, moved tool tests)
+cd fabric-audit-agent-app && pytest tests/ -q
+
+# MCP protocol tests (import fabric_audit_agent via the installed wheel)
+cd fabric-audit-mcp && pytest tests/ -q
 ```
-It auto-maps your columns (printing exactly which column fed which field), writes the gitignored
-`my-estate.json`, then prints the diagnosis. Excel? **File → Save As → CSV** first. `my-estate.json`
-is gitignored, so real company numbers are **never** pushed — only the blank
-`my-estate.example.json` template is tracked. Tweak the JSON and re-run `python run.py mytest`.
 
-### `fabric-audit-agent-app/` — Chat agent (Databricks App)
+---
 
-The conversational chat interface deployed as a Databricks App (`fabric-audit-agent`). Implements
-the Responses Agent protocol, calls the MCP server's tools over HTTP/OAuth, and owns the system
-prompt, investigation loop, and agent-case eval suite per ADR-001.
+## Key architecture decisions
 
-### Node reference (removed)
+See `fabric-audit-agent-app/docs/decisions/` for the full ADR trail:
 
-The original Node.js implementation (`fabric-audit-agent/`) was the porting reference and has
-been deleted now that the Python build is complete and independently verified.
+- **ADR-001** — System prompt and tool loop moved to the agent app from the MCP package
+- **ADR-002** — Core business logic (pipeline, detectors, automation, memory, **and the
+  tool definitions**) moved to the agent app; the MCP package became a thin protocol
+  satellite — `mcp_server.py` + `data_agent.py` only. `tools.py` stays in core because it
+  is shared business logic imported by both the MCP server and the agent brain; keeping it
+  in core preserves the one-way `MCP → fabric_audit_agent` dependency.
+
+---
+
+## What the autonomous monitoring does
+
+**Tier 2 (every 5 min, no AI):** pulls live Capacity Events, runs four deterministic
+gate checks (throttle, concentration, pressure, overage). Zero LLM cost on the common
+case. Fires immediately if any threshold is crossed.
+
+**Tier 1 (every hour, full sweep):** pulls from all configured sources, runs the full
+investigation pipeline (detectors → gates → verdict → narrative), compares to previous
+run, alerts only on material change.
+
+Both jobs are defined in `fabric-audit-agent-app/databricks.yml`.
+
+---
+
+## Entra identity (Phase 10)
+
+Currently uses a service principal. Phase 10 will migrate to Entra Agent ID — Microsoft's
+purpose-built identity type for AI agent workloads. Requires M365 E5 + Microsoft Agent
+365 add-on licensing at the tenant level. All delivery (Teams alerts) is wired in Phase 10.
