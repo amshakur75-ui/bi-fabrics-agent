@@ -77,3 +77,29 @@ TBLPROPERTIES (
   'delta.deletedFileRetentionDuration' = 'interval 90 days',
   'delta.logRetentionDuration' = 'interval 90 days'
 );
+
+-- 5. audit_alerts — Tier-2 alert state machine (dedup + 48h reminders + escalation + resolution)
+CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.audit_alerts (
+  incident_key          STRING   COMMENT 'Stable incident id, e.g. concentration::WS/Item or throttle::capacity',
+  status                STRING   COMMENT 'active | resolved',
+  severity              STRING   COMMENT 'Derived severity: info | warn',
+  check_type            STRING   COMMENT 'concentration/throttle/pressure/overage',
+  resource              STRING   COMMENT 'Item/workspace (concentration) or capacity',
+  chat_id               STRING   COMMENT 'Pre-created Lakebase ai_chatbot conversation id (deep-link target)',
+  metric                DOUBLE   COMMENT 'Primary metric value, for escalation comparison',
+  first_alerted_at      STRING   COMMENT 'ISO-8601 UTC of first alert',
+  last_alerted_at       STRING   COMMENT 'ISO-8601 UTC of last alert/re-alert',
+  last_reminded_at      STRING   COMMENT 'ISO-8601 UTC of last 48h reminder (nullable)',
+  resolved_at           STRING   COMMENT 'ISO-8601 UTC when marked resolved (nullable)',
+  escalation_count      INT      COMMENT 'Number of escalation re-alerts',
+  materiality_reason    STRING   COMMENT 'Why it was reported (or suppressed)',
+  investigation_summary STRING   COMMENT 'Trimmed investigation text, reused for 48h reminders',
+  delivered             BOOLEAN  COMMENT 'Whether the last card was delivered',
+  run_at                STRING   COMMENT 'ISO-8601 UTC of the run that last touched this row'
+)
+USING DELTA
+COMMENT 'Tier-2 alert state machine — one row per incident (dedup / 48h reminders / escalation / resolution)'
+TBLPROPERTIES (
+  'delta.deletedFileRetentionDuration' = 'interval 90 days',
+  'delta.logRetentionDuration' = 'interval 90 days'
+);
