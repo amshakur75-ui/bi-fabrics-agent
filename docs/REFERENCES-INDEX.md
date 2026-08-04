@@ -193,8 +193,6 @@ source, or the vendor's own reference page.
 
 ## 📎 This project's internal docs
 
-- [`SOWMYA-AZURE-ROLES-BRIEF.md`](./SOWMYA-AZURE-ROLES-BRIEF.md) — the roles brief for the manager
-- [`DANIEL-VALIDATION-MEETING.md`](./DANIEL-VALIDATION-MEETING.md) — the validation-meeting agenda
 - [`DEPLOY-STATUS.md`](./DEPLOY-STATUS.md) — current deploy state
 
 ---
