@@ -83,17 +83,23 @@ resources:
             package_name: fabric_audit_agent
             entry_point: fabric-audit-tier2
             named_parameters:
-              FABRIC_CSV_PATHS: /Volumes/${var.catalog}/${var.schema}/raw/capacity_metrics/data.csv
               FABRIC_DELTA_CATALOG: ${var.catalog}
               FABRIC_DELTA_SCHEMA: ${var.schema}
               FABRIC_TIER2_HEARTBEAT_PATH: /Volumes/${var.catalog}/${var.schema}/reports/tier2_heartbeat.json
-              # Delivery (Teams): Phase 10 (Entra Agent Identity) — no webhook URL needed here.
-              # --- Uncomment once secrets exist (same as the full sweep) ---
-              # FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
-              # FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
-              # FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
-              # FABRIC_CAPACITY_EVENTS_CLUSTER: "https://<eventhouse>.kusto.fabric.microsoft.com"
-              # FABRIC_CAPACITY_EVENTS_DB: "<capacity-events-db>"
+              # Live capacity-events source (so the deterministic gates can fire on real data)
+              FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
+              FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
+              FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
+              FABRIC_CAPACITY_EVENTS_CLUSTER: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_CLUSTER}}"
+              FABRIC_CAPACITY_EVENTS_DB: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_DB}}"
+              FABRIC_CAPACITY_EVENTS_KQL: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
+              # Tier-2 -> Teams alerting (sub-project #2)
+              TIER2_WEBHOOK_ENABLED: "true"
+              POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
+              APP_URL: "https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com"
+              FABRIC_LAKEBASE_HOST: "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net"
+              FABRIC_LAKEBASE_USER: "abdishakur.mohamed@newellco.com"
+              FABRIC_LAKEBASE_INSTANCE: "fabrics-audit-agent-memory"
           environment_key: default
       environments:
         - environment_key: default
@@ -101,9 +107,11 @@ resources:
             client: "1"
             dependencies:
               - ./dist/*.whl
-              # - requests           # future: ARM / external API calls
-              # - msal               # SP auth (KQL)
-              # - azure-kusto-data   # Capacity Events KQL
+              - requests             # webhook POST
+              - msal>=1.24           # SP auth (KQL)
+              - azure-kusto-data>=4.0  # Capacity Events KQL
+              - psycopg2-binary      # Lakebase chat writer
+              - databricks-sdk>=0.81 # Lakebase credential (w.database)
       schedule:
         quartz_cron_expression: "0 */5 * * * ?"   # every 5 minutes
         timezone_id: UTC
