@@ -12,6 +12,10 @@ from .egress import apply_egress_controls, disclosure_line
 
 _ALLOWLIST = {
     "ado_create_ticket": {"enabled": False, "sink": "ticket"},  # Phase 10 (Entra bot identity)
+    # Tier-2 interim alerting (sub-project #2): read-only notification — surfaces a finding to a
+    # Teams channel via a webhook sink. NOT data-mutating. Still gated: only fires when the job
+    # actually provides a "webhook" sink (job wires it only when TIER2_WEBHOOK_ENABLED + secret set).
+    "tier2_alert": {"enabled": True, "sink": "webhook"},
 }
 
 
