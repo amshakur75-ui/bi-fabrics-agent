@@ -758,6 +758,7 @@ export {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupContentHeader,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
