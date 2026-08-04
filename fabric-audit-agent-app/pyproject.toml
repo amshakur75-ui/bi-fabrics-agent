@@ -2,7 +2,10 @@
 name = "fabric-audit-agent"
 version = "0.2.14"
 description = "Read-only Fabric/Power BI audit agent — brain, core investigation logic, autonomous jobs, and chat app (Databricks)."
-requires-python = ">=3.11"
+# >=3.10 (not 3.11): the serverless Job compute that installs this wheel runs Python 3.10, and the
+# wheel's Requires-Python gates install. The core (fabric_audit_agent) is 3.10-safe; only the
+# chat App runtime is 3.11 (it satisfies >=3.10 too).
+requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.129.0",
     "uvicorn>=0.41.0",
