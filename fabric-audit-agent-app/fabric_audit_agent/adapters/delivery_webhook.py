@@ -28,7 +28,7 @@ def build_card(kind, *, title, severity="info", facts=None, summary=None, chat_u
             body.append({"type": "TextBlock", "text": summary, "wrap": True})
     content = {"type": "AdaptiveCard",
                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-               "version": "1.4", "body": body}
+               "version": "1.2", "body": body}  # 1.2 for mobile Teams compatibility
     if chat_url and kind != "resolved":
         content["actions"] = [{"type": "Action.OpenUrl",
                                "title": "Investigate in chat", "url": chat_url}]

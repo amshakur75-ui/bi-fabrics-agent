@@ -12,7 +12,7 @@ def test_build_new_card_has_facts_and_deeplink():
                       chat_url="https://app/chat/abc")
     assert card["contentType"] == "application/vnd.microsoft.card.adaptive"
     c = card["content"]
-    assert c["version"] == "1.4"
+    assert c["version"] == "1.2"  # mobile Teams compatibility
     kinds = [b["type"] for b in c["body"]]
     assert "FactSet" in kinds and kinds[0] == "TextBlock"
     assert c["actions"][0]["type"] == "Action.OpenUrl"

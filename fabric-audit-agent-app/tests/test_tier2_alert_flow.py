@@ -48,7 +48,8 @@ def test_full_state_machine():
     a = process_alerts([warn], now_dt=T0, **kw)
     assert a["new"] == ["pressure::capacity"]
     assert rc["n"] == 1 and wc["n"] == 1 and len(posts) == 1
-    assert _card(posts)["actions"][0]["url"] == "https://app/chat/chat-1"
+    _url = _card(posts)["actions"][0]["url"]
+    assert _url.startswith("https://app/chat/chat-1?query=")  # deep-link auto-investigates on open
     row = store["query_active"]()["pressure::capacity"]
     assert row["chatId"] == "chat-1" and row["metric"] == 130.0
 

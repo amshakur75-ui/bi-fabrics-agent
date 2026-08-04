@@ -15,6 +15,8 @@ Priority order of checks:
 
 Read-only absolute — this module surfaces findings, never writes/scales/refreshes.
 """
+import urllib.parse
+import uuid
 from datetime import datetime, timezone
 
 from ..investigation.gates import (
@@ -241,6 +243,17 @@ def _facts_for(t):
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
 
 
+def _investigate_query(t):
+    """The prompt auto-sent when the alert deep-link is opened — kicks off a live agent
+    investigation (real MCP tools), so clicking the card gives the root cause, not just facts."""
+    check = t.get("check")
+    return (f"Investigate this {check} alert and give me the root cause. {_title_for(t)}. "
+            "Pull the recent capacity + activity, identify the top consumers and any expensive "
+            "operations or refresh contention driving it, and tell me what's causing it and what "
+            "to do. Distinguish true CU% (ground truth) from the monitored-activity proxy — do not "
+            "present the proxy as capacity consumption.")
+
+
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                    chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48):
     """Run the alert state machine over the current triggers. Returns an action summary.
@@ -261,8 +274,12 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": []}
 
     def _send(kind, trigger, row, summary):
-        chat_url = (f"{app_url.rstrip('/')}/chat/{row['chatId']}"
-                    if app_url and row.get("chatId") else None)
+        cid = row.get("chatId")
+        chat_url = None
+        if app_url and cid:
+            chat_url = f"{app_url.rstrip('/')}/chat/{cid}"
+            if kind != "resolved":  # opening the link auto-runs a live investigation
+                chat_url += "?query=" + urllib.parse.quote(_investigate_query(trigger))
         card = build_card(kind, title=_title_for(trigger), severity=row.get("severity", "info"),
                           facts=_facts_for(trigger), summary=summary, chat_url=chat_url)
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
@@ -314,9 +331,11 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         if chat_writer:
             try:
                 chat_id = chat_writer(markdown, _title_for(t))
-            except Exception as exc:  # a chat-write failure must not drop the alert
+            except Exception as exc:  # a chat-write failure must not drop the alert or the link
                 print(f"[tier2] alert chat write failed ({type(exc).__name__}: {exc}); "
-                      "sending card without deep-link")
+                      "deep-link will open a fresh auto-investigating chat")
+        if not chat_id:
+            chat_id = str(uuid.uuid4())  # link ALWAYS present; ?query auto-investigates on open
         row = {"incidentKey": key, "status": "active", "severity": sev, "checkType": t.get("check"),
                "resource": t.get("item") or t.get("workspace") or "capacity", "chatId": chat_id,
                "metric": metric, "firstAlertedAt": now_iso, "lastAlertedAt": now_iso,
