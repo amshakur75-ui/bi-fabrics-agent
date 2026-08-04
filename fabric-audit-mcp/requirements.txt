@@ -1,13 +1,18 @@
 # Dependencies for the Databricks App that hosts the MCP server (installed at app build).
-# Installs this package with the MCP extra, plus the in-tenant Claude client deps.
+#
+# Post-ADR-002: the core logic (fabric_audit_agent, incl. tools.py) no longer lives in this repo.
+# The app is mode: SNAPSHOT, so it only sees this folder — the sibling agent app is NOT included.
+# We therefore install fabric_audit_agent from a wheel uploaded to the UC Volume the app already
+# has as a resource (shakur-main.bi-fabrics-audit.raw). `.` installs this thin fabric-audit-mcp
+# package (provides the `fabric-audit-mcp` console script + fabric_audit_mcp package); its
+# dependency on fabric-audit-agent>=0.2.14 is satisfied by the wheel line above it.
 #
 # DEPLOY NOTE: Databricks Apps caches the pip install on THIS FILE's content hash
-# ("Requirements have not changed. Skipping installation."). The local `.` package
-# below installs by version, so bumping pyproject version alone is NOT enough --
-# this file must also change to force a reinstall. Bump the marker below in lockstep
-# with the pyproject version whenever the package code changes.
-# code version: 1.9.16
-.[mcp]
+# ("Requirements have not changed. Skipping installation."). Bump the marker below AND
+# re-upload a fresh wheel to the Volume whenever the core code changes.
+# code version: 1.9.17
+/Volumes/shakur-main/bi-fabrics-audit/raw/wheels/fabric_audit_agent-0.2.14-py3-none-any.whl
+.
 openai>=1.0
 databricks-sdk>=0.28  # get_open_ai_client added in 0.28
 msal>=1.24        # SP token (build_entra_token_provider) — capacities + Log Analytics auth
