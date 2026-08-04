@@ -14,6 +14,7 @@ import { dirname } from 'node:path';
 import { chatRouter } from './routes/chat';
 import { storeMessageMeta } from './lib/message-meta-store';
 import { historyRouter } from './routes/history';
+import { alertsRouter } from './routes/alerts';
 import { sessionRouter } from './routes/session';
 import { messagesRouter } from './routes/messages';
 import { configRouter } from './routes/config';
@@ -53,6 +54,7 @@ app.get('/ping', (_req, res) => {
 // API routes
 app.use('/api/chat', chatRouter);
 app.use('/api/history', historyRouter);
+app.use('/api/alerts', alertsRouter);
 app.use('/api/session', sessionRouter);
 app.use('/api/messages', messagesRouter);
 app.use('/api/config', configRouter);

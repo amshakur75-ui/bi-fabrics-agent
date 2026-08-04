@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 
 import { SidebarHistory } from '@/components/sidebar-history';
+import { SidebarAlerts } from '@/components/sidebar-alerts';
 import { SidebarUserNav } from '@/components/sidebar-user-nav';
 import {
   Sidebar,
@@ -97,6 +98,7 @@ export function AppSidebar({
 
       {/* ── Chat history ────────────────────────────────────────────────── */}
       <SidebarContent>
+        {effectiveOpen && <SidebarAlerts />}
         {effectiveOpen && <SidebarHistory user={user} />}
       </SidebarContent>
 
