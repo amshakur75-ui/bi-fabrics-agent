@@ -496,22 +496,61 @@ def _build_tier2_collector(env, window="5m"):
     return create_merged_collector(collectors)
 
 
+def _build_tier2_reasoner(env, config):
+    """Build the investigation callable ``reasoner(trigger) -> {markdown, summary, report}``.
+
+    v1 produces a structured, deterministic facts-based investigation (reliable, no LLM). The
+    ``report`` verdict is only consulted for the ambiguous middle (v1 = surface it); the LLM-written
+    narrative + ambiguous verdict are a scoped follow-up (see the sub-project #2 spec)."""
+    from .automation.tier2_check import _facts_for, _title_for
+
+    def reasoner(trigger):
+        lines = [f"## {_title_for(trigger)}", ""]
+        for name, value in _facts_for(trigger):
+            lines.append(f"- **{name}:** {value}")
+        hint = trigger.get("normalityHint")
+        if hint:
+            lines += ["", f"_{hint}_"]
+        rec = trigger.get("recurrence") or {}
+        if rec.get("note"):
+            lines += ["", rec["note"]]
+        return {"markdown": "\n".join(lines), "summary": _title_for(trigger), "report": True}
+
+    return reasoner
+
+
 def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=None,
                   heartbeat_store=None, config=None, tenant=None, scope=None):
-    """Tier 2 entry point: cheap deterministic check, no LLM calls.
+    """Tier 2 entry point: cheap deterministic check; LLM-free unless a gate fires and alerting is on.
 
     Builds real adapters from environment when ports are not injected. Same DI pattern as
-    ``run_job`` / ``run_unified_job`` — pass any port to override for tests.
-    ``delivery_sinks`` is reserved for Phase 10; pass None for now.
+    ``run_job`` / ``run_unified_job`` — pass any port to override for tests. When
+    ``TIER2_WEBHOOK_ENABLED`` + ``POWER_AUTOMATE_ALERT_URL`` are set, wires the Tier-2 -> Teams alert
+    path (sub-project #2): materiality gate -> investigation -> Adaptive Card + pre-created chat.
     """
     env = env if env is not None else os.environ
     if collector is None:
         collector = _build_tier2_collector(env, window="5m")
-    if delivery_sinks is None:
-        # Phase 10: Entra bot identity will provide delivery sinks here.
-        delivery_sinks = {}
     if heartbeat_store is None:
         heartbeat_store = _tier2_heartbeat_store(env)
+    if findings_store is None:
+        findings_store = _default_findings_store(env)  # for recurrence cross-reference
+
+    alerts_store = reasoner = chat_writer = None
+    app_url = env.get("APP_URL", "")
+    enabled = str(env.get("TIER2_WEBHOOK_ENABLED", "")).strip().lower() in ("1", "true", "yes")
+    if delivery_sinks is None and enabled and env.get("POWER_AUTOMATE_ALERT_URL"):
+        from .adapters.delivery_webhook import create_webhook_sink
+        from .adapters.chat_store_lakebase import create_alert_chat
+        from .context_alerts import create_alerts_store_delta
+        catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
+        if catalog and schema:
+            alerts_store = create_alerts_store_delta(catalog, schema)
+        reasoner = _build_tier2_reasoner(env, config)
+        chat_writer = create_alert_chat
+        delivery_sinks = {"webhook": create_webhook_sink(env["POWER_AUTOMATE_ALERT_URL"])}
+    if delivery_sinks is None:
+        delivery_sinks = {}
 
     from .automation.tier2_check import run_tier2_check
     return run_tier2_check(
@@ -522,6 +561,10 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         config=config,
         tenant=tenant,
         scope=scope,
+        alerts_store=alerts_store,
+        reasoner=reasoner,
+        chat_writer=chat_writer,
+        app_url=app_url,
     )
 
 
