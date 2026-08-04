@@ -130,10 +130,13 @@ class TestOutboundPostDeliveryRemoval:
         assert out["dispatched"] is False
         assert captured == []
 
-    def test_allowlist_has_exactly_one_entry(self):
+    def test_allowlist_is_closed_to_known_entries(self):
+        # Closed by construction: ado (disabled) + tier2_alert (the one ENABLED read-only
+        # notification via a webhook sink, added in sub-project #2). No data-mutating types.
         from fabric_audit_agent.outbound import _ALLOWLIST
-        assert len(_ALLOWLIST) == 1
-        assert "ado_create_ticket" in _ALLOWLIST
+        assert set(_ALLOWLIST) == {"ado_create_ticket", "tier2_alert"}
+        assert _ALLOWLIST["ado_create_ticket"]["enabled"] is False
+        assert _ALLOWLIST["tier2_alert"] == {"enabled": True, "sink": "webhook"}
 
 
 # ---------------------------------------------------------------------------

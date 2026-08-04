@@ -23,6 +23,8 @@ from ..investigation.gates import (
     pressure_claim_gate,
     null_data_gate,
 )
+from .incident import incident_key, severity_of, primary_metric
+from .materiality import classify, is_escalation, load_cfg
 
 
 def _now_iso():
@@ -193,8 +195,148 @@ def _build_tier2_alert_summary(triggers):
     return f"Tier 2 alert: {'; '.join(parts)}{recurrence_note}"
 
 
+# ---- Alerting orchestration (sub-project #2): dedup/materiality FIRST, LLM only when alerting ----
+
+def _parse_iso(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _title_for(t):
+    check = t.get("check")
+    if check == "concentration":
+        return f"Concentration: {t.get('item', '?')} at {t.get('sharePct', '?')}%"
+    if check == "throttle":
+        return f"Throttling on capacity ({t.get('throttleMinutes', '?')} min)"
+    if check == "pressure":
+        return f"CU pressure: peak {t.get('peakCuPct', '?')}%"
+    if check == "overage":
+        return "Capacity overage accumulating"
+    return f"Tier-2: {check}"
+
+
+def _facts_for(t):
+    check = t.get("check")
+    f = []
+    if check == "concentration":
+        f = [("Item", t.get("item")), ("Workspace", t.get("workspace")),
+             ("Share", f"{t.get('sharePct')}%"), ("Owner", t.get("owner"))]
+        tu = t.get("topUsers")
+        if tu:
+            top = tu[0]
+            f.append(("Top user", top.get("user") if isinstance(top, dict) else top))
+    elif check == "throttle":
+        f = [("Throttle", f"{t.get('throttleMinutes')} min"), ("Peak CU", f"{t.get('peakCuPct')}%")]
+    elif check == "pressure":
+        f = [("Peak CU", f"{t.get('peakCuPct')}%")]
+    elif check == "overage":
+        f = [("Overage", f"{t.get('overageTotalMs')} ms"),
+             ("Burndown", f"{t.get('minutesToBurndown')} min")]
+    if (t.get("recurrence") or {}).get("isRecurring"):
+        f.append(("Recurrence", "recurring (matches prior findings)"))
+    return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
+
+
+def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
+                   chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48):
+    """Run the alert state machine over the current triggers. Returns an action summary.
+
+    Ordering is cost-critical: the deterministic dedup + materiality checks decide silence WITHOUT
+    calling the LLM; ``reasoner`` (the investigation) runs only for a new report/ambiguous incident
+    or an escalation. Reminders reuse the stored investigation summary (no LLM). All sends route
+    through ``outbound.dispatch_outbound`` (egress chokepoint).
+    """
+    from ..outbound import dispatch_outbound
+    from ..adapters.delivery_webhook import build_card
+
+    cfg = cfg if cfg is not None else load_cfg()
+    now_dt = now_dt if now_dt is not None else datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat().replace("+00:00", "Z")
+    active = alerts_store["query_active"]()
+    seen = set()
+    actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": []}
+
+    def _send(kind, trigger, row, summary):
+        chat_url = (f"{app_url.rstrip('/')}/chat/{row['chatId']}"
+                    if app_url and row.get("chatId") else None)
+        card = build_card(kind, title=_title_for(trigger), severity=row.get("severity", "info"),
+                          facts=_facts_for(trigger), summary=summary, chat_url=chat_url)
+        res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
+        return bool(res.get("delivered"))
+
+    for t in triggers:
+        if t.get("check") == "data_unavailable":
+            continue
+        key = incident_key(t)
+        seen.add(key)
+        prior = active.get(key)
+        sev = severity_of(t)
+        metric = primary_metric(t)
+
+        if prior:  # already-active incident
+            if is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric")}, cfg):
+                inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": True}
+                row = dict(prior, severity=sev, metric=metric, lastAlertedAt=now_iso, runAt=now_iso,
+                           escalationCount=(prior.get("escalationCount") or 0) + 1,
+                           investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
+                row["delivered"] = _send("new", t, row, inv.get("summary"))
+                alerts_store["upsert"](row)
+                actions["escalation"].append(key)
+            else:
+                last = _parse_iso(prior.get("lastRemindedAt")) or _parse_iso(prior.get("lastAlertedAt"))
+                due = last is None or (now_dt - last).total_seconds() >= reminder_hours * 3600
+                if due:
+                    row = dict(prior, lastRemindedAt=now_iso, runAt=now_iso, severity=sev, metric=metric)
+                    row["delivered"] = _send("reminder", t, row, prior.get("investigationSummary"))
+                    alerts_store["upsert"](row)
+                    actions["reminder"].append(key)
+                else:
+                    actions["silent"].append(key)
+            continue
+
+        # new incident: deterministic decision, LLM only for report/ambiguous
+        decision, reason = classify(t, cfg)
+        if decision == "suppress":
+            actions["silent"].append(key)
+            continue
+        inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": decision == "report"}
+        report = True if decision == "report" else bool(inv.get("report"))
+        if not report:
+            actions["silent"].append(key)
+            continue
+        markdown = inv.get("markdown") or _title_for(t)
+        summary = inv.get("summary") or ""
+        chat_id = chat_writer(markdown, _title_for(t)) if chat_writer else None
+        row = {"incidentKey": key, "status": "active", "severity": sev, "checkType": t.get("check"),
+               "resource": t.get("item") or t.get("workspace") or "capacity", "chatId": chat_id,
+               "metric": metric, "firstAlertedAt": now_iso, "lastAlertedAt": now_iso,
+               "lastRemindedAt": None, "resolvedAt": None, "escalationCount": 0,
+               "materialityReason": reason, "investigationSummary": summary,
+               "delivered": False, "runAt": now_iso}
+        row["delivered"] = _send("new", t, row, summary)
+        alerts_store["upsert"](row)
+        actions["new"].append(key)
+
+    # resolution: incidents that were active but no longer fire this run
+    for key, prior in active.items():
+        if key in seen:
+            continue
+        title = f"{prior.get('checkType', 'incident')} ({prior.get('resource', 'capacity')})"
+        card = build_card("resolved", title=title)
+        dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
+        alerts_store["resolve"](key, now_iso)
+        actions["resolved"].append(key)
+
+    return actions
+
+
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
-                    heartbeat_store=None, config=None, tenant=None, scope=None):
+                    heartbeat_store=None, config=None, tenant=None, scope=None,
+                    alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
@@ -233,8 +375,16 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
 
     triggered = any(t.get("check") != "data_unavailable" for t in triggers)
 
-    # Delivery: Phase 10 (Entra bot identity) will wire the real channel here.
+    # Delivery: sub-project #2 wires the Tier-2 -> Teams alert path when the job provides a sink +
+    # an alerts store (gated on TIER2_WEBHOOK_ENABLED upstream). Otherwise stays silent (no-op).
     delivered = {}
+    if delivery_sinks and alerts_store is not None:
+        try:
+            delivered = process_alerts(
+                triggers, alerts_store=alerts_store, delivery_sinks=delivery_sinks,
+                reasoner=reasoner, chat_writer=chat_writer, app_url=app_url, now_dt=now_dt)
+        except Exception as exc:  # delivery must never crash the deterministic check
+            delivered = {"error": f"{type(exc).__name__}: {exc}"}
 
     return {"triggered": triggered, "triggers": triggers,
             "delivered": delivered, "checkedAt": checked_at}
