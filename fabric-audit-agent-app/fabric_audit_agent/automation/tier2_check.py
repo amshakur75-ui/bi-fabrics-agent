@@ -310,7 +310,13 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             continue
         markdown = inv.get("markdown") or _title_for(t)
         summary = inv.get("summary") or ""
-        chat_id = chat_writer(markdown, _title_for(t)) if chat_writer else None
+        chat_id = None
+        if chat_writer:
+            try:
+                chat_id = chat_writer(markdown, _title_for(t))
+            except Exception as exc:  # a chat-write failure must not drop the alert
+                print(f"[tier2] alert chat write failed ({type(exc).__name__}: {exc}); "
+                      "sending card without deep-link")
         row = {"incidentKey": key, "status": "active", "severity": sev, "checkType": t.get("check"),
                "resource": t.get("item") or t.get("workspace") or "capacity", "chatId": chat_id,
                "metric": metric, "firstAlertedAt": now_iso, "lastAlertedAt": now_iso,

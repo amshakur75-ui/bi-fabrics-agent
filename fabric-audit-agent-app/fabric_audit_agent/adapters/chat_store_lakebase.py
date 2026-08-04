@@ -66,10 +66,10 @@ def _lakebase_conn():
     host = os.environ["FABRIC_LAKEBASE_HOST"]
     db = os.environ.get("FABRIC_LAKEBASE_DB", "databricks_postgres")
     user = os.environ.get("FABRIC_LAKEBASE_USER") or os.environ.get("DATABRICKS_CLIENT_ID")
-    endpoint = os.environ["FABRIC_LAKEBASE_ENDPOINT"]  # projects/.../branches/.../endpoints/...
+    instance = os.environ.get("FABRIC_LAKEBASE_INSTANCE", "fabrics-audit-agent-memory")
     w = WorkspaceClient()
     cred = w.database.generate_database_credential(request_id=str(uuid.uuid4()),
-                                                   instance_names=[endpoint])
+                                                   instance_names=[instance])
     token = getattr(cred, "token", None) or cred["token"]
     return psycopg2.connect(host=host, port=5432, dbname=db, user=user,
                             password=token, sslmode="require")
