@@ -365,9 +365,18 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
 
     try:
         facts = collector["collect"]()
-    except Exception:
+    except Exception as exc:
+        print(f"[tier2] collector FAILED: {type(exc).__name__}: {exc}")
         return {"triggered": False, "triggers": [], "delivered": {},
                 "checkedAt": checked_at, "error": "collector failed"}
+
+    # Observability: what did the collector actually pull? (peakCuPct=None => no capacity data /
+    # blind collector; a number => live data, and this is the live peak.)
+    _cap = (facts or {}).get("capacity") or {}
+    _items = (facts or {}).get("items") or []
+    print(f"[tier2] pulled: peakCuPct={_cap.get('peakCuPct')} "
+          f"throttleMinutes={_cap.get('throttleMinutes')} overageTotalMs={_cap.get('overageTotalMs')} "
+          f"items={len(_items)}")
 
     triggers = []
     triggers.extend(_check_concentration(facts, config))
