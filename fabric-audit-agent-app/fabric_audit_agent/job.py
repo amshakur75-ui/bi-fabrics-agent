@@ -401,6 +401,34 @@ def _merge_named_params_into_env():
             key, _, value = arg[2:].partition("=")
             if key:
                 os.environ.setdefault(key, value)
+    _resolve_secret_refs()
+
+
+def _resolve_secret_refs():
+    """Resolve ``{{secrets/scope/key}}`` env values via the SDK.
+
+    Python-wheel-task ``named_parameters`` do NOT auto-resolve ``{{secrets/...}}`` references
+    (unlike spark_env_vars) — they arrive as the literal string. Resolve them here so the rest of
+    the code sees real values. Failure-isolated: a bad ref is logged and left as-is."""
+    import re
+    pat = re.compile(r"^\{\{secrets/([^/]+)/([^}]+)\}\}$")
+    refs = {k: m for k, m in ((k, pat.match(str(v))) for k, v in os.environ.items()) if m}
+    if not refs:
+        return
+    try:
+        import base64
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
+    except Exception as exc:
+        print(f"[secrets] SDK unavailable, cannot resolve {list(refs)}: {exc}")
+        return
+    for key, m in refs.items():
+        try:
+            resp = w.secrets.get_secret(scope=m.group(1), key=m.group(2))
+            raw = getattr(resp, "value", None)
+            os.environ[key] = base64.b64decode(raw).decode("utf-8") if raw else ""
+        except Exception as exc:
+            print(f"[secrets] failed to resolve {key}: {type(exc).__name__}: {exc}")
 
 
 def job_main():
