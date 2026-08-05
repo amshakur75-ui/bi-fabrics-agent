@@ -516,6 +516,26 @@ def _build_tier2_collector(env, window="5m"):
             ce_cfg["kql"] = env["FABRIC_CAPACITY_EVENTS_KQL"]
         collectors.append(create_capacity_events_collector(ce_query, ce_cfg))
 
+    # Per-user / per-item attribution from Log Analytics (Step 2): this is the source that carries
+    # the WHO — without it the collector is capacity-only and items=0, so concentration / per-user
+    # surge / same-item cross-user gates never fire. SP client-credentials, same as the sweep path.
+    if env.get("FABRIC_LA_WORKSPACE_ID") and env.get("FABRIC_CLIENT_ID"):
+        from .adapters.clients import build_log_analytics_query
+        from .adapters.collector_log_analytics import create_log_analytics_collector
+        la_query = build_log_analytics_query(
+            env["FABRIC_LA_WORKSPACE_ID"],
+            _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
+            _require(env, "FABRIC_CLIENT_SECRET"),
+        )
+        la_cfg = {"window": window}
+        if env.get("FABRIC_LA_WORKSPACE_FILTER"):
+            la_cfg["workspaceFilter"] = env["FABRIC_LA_WORKSPACE_FILTER"]
+        if env.get("FABRIC_LA_KQL"):
+            la_cfg["kql"] = env["FABRIC_LA_KQL"]
+        if env.get("FABRIC_LA_WORKSPACE_LABEL"):
+            la_cfg["workspace"] = env["FABRIC_LA_WORKSPACE_LABEL"]
+        collectors.append(create_log_analytics_collector(la_query, la_cfg))
+
     if not collectors:
         return {"collect": lambda: {"capacity": None, "items": [], "models": []}}
     if len(collectors) == 1:

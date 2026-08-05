@@ -93,6 +93,9 @@ resources:
               FABRIC_CAPACITY_EVENTS_CLUSTER: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_CLUSTER}}"
               FABRIC_CAPACITY_EVENTS_DB: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_DB}}"
               FABRIC_CAPACITY_EVENTS_KQL: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
+              # Log Analytics per-user attribution (Step 2): the WHO source — unblocks concentration /
+              # per-user surge / same-item cross-user gates (without it items=0 and they never fire).
+              FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
               # Tier-2 -> Teams alerting (sub-project #2)
               TIER2_WEBHOOK_ENABLED: "true"
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
@@ -111,7 +114,7 @@ resources:
               - msal>=1.24           # SP auth (KQL)
               - azure-kusto-data>=4.0  # Capacity Events KQL
               - psycopg2-binary      # Lakebase chat writer
-              - databricks-sdk>=0.81 # Lakebase credential (w.database)
+              - databricks-sdk>=0.81 # Lakebase credential (w.postgres — Autoscaling project)
       schedule:
         quartz_cron_expression: "0 */5 * * * ?"   # every 5 minutes
         timezone_id: UTC
