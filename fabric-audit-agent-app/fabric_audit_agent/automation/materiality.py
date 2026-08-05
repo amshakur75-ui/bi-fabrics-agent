@@ -63,6 +63,13 @@ def classify(trigger, cfg=None):
     if severity_of(trigger) == "warn":
         return "report", "derived severity=warn"
 
+    # Severity floor for attribution / user-item signals (Step 2, anti-flapping): concentration and
+    # same-item cross-user shares vary tick-to-tick, so an Info-level one (below its Warning cutoff)
+    # must NOT generate a standalone Teams card. Only Warning+ (handled just above) or a recurring
+    # one (handled above that) cards; everything else is logged / rolled into the digest only.
+    if check in ("concentration", "cross_user"):
+        return "suppress", f"{check} below Warning severity — logged only, no standalone card"
+
     if check == "concentration":
         share = _num(trigger.get("sharePct"))
         if share is not None and share >= cfg["concentration_report"]:

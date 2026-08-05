@@ -451,7 +451,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     now_iso = now_dt.isoformat().replace("+00:00", "Z")
     active = alerts_store["query_active"]()
     seen = set()
-    actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": []}
+    actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": [],
+               "inactive": []}
 
     def _send(kind, trigger, row, summary):
         cid = row.get("chatId")
@@ -537,14 +538,25 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         actions["new"].append(key)
 
     # resolution: incidents that were active but no longer fire this run
+    _CAPACITY_CHECKS = ("throttle", "pressure", "overage")
     for key, prior in active.items():
         if key in seen:
             continue
-        title = f"{prior.get('checkType', 'incident')} ({prior.get('resource', 'capacity')})"
-        card = build_card("resolved", title=title)
-        dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
-        alerts_store["resolve"](key, now_iso)
-        actions["resolved"].append(key)
+        if prior.get("checkType") in _CAPACITY_CHECKS:
+            # Genuine physical capacity state that comes and goes -> auto-resolve + notify.
+            title = f"{prior.get('checkType', 'incident')} ({prior.get('resource', 'capacity')})"
+            card = build_card("resolved", title=title)
+            dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
+            alerts_store["resolve"](key, now_iso)
+            actions["resolved"].append(key)
+        else:
+            # Attribution / user-item finding (Step 8): its absence does NOT mean resolved and must
+            # NOT send a "Resolved" card — that card + the next tick's re-fire IS the flapping. The
+            # ticket stays open; we only flip a display-only currentlyActive flag. A human Resolve
+            # (Step 9) is what closes it.
+            if prior.get("currentlyActive") is not False:
+                alerts_store["upsert"](dict(prior, currentlyActive=False, runAt=now_iso))
+            actions["inactive"].append(key)
 
     return actions
 

@@ -50,11 +50,17 @@ def test_recurring_always_reports():
     assert classify(t, CFG)[0] == "report"
 
 
-def test_concentration_bands():
-    assert classify({"check": "concentration", "sharePct": 45}, CFG)[0] == "report"
-    assert classify({"check": "concentration", "sharePct": 55}, CFG)[0] == "report"  # warn
-    assert classify({"check": "concentration", "sharePct": 36}, CFG)[0] == "ambiguous"
+def test_attribution_severity_floor_no_info_cards():
+    # Step 2 anti-flapping: attribution signals only card at Warning+ (or when recurring). An
+    # Info-level concentration/cross-user is suppressed (logged only), never a standalone card.
+    assert classify({"check": "concentration", "sharePct": 55}, CFG)[0] == "report"   # warn (>=50)
+    assert classify({"check": "concentration", "sharePct": 45}, CFG)[0] == "suppress"  # info -> floor
     assert classify({"check": "concentration", "sharePct": 31}, CFG)[0] == "suppress"
+    assert classify({"check": "cross_user", "userCount": 4}, CFG)[0] == "report"       # warn (>=4)
+    assert classify({"check": "cross_user", "userCount": 3}, CFG)[0] == "suppress"     # info -> floor
+    # recurring still cards even below the Warning cutoff
+    assert classify({"check": "concentration", "sharePct": 45,
+                     "recurrence": {"isRecurring": True}}, CFG)[0] == "report"
 
 
 def test_throttle_bands():

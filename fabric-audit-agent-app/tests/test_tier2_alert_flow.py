@@ -128,6 +128,34 @@ def test_ack_and_snooze_suppress_the_48h_reminder():
     assert a["reminder"] == ["pressure::capacity"]
 
 
+def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():
+    """Step 2/8 anti-flapping: when an attribution incident's condition goes absent it must NOT send
+    a Resolved card or auto-resolve (that + re-fire is the flap) — it just goes currentlyActive=False
+    and stays open. A capacity incident still auto-resolves + cards (genuine physical state)."""
+    import json
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")
+    xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
+          "users": ["a", "b", "c", "d"], "sharePct": 30}
+    pr = {"check": "pressure", "peakCuPct": 130}
+    process_alerts([xu, pr], now_dt=T0, **kw)
+    assert set(store["query_active"]()) == {"cross_user::Fin/Sales", "pressure::capacity"}
+
+    posts.clear()
+    a = process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)   # neither fires now
+    assert a["resolved"] == ["pressure::capacity"]          # capacity auto-resolves
+    assert a["inactive"] == ["cross_user::Fin/Sales"]       # attribution just goes inactive
+    active = store["query_active"]()
+    assert "pressure::capacity" not in active               # capacity resolved (gone from active)
+    assert active["cross_user::Fin/Sales"]["currentlyActive"] is False  # attribution still open
+    resolved_cards = [p for p in posts if "Resolved" in json.dumps(p)]
+    assert len(resolved_cards) == 1                          # ONLY the capacity resolved card
+
+
 def test_clear_suppress_never_calls_llm_or_sends():
     store = create_alerts_store_memory()
     r, rc = _reasoner()
