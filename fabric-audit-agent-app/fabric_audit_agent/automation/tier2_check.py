@@ -263,7 +263,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     through ``outbound.dispatch_outbound`` (egress chokepoint).
     """
     from ..outbound import dispatch_outbound
-    from ..adapters.delivery_webhook import build_card
+    from ..adapters.delivery_webhook import build_card, PROXY_RANKING_DISCLOSURE
 
     cfg = cfg if cfg is not None else load_cfg()
     now_dt = now_dt if now_dt is not None else datetime.now(timezone.utc)
@@ -281,8 +281,11 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             # link is always present AND always resolves (never a fake /chat/<uuid> that 404s).
             base = f"{app_url.rstrip('/')}/chat/{cid}" if cid else f"{app_url.rstrip('/')}/"
             chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(trigger))
+        # Concentration/attribution alerts rank a CPU-time PROXY, not true CU — the card must say so.
+        disclosure = PROXY_RANKING_DISCLOSURE if trigger.get("check") == "concentration" else None
         card = build_card(kind, title=_title_for(trigger), severity=row.get("severity", "info"),
-                          facts=_facts_for(trigger), summary=summary, chat_url=chat_url)
+                          facts=_facts_for(trigger), summary=summary, chat_url=chat_url,
+                          disclosure=disclosure)
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
         return bool(res.get("delivered"))
 

@@ -124,7 +124,22 @@ def test_build_concentration_alert_user_first_with_actions():
     titles = [a["title"] for a in card["actions"]]
     assert any("Acknowledge" in t for t in titles) and any("Contact alice@x" in t for t in titles)
     facts = {f["name"]: f["value"] for f in card["sections"][0]["facts"]}
-    assert facts["Driver"] == "alice@x" and facts["Share of CU"] == "35%"
+    assert facts["Driver"] == "alice@x" and facts["Share (monitored activity)"] == "35%"
+
+
+def test_concentration_card_labels_proxy_not_capacity_cu():
+    """Step 3 regression: the concentration card must NOT call the proxy share 'capacity CU', and
+    must carry the monitored-activity proxy disclosure verbatim (no 'base capacity' anywhere)."""
+    import json as _json
+    from fabric_audit_agent.conversation import PROXY_RANKING_DISCLOSURE
+    # bare finding (no 'what') exercises the default text that used to say 'capacity CU'
+    card = build_concentration_alert({"key": "Fin / Sales",
+                                      "evidence": {"sharePct": 42, "topUsers": [{"user": "a@x"}]}})
+    blob = _json.dumps(card)
+    assert "capacity CU" not in blob                       # the old mislabel is gone
+    assert "monitored CPU-time activity" in blob           # honest wording present
+    assert PROXY_RANKING_DISCLOSURE in blob                # disclosure verbatim
+    assert "base capacity" not in blob.lower()
 
 
 def test_build_concentration_alert_owner_when_background():
@@ -142,7 +157,7 @@ def test_concentration_flag_to_alert_end_to_end_names_user():
     alert = build_concentration_alert(flags[0])
     assert alert["sections"][0]["text"] == flags[0]["what"]
     fm = {f["name"]: f["value"] for f in alert["sections"][0]["facts"]}
-    assert fm["Share of CU"] == "35%" and fm["Driver"] == "alice@x"
+    assert fm["Share (monitored activity)"] == "35%" and fm["Driver"] == "alice@x"
     assert any("Contact alice@x" in a["title"] for a in alert["actions"])
 
 
@@ -153,7 +168,7 @@ def test_concentration_alert_degrades_on_bare_finding():
     alert = build_concentration_alert(finding)
     assert alert["sections"][0]["text"] == finding["what"]
     names = [f["name"] for f in alert["sections"][0]["facts"]]
-    assert "Share of CU" not in names and "Driver" not in names   # omitted, not "None%"
+    assert "Share (monitored activity)" not in names and "Driver" not in names   # omitted, not "None%"
     assert any("Acknowledge" in a["title"] for a in alert["actions"])
     assert not any("Contact" in a["title"] for a in alert["actions"])
 

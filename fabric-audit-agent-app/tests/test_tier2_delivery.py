@@ -1,8 +1,27 @@
 """Tier-2 webhook delivery — Adaptive Card builder + POST sink + outbound gating."""
 import json
 
-from fabric_audit_agent.adapters.delivery_webhook import build_card, create_webhook_sink
+from fabric_audit_agent.adapters.delivery_webhook import (
+    build_card, create_webhook_sink, PROXY_RANKING_DISCLOSURE)
 from fabric_audit_agent.outbound import dispatch_outbound
+
+
+def test_concentration_card_carries_proxy_disclosure_and_never_says_base_capacity():
+    """Step 3 regression: a concentration/attribution card must state — verbatim — that the share
+    is a monitored-activity PROXY, and must never mislabel it as '% of base capacity'."""
+    card = build_card("new", title="Concentration: Sales at 42%", severity="warn",
+                      facts=[("Item", "Sales"), ("Share", "42%")],
+                      summary="One user drove 42% of monitored activity on Sales.",
+                      disclosure=PROXY_RANKING_DISCLOSURE)
+    blob = json.dumps(card)
+    assert PROXY_RANKING_DISCLOSURE in blob            # disclosure present verbatim
+    assert "base capacity" not in blob.lower()          # never mislabels the proxy as base capacity
+
+
+def test_throttle_card_has_no_proxy_disclosure():
+    """True-CU alerts (throttle/pressure) are NOT proxy — no disclosure line."""
+    card = build_card("new", title="Throttling on capacity", facts=[("Peak CU", "134%")])
+    assert PROXY_RANKING_DISCLOSURE not in json.dumps(card)
 
 
 def test_build_new_card_has_facts_and_deeplink():

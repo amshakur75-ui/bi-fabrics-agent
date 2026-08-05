@@ -18,6 +18,8 @@ the user's text to ``answer_question()`` and posts the reply + alerts to the cha
 """
 import re
 
+from .adapters.delivery_webhook import PROXY_RANKING_DISCLOSURE
+
 _CONCENTRATION = "capacity.concentration"
 _PERCENT_RE = re.compile(r"\d+\s*%")
 
@@ -46,11 +48,11 @@ def build_concentration_alert(item):
     item = item or {}
     ev = item.get("evidence") or {}
     key = item.get("key") or item.get("resource")
-    text = item.get("what") or "An item is consuming a large share of capacity CU."
+    text = item.get("what") or "An item is consuming a large share of monitored CPU-time activity."
 
     facts = []
     if ev.get("sharePct") is not None:
-        facts.append({"name": "Share of CU", "value": f'{ev.get("sharePct")}%'})
+        facts.append({"name": "Share (monitored activity)", "value": f'{ev.get("sharePct")}%'})
     driver = _driver_of(item)
     if driver:
         facts.append({"name": "Driver", "value": driver})
@@ -66,7 +68,8 @@ def build_concentration_alert(item):
     return {
         "type": "message",
         "summary": "Capacity concentration alert",
-        "sections": [{"heading": "⚠️ Capacity concentration", "text": text, "facts": facts}],
+        "sections": [{"heading": "⚠️ Capacity concentration", "text": text, "facts": facts},
+                     {"text": PROXY_RANKING_DISCLOSURE}],
         "actions": actions,
     }
 
