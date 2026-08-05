@@ -362,14 +362,31 @@ function ChartInner({
 
   return (
     <div
-      className={cn('not-prose w-full rounded-xl border p-4', className)}
+      className={cn(
+        'not-prose w-full rounded-xl border bg-card p-4 shadow-sm',
+        className,
+      )}
       data-testid="chart-container"
       {...props}
     >
-      {/* Header */}
-      <div className="mb-3 flex items-center gap-2">
-        {chartIcon(chart.chartType)}
-        <span className="font-medium text-sm">{chart.title}</span>
+      {/* Header: title + scope pill (true CU vs monitored-activity proxy) */}
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {chartIcon(chart.chartType)}
+          <span className="truncate text-sm font-semibold tracking-tight">
+            {chart.title}
+          </span>
+        </div>
+        <span
+          className={cn(
+            'shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+            chart.isProxy
+              ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200'
+              : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
+          )}
+        >
+          {chart.isProxy ? 'monitored proxy' : 'true CU'}
+        </span>
       </div>
 
       {/* Chart body */}
