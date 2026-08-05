@@ -148,8 +148,23 @@ const PurePreviewMessage = ({
             className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg text-white shadow-sm"
             style={{ background: 'linear-gradient(135deg, #5b7be8, #2272b4)' }}
           >
-            <svg viewBox="0 0 16 16" className="size-3.5" fill="currentColor">
-              <path d="M8 0.5l1.9 4.6 4.6 1.9-4.6 1.9L8 13.5 6.1 8.9 1.5 7l4.6-1.9L8 0.5z" />
+            {/* agent / robot face */}
+            <svg
+              viewBox="0 0 24 24"
+              className="size-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.9}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 3.4v2.2" />
+              <circle cx="12" cy="2.4" r="1.1" fill="currentColor" stroke="none" />
+              <rect x="5" y="5.6" width="14" height="12" rx="3.4" />
+              <path d="M5 10.6H3.4M19 10.6h1.6" />
+              <circle cx="9.6" cy="11.6" r="1.25" fill="currentColor" stroke="none" />
+              <circle cx="14.4" cy="11.6" r="1.25" fill="currentColor" stroke="none" />
+              <path d="M9.8 14.6h4.4" />
             </svg>
           </div>
         )}

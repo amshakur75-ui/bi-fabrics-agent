@@ -50,10 +50,33 @@ export function AppSidebar({
           <Link
             to="/"
             onClick={() => setOpenMobile(false)}
-            className="flex items-center overflow-hidden px-1"
+            className="flex items-center gap-2 overflow-hidden px-1"
           >
-            <span className="text-base font-semibold text-foreground">
-              Chatbot
+            <span
+              aria-hidden="true"
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-white"
+              style={{ background: 'linear-gradient(135deg, #5b7be8, #2272b4)' }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="size-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 3.4v2.2" />
+                <circle cx="12" cy="2.4" r="1.1" fill="currentColor" stroke="none" />
+                <rect x="5" y="5.6" width="14" height="12" rx="3.4" />
+                <path d="M5 10.6H3.4M19 10.6h1.6" />
+                <circle cx="9.6" cy="11.6" r="1.25" fill="currentColor" stroke="none" />
+                <circle cx="14.4" cy="11.6" r="1.25" fill="currentColor" stroke="none" />
+                <path d="M9.8 14.6h4.4" />
+              </svg>
+            </span>
+            <span className="whitespace-nowrap text-base font-semibold text-foreground">
+              Fabric Capacity Agent
             </span>
           </Link>
         )}
