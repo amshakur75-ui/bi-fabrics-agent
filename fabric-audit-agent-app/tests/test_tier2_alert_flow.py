@@ -75,6 +75,28 @@ def test_full_state_machine():
     assert "Resolved" in _card(posts)["body"][0]["text"]
 
 
+def test_chat_write_failure_falls_back_to_root_autoinvestigate_link():
+    """If the chat write fails (returns None), the deep-link must NOT be a fake /chat/<uuid>
+    (guaranteed 404). It falls back to the app root with ?query= — a fresh chat that
+    auto-investigates on open, so the link is always present AND always resolves."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    posts, sink = _sink()
+
+    def failing_writer(md, title):
+        return None  # simulate a DB write that produced no chat id
+
+    a = process_alerts([{"check": "pressure", "peakCuPct": 130}], now_dt=T0,
+                       alerts_store=store, delivery_sinks={"webhook": sink},
+                       reasoner=r, chat_writer=failing_writer, app_url="https://app")
+    assert a["new"] == ["pressure::capacity"]
+    url = _card(posts)["actions"][0]["url"]
+    assert url.startswith("https://app/?query=")  # root, auto-investigating
+    assert "/chat/None" not in url and "/chat/" not in url
+    # row carries no chatId (nothing real was written)
+    assert store["query_active"]()["pressure::capacity"]["chatId"] is None
+
+
 def test_clear_suppress_never_calls_llm_or_sends():
     store = create_alerts_store_memory()
     r, rc = _reasoner()

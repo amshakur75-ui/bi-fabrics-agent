@@ -16,7 +16,6 @@ Priority order of checks:
 Read-only absolute — this module surfaces findings, never writes/scales/refreshes.
 """
 import urllib.parse
-import uuid
 from datetime import datetime, timezone
 
 from ..investigation.gates import (
@@ -276,10 +275,12 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     def _send(kind, trigger, row, summary):
         cid = row.get("chatId")
         chat_url = None
-        if app_url and cid:
-            chat_url = f"{app_url.rstrip('/')}/chat/{cid}"
-            if kind != "resolved":  # opening the link auto-runs a live investigation
-                chat_url += "?query=" + urllib.parse.quote(_investigate_query(trigger))
+        if app_url and kind != "resolved":
+            # Real chat id -> open THAT conversation; no id (write failed) -> the app root, which
+            # opens a fresh chat. Either way ?query auto-runs a live investigation on open, so the
+            # link is always present AND always resolves (never a fake /chat/<uuid> that 404s).
+            base = f"{app_url.rstrip('/')}/chat/{cid}" if cid else f"{app_url.rstrip('/')}/"
+            chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(trigger))
         card = build_card(kind, title=_title_for(trigger), severity=row.get("severity", "info"),
                           facts=_facts_for(trigger), summary=summary, chat_url=chat_url)
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
@@ -334,8 +335,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             except Exception as exc:  # a chat-write failure must not drop the alert or the link
                 print(f"[tier2] alert chat write failed ({type(exc).__name__}: {exc}); "
                       "deep-link will open a fresh auto-investigating chat")
-        if not chat_id:
-            chat_id = str(uuid.uuid4())  # link ALWAYS present; ?query auto-investigates on open
+        # chat_id may be None (writer absent or failed) -> _send falls back to a root ?query link
+        # that opens a fresh auto-investigating chat. No fake /chat/<uuid> (that 404s).
         row = {"incidentKey": key, "status": "active", "severity": sev, "checkType": t.get("check"),
                "resource": t.get("item") or t.get("workspace") or "capacity", "chatId": chat_id,
                "metric": metric, "firstAlertedAt": now_iso, "lastAlertedAt": now_iso,

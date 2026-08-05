@@ -156,13 +156,12 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
             return null;
           });
       }
-    } else {
-      if (chat.userId !== session.user.id) {
-        const error = new ChatSDKError('forbidden:chat');
-        const response = error.toResponse();
-        return res.status(response.status).json(response.json);
-      }
     }
+    // Authorization was already enforced above by checkChatAccess: PUBLIC chats (e.g. Tier-2
+    // alert conversations) are intentionally shared — anyone with the link may read AND continue
+    // them; PRIVATE chats are already blocked there for non-owners. We deliberately do NOT add a
+    // second owner-only check here — it previously rejected the alert deep-link's auto-investigate
+    // ("This chat belongs to another user") and left the stream hanging.
 
     const messagesFromDb = await getMessagesByChatId({ id });
 

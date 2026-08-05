@@ -54,22 +54,41 @@ def create_alert_chat(markdown, title, *, conn=None, user_id=SYSTEM_USER_ID, now
     return chat_id
 
 
-def _lakebase_conn():
+def _endpoint_path():
+    """Resolve the Lakebase **endpoint** resource path used for the credential request.
+
+    This project is an **Autoscaling** Lakebase project, so credentials are issued per endpoint
+    (``projects/<id>/branches/<branch>/endpoints/<endpoint>``), not per Provisioned instance.
+    ``FABRIC_LAKEBASE_ENDPOINT_PATH`` overrides everything; otherwise the path is built from
+    ``FABRIC_LAKEBASE_INSTANCE`` + branch (default ``production``) + endpoint id (default ``primary``).
+    """
+    override = os.environ.get("FABRIC_LAKEBASE_ENDPOINT_PATH")
+    if override:
+        return override
+    instance = os.environ.get("FABRIC_LAKEBASE_INSTANCE", "fabrics-audit-agent-memory")
+    branch = os.environ.get("FABRIC_LAKEBASE_BRANCH", "production")
+    endpoint = os.environ.get("FABRIC_LAKEBASE_ENDPOINT_ID", "primary")
+    return f"projects/{instance}/branches/{branch}/endpoints/{endpoint}"
+
+
+def _lakebase_conn(*, client=None, connect=None):
     """Build a psycopg connection to Lakebase using the run identity's DB credential.
 
     Reads FABRIC_LAKEBASE_HOST / FABRIC_LAKEBASE_DB / FABRIC_LAKEBASE_USER; the password is a
-    short-lived token from the databricks-sdk postgres credential API. Validated live at deploy.
+    short-lived token from the **Autoscaling** postgres credential API
+    (``w.postgres.generate_database_credential(<endpoint path>)``). ``client`` (a WorkspaceClient)
+    and ``connect`` (``psycopg2.connect``) are injectable for tests; both default to the real ones.
     """
-    import psycopg2  # job dependency
-    from databricks.sdk import WorkspaceClient
-
     host = os.environ["FABRIC_LAKEBASE_HOST"]
     db = os.environ.get("FABRIC_LAKEBASE_DB", "databricks_postgres")
     user = os.environ.get("FABRIC_LAKEBASE_USER") or os.environ.get("DATABRICKS_CLIENT_ID")
-    instance = os.environ.get("FABRIC_LAKEBASE_INSTANCE", "fabrics-audit-agent-memory")
-    w = WorkspaceClient()
-    cred = w.database.generate_database_credential(request_id=str(uuid.uuid4()),
-                                                   instance_names=[instance])
+    if client is None:
+        from databricks.sdk import WorkspaceClient
+        client = WorkspaceClient()
+    cred = client.postgres.generate_database_credential(_endpoint_path())
     token = getattr(cred, "token", None) or cred["token"]
-    return psycopg2.connect(host=host, port=5432, dbname=db, user=user,
-                            password=token, sslmode="require")
+    if connect is None:
+        import psycopg2  # job dependency
+        connect = psycopg2.connect
+    return connect(host=host, port=5432, dbname=db, user=user,
+                   password=token, sslmode="require")
