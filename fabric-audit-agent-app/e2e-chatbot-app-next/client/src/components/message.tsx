@@ -142,9 +142,22 @@ const PurePreviewMessage = ({
           <AwaitingResponseMessage />
         )}
 
+        {message.role === 'assistant' && (
+          <div
+            aria-hidden="true"
+            className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg text-white shadow-sm"
+            style={{ background: 'linear-gradient(135deg, #5b7be8, #2272b4)' }}
+          >
+            <svg viewBox="0 0 16 16" className="size-3.5" fill="currentColor">
+              <path d="M8 0.5l1.9 4.6 4.6 1.9-4.6 1.9L8 13.5 6.1 8.9 1.5 7l4.6-1.9L8 0.5z" />
+            </svg>
+          </div>
+        )}
+
         <div
           className={cn('flex min-w-0 flex-col gap-3', {
-            'w-full': message.role === 'assistant' || mode === 'edit',
+            'min-w-0 flex-1': message.role === 'assistant',
+            'w-full': mode === 'edit',
             'min-h-96': message.role === 'assistant' && requiresScrollPadding,
             'max-w-[70%] sm:max-w-[min(fit-content,80%)]':
               message.role === 'user' && mode !== 'edit',
