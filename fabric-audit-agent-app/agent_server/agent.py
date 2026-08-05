@@ -211,7 +211,9 @@ def _build_claude_client(ws):
                                 tcs.append({"id": b.get("id",""), "type": "function",
                                             "function": {"name": b.get("name",""),
                                                          "arguments": _json.dumps(b.get("input",{}))}})
-                    d = {"role": "assistant", "content": " ".join(texts) if texts else None}
+                    d = {"role": "assistant",
+                         "content": " ".join(t if isinstance(t, str) else str(t) for t in texts)
+                         if texts else None}
                     if tcs: d["tool_calls"] = tcs
                     oai_msgs.append(d)
                 else:
@@ -228,8 +230,16 @@ def _build_claude_client(ws):
             choice = data["choices"][0]
             msg = choice["message"]
             blocks = []
-            if msg.get("content"):
-                blocks.append(_Block(type="text", text=msg["content"]))
+            _content = msg.get("content")
+            if isinstance(_content, list):
+                # Some serving endpoints (e.g. Claude Sonnet 5) return `content` as structured
+                # parts [{type,text},...] rather than a plain string. Flatten to text so the
+                # assistant message stays a str — otherwise the next turn's join hits a list.
+                _content = " ".join(
+                    p.get("text", "") if isinstance(p, dict) else str(p) for p in _content
+                ).strip()
+            if _content:
+                blocks.append(_Block(type="text", text=_content))
             for tc in (msg.get("tool_calls") or []):
                 inp = tc["function"].get("arguments", "{}")
                 if isinstance(inp, str):
@@ -638,6 +648,9 @@ async def stream_handler(request: ResponsesAgentRequest):
             # A raised exception here would abort the SSE stream mid-flight and the chat UI
             # shows a broken/blank response. End the stream with an honest, readable failure
             # instead (the non-streaming /invocations path still surfaces a proper 500).
+            import traceback as _tb
+            print(f"[stream] turn failed: {type(exc).__name__}: {exc}\n{_tb.format_exc()}",
+                  flush=True)
             final_text = _friendly_failure(exc)
         yield ResponsesAgentStreamEvent(
             type="response.output_item.done",
