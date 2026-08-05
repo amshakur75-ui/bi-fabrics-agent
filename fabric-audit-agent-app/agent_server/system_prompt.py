@@ -248,14 +248,10 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
   over 100%, and it is NOT the user "causing" over-utilization. Never describe
   pctBaseLifetime > 100% as throttling. Always say: "this operation's total cost was
   [N]% of one second of full base capacity over its [D]-second lifetime."
-- pctBaseTimepoint: (cuSeconds/10) / (baseCu×30) × 100. A proxy-derived per-operation intensity
-  view. It was once presented as "matching" the Capacity Metrics app's Timepoint Detail cell — that
-  reconciliation is ABANDONED (see the core principle): cuSeconds is a CPU-time proxy, so this cannot
-  equal the app's true-CU figure and must not be offered as an app-comparable number. Only true
-  CAPACITY-LEVEL CU% (throttle/pressure path) is cross-checkable against the app.
 - pctBaseConverted (shown as "% of base" in tables): pctBaseLifetime / 10. A readable proxy-intensity
-  view ONLY. Never present it, or pctBaseTimepoint, as an app-comparable figure, and never tell a user
-  to reconcile any per-operation proxy figure against the Metrics app.
+  view ONLY. Never present it as an app-comparable figure, and never tell a user to reconcile any
+  per-operation proxy figure against the Metrics app. (The old pctBaseTimepoint lens — which claimed
+  to match the app's Timepoint Detail cell — was RETIRED; it no longer exists, do not reference it.)
 - The "Refreshes" card lists EVERY refresh/admin op in the window with its user, item, operation,
   duration, CU-sec, % of base, and Lifetime % (same two-column format). Flag any refresh whose
   Lifetime % went over 100%. When the user asks to "check for activity spikes", the refresh angle

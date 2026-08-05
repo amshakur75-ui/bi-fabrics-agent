@@ -268,17 +268,12 @@ USER_DURATION_SHARE_PCT = {
 # ---------------------------------------------------------------------------
 # Per-operation "% of base" lenses -- capacity_peaks tool (GAP-2 wiring, 2026-07-30)
 #
-# N25: tools.py's capacity_peaks_handler documents its formulas in a prose dict
-# (``lensExplained``, tools.py ~1264) rather than this table. lensExplained is the source of
-# truth these two entries were transcribed from VERBATIM. lensExplained itself only documents
-# two keys -- "pctBaseLifetime" and "pctBaseTimepoint" -- it does NOT document a
-# "pctBaseConverted" key at all, even though ``pctBaseConverted`` is a real field emitted on
-# every capacity_peaks row (investigation/timepoint_peaks.py). Per timepoint_peaks.py's own
-# code comment (lines 111-115), pctBaseConverted = pctBaseLifetime / 10 -- "a readable
-# intensity view the user asked for", EXPLICITLY NOT the Capacity Metrics app's exact
-# Timepoint Detail cell (that role belongs solely to the separate field pctBaseTimepoint,
-# formula (cuSeconds/10)/(baseCu*30)*100, validated exact against a real screenshot). Do not
-# confuse pctBaseConverted with pctBaseTimepoint -- see PCT_BASE_CONVERTED notes below.
+# tools.py's capacity_peaks_handler documents its formulas in a prose dict (``lensExplained``)
+# rather than this table. The two catalogued per-operation metrics are pctBaseLifetime
+# (cuSeconds/baseCu*100) and its readable /10 view pctBaseConverted -- BOTH CPU-time PROXY
+# intensity, neither app-comparable. STEP 4 RETIREMENT: the timepoint lens (pctBaseTimepoint),
+# which once claimed to match the Capacity Metrics app's Timepoint Detail cell, was removed --
+# a proxy cannot match the app's true CU, so no per-operation figure is app-comparable.
 # ---------------------------------------------------------------------------
 
 PCT_BASE_LIFETIME = {
@@ -317,54 +312,12 @@ PCT_BASE_CONVERTED = {
     "smoothing_window": "operation lifetime (not smoothed -- spans the operation's full duration)",
     "verified": False,
     "notes": (
-        "verified=False (C3 fix, 2026-07-30): although the /10 arithmetic transform of "
-        "pctBaseLifetime is itself exact, pctBaseLifetime -- the value this field is derived "
-        "from -- is itself verified=False (not confirmed against production data). A derived "
-        "value cannot be marked more-verified than its own input, and this file's own gate "
-        "(module docstring, lines 19-20) requires verified=False unless the formula was "
-        "confirmed against production data -- which the notes below admit never happened. "
-        "IMPORTANT DISCREPANCY (see N25 above): the GAP-2 task brief that requested this entry "
-        "described pct_base_converted as matching 'the Capacity Metrics app Timepoint Detail % of "
-        "Base capacity column' and being 'the correct figure for cross-referencing'. That "
-        "description is WRONG for this field -- lensExplained (tools.py, the source of truth) "
-        "attaches that exact property to a DIFFERENT field, pctBaseTimepoint (formula "
-        "(cuSeconds/10)/(baseCu*30)*100), and does not mention pctBaseConverted at all. Per "
-        "investigation/timepoint_peaks.py's own code comment, pctBaseConverted is instead "
-        "pctBaseLifetime/10 -- a readable display convenience, EXPLICITLY documented in that same "
-        "comment as 'NOT the Capacity Metrics app's exact Timepoint Detail cell (that is "
-        "pctBaseTimepoint, ~/300)'. Do NOT use pct_base_converted to cross-reference the Capacity "
-        "Metrics app -- use pctBaseTimepoint (not yet catalogued here; see GAPS-AND-ISSUES N14 "
-        "follow-up) for that purpose instead. verified=True here only because the /10 arithmetic "
-        "transform itself is exact, not because it reconciles with the app."
-    ),
-}
-
-PCT_BASE_TIMEPOINT = {
-    "name": "pct_base_timepoint",
-    "description": (
-        "Peak 30-second timepoint share -- the ONLY capacity_peaks column that matches the "
-        "Capacity Metrics app Timepoint Detail '% of Base capacity' column"
-    ),
-    "formula": "(cuSeconds / 10) / (baseCu * 30) * 100",
-    "source_table": "Capacity Overview Events (per-operation, via the capacity_peaks tool)",
-    "source_columns": ["cuSeconds", "baseCu"],
-    "metric_type": "presentational",
-    "smoothing_window": "30 seconds (5-min interactive smoothing -- cuSeconds / 10 timepoints)",
-    "verified": True,
-    "notes": (
-        "Verbatim from tools.py lensExplained / investigation/timepoint_peaks.py: "
-        "timepointCuSeconds = cuSeconds / 10, then pctBaseTimepoint = timepointCuSeconds / "
-        "(baseCu * 30) * 100. This is the ONLY figure to cite when cross-referencing against the "
-        "Metrics app -- pctBaseLifetime and pctBaseConverted are explicitly NOT app-comparable "
-        "(see their own notes). verified=True because timepoint_peaks.py documents an exact "
-        "match against a real F1024 Timepoint Detail screenshot (54,302.75 total CU-sec -> "
-        "5,430.2752 timepoint -> 17.68% of base, exact). metric_type is 'presentational' rather "
-        "than 'true_CU', NOT because the formula is wrong, but because the cuSeconds input the "
-        "live capacity_peaks tool feeds into it is a CPU-time proxy from monitored telemetry "
-        "(see capacity_peaks tool's own 'cuUnit' note), not authoritative billed capacity CU --  "
-        "the formula-vs-app-column match was validated against real production CU-sec, not "
-        "against the proxy telemetry this field runs on in production. Same proxy caveat as "
-        "pctBaseLifetime/pctBaseConverted therefore still applies to the live value."
+        "verified=False (C3 fix): the /10 transform is exact, but its input pctBaseLifetime is "
+        "itself verified=False. A readable proxy-intensity view ONLY. It is NOT app-comparable and "
+        "must NOT be used to cross-reference the Capacity Metrics app. NOTE (Step 4 retirement): the "
+        "timepoint lens (pctBaseTimepoint), which once claimed to be the app-comparable per-operation "
+        "figure, has been REMOVED -- a CPU-time proxy cannot match the app's true CU, so NO "
+        "per-operation figure is app-comparable; only true CAPACITY-LEVEL CU% is."
     ),
 }
 
@@ -432,7 +385,6 @@ METRIC_DEFINITIONS = {
         DOMINANT_ITEM_SHARE_PCT,
         PCT_BASE_LIFETIME,
         PCT_BASE_CONVERTED,
-        PCT_BASE_TIMEPOINT,
     ]
 }
 

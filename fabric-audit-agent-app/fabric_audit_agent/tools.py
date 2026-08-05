@@ -1281,13 +1281,12 @@ def create_tool_definitions(base_dir=None):
         return None, "unavailable"
 
     def capacity_peaks_handler(_input=None):
-        """Per-operation TIMEPOINT PEAKS for a CALENDAR DAY (UTC) — the Capacity Metrics app
-        'Timepoint Detail' lens. Lists the moments a user/operation hit a large share of base
-        capacity: user, item, operation, when, duration, timepoint CU-sec, and % of base computed
-        the app's way (timepointCuSeconds / (baseCu*30)*100, timepointCuSeconds = cuSeconds/10) --
-        NOT total-CU/base, which overstates by ~10x-100x. Ranked by % of base (== CU order for a
-        fixed base, so both agree); filter with minPctBase. Interactive ops only by default
-        (refresh/background smooth over 24h, not this lens). Read-only."""
+        """Per-operation cost peaks for a CALENDAR DAY (UTC): the most expensive operations, ranked by
+        CPU-time cost. Lists user, item, operation, when, duration, CU-sec, and the lifetime % of base
+        (cuSeconds/baseCu*100 -- the '471% / above 300%' operation-cost view). This is a PROXY
+        intensity (CpuTimeMs, not capacity CU) and is NOT reconciled to the Capacity Metrics app --
+        the timepoint lens that once claimed that was retired (Step 4). Ranked by CU-seconds; filter
+        with minPctBase (lifetime). Interactive ops included by default. Read-only."""
         from datetime import timedelta as _td
         inp = _input or {}
         source = "live" if _has_live_event_source(os.environ) else "mock"
@@ -1298,8 +1297,9 @@ def create_tool_definitions(base_dir=None):
             top_n = inp.get("topN") if inp.get("topN") is not None else 20
             min_pct = inp.get("minPctBase")
             lens = inp.get("lens") if inp.get("lens") is not None else "lifetime"
-            if lens not in ("lifetime", "timepoint"):
-                return {"error": f"lens must be 'lifetime' or 'timepoint', got {lens!r}",
+            if lens != "lifetime":
+                return {"error": (f"lens must be 'lifetime' (the 'timepoint' lens was retired — a "
+                                  f"CPU-time proxy is not comparable to the Capacity Metrics app), got {lens!r}"),
                         "peaks": [], "source": source}
             # Default: include ALL user-attributed ops (matches the canonical query's
             # `isnotempty(ExecutingUser)` filter -- admin ops like a Restore/CommandEnd must appear).
@@ -1351,13 +1351,10 @@ def create_tool_definitions(base_dir=None):
                     if start_disp:
                         p["startDisplay"] = start_disp
                     p["durationSeconds"] = round(dur_ms / 1000.0, 1)
-                # GAP-2 (N14) wiring: attach kb/metric_definitions.py provenance for the three
-                # "% of base" lens columns, additively -- pctBaseLifetime/pctBaseConverted/
-                # pctBaseTimepoint keep their exact existing values/types; this only adds a
-                # sibling "metrics" key. I4 fix (2026-07-30): use the LIGHT stamp (no per-row
-                # "notes" prose -- that duplicated the catalog once per row and bloated the
-                # payload ~6x at default top_n); the full definition is attached once below as
-                # "metricsCatalog", referenced by each row's "metricName".
+                # GAP-2 (N14) wiring: attach kb/metric_definitions.py provenance for the "% of base"
+                # PROXY-intensity columns (pctBaseLifetime/pctBaseConverted), additively. The
+                # timepoint lens (pctBaseTimepoint) was retired in Step 4 — it existed only to match
+                # the Metrics app from the proxy, which is abandoned. I4 fix: LIGHT stamp only.
                 _row_metrics = {}
                 if p.get("pctBaseLifetime") is not None:
                     _row_metrics["pctBaseLifetime"] = _mv_dict_light(
@@ -1366,10 +1363,6 @@ def create_tool_definitions(base_dir=None):
                 if p.get("pctBaseConverted") is not None:
                     _row_metrics["pctBaseConverted"] = _mv_dict_light(
                         "pct_base_converted", p["pctBaseConverted"],
-                        confidence=_ClaimConfidence.LIKELY, unit="%")
-                if p.get("pctBaseTimepoint") is not None:
-                    _row_metrics["pctBaseTimepoint"] = _mv_dict_light(
-                        "pct_base_timepoint", p["pctBaseTimepoint"],
                         confidence=_ClaimConfidence.LIKELY, unit="%")
                 if _row_metrics:
                     p["metrics"] = _row_metrics
@@ -1405,9 +1398,10 @@ def create_tool_definitions(base_dir=None):
                 "thresholdLens": lens,
                 "lensExplained": {
                     "pctBaseLifetime": ("cuSeconds / baseCu * 100 -- operation total cost vs 1s of "
-                                        "base (the '471%' view; use for >100/300/1000% thresholds)"),
-                    "pctBaseTimepoint": ("(cuSeconds/10) / (baseCu*30) * 100 -- peak 30-second window "
-                                         "share; matches the Capacity Metrics app Timepoint Detail column"),
+                                        "base (the '471%' view; use for >100/300/1000% thresholds). A "
+                                        "PROXY intensity, NOT reconciled to the Capacity Metrics app."),
+                    "pctBaseConverted": ("pctBaseLifetime / 10 -- readable 2-digit intensity view of "
+                                         "the same proxy cost. Not an app-comparable figure."),
                 },
                 "source": source,
                 "cuUnit": "cuSeconds (CPU-time proxy; not authoritative billed capacity CU)",
@@ -2726,16 +2720,14 @@ def create_tool_definitions(base_dir=None):
             "description": (
                 "THE tool for 'top capacity operations / biggest spikes today, above X% of base'. "
                 "Returns per-operation peaks for a CALENDAR DAY (UTC): user, item, operation, when, "
-                "start->end, duration, raw CU-seconds, AND two % of base columns -- pctBaseLifetime "
-                "(cuSeconds/baseCu*100, the operation total-cost '471%' view, used for >100/300/1000% "
-                "thresholds) and pctBaseTimepoint ((cuSeconds/10)/(baseCu*30)*100, the peak 30-second "
-                "window share that matches the Capacity Metrics app). Both are shown on every row so "
-                "the user can read cost OR timepoint intensity. Ranked by CU (same order for either "
-                "lens). Use 'date' for a specific day (default today UTC, NOT a rolling 24h); "
-                "'minPctBase' + 'lens' to keep only ops above a threshold on the chosen lens "
-                "(lens='lifetime' default matches the >300% workflow; lens='timepoint' matches the "
-                "Metrics app); 'topN' to cap. Interactive ops only unless includeRefresh. NEVER "
-                "hand-compute % of base -- this tool does it correctly. Read-only; UNTRUSTED telemetry."
+                "start->end, duration, raw CU-seconds, and pctBaseLifetime (cuSeconds/baseCu*100, the "
+                "operation total-cost '471%' view, used for >100/300/1000% thresholds) with its "
+                "readable pctBaseConverted (=/10). These are a CPU-time PROXY intensity, NOT reconciled "
+                "to the Capacity Metrics app (the timepoint lens that once claimed that was retired). "
+                "Ranked by CU-seconds. Use 'date' for a specific day (default today UTC, NOT a rolling "
+                "24h); 'minPctBase' to keep only ops above a lifetime %; 'topN' to cap. Interactive ops "
+                "included unless includeRefresh=false. NEVER hand-compute % of base -- this tool does it "
+                "correctly. Read-only; UNTRUSTED telemetry."
             ),
             "input_schema": {
                 "type": "object",
@@ -2745,23 +2737,19 @@ def create_tool_definitions(base_dir=None):
                                              "(default) / 'yesterday'. A calendar DATE, not a "
                                              "rolling 24h window.")},
                     "minPctBase": {"type": "number",
-                                   "description": ("Only return operations whose % of base on the "
-                                                   "chosen 'lens' is >= this (e.g. 300 with "
-                                                   "lens='lifetime' for the >300% table, or 30 with "
-                                                   "lens='timepoint'). Omit to return the top ops.")},
-                    "lens": {"type": "string", "enum": ["lifetime", "timepoint"],
-                             "description": ("Which % column 'minPctBase' filters on: 'lifetime' "
-                                             "(default, cuSeconds/baseCu*100 -- the 471%/>300% view) "
-                                             "or 'timepoint' (peak 30s window, Metrics-app view). "
-                                             "Both columns are always returned regardless.")},
+                                   "description": ("Only return operations whose lifetime % of base "
+                                                   "(cuSeconds/baseCu*100) is >= this (e.g. 300 for the "
+                                                   ">300% table). Omit to return the top ops.")},
+                    "lens": {"type": "string", "enum": ["lifetime"],
+                             "description": ("Only 'lifetime' (cuSeconds/baseCu*100, the 471%/>300% "
+                                             "view). The 'timepoint' lens was retired -- a CPU-time "
+                                             "proxy is not comparable to the Capacity Metrics app.")},
                     "topN": {"type": "integer", "description": "Maximum instances to return (default 20)."},
                     "user": {"type": "string", "description": "Optional user UPN/email to scope to."},
                     "item": {"type": "string", "description": "Optional item/artifact name to scope to."},
                     "includeRefresh": {"type": "boolean",
-                                       "description": ("Include refresh/background ops (default "
-                                                       "false; the timepoint lens does not model "
-                                                       "their 24h smoothing, but their lifetime % is "
-                                                       "still meaningful).")},
+                                       "description": ("Include refresh/background ops (default true; "
+                                                       "pass false for interactive query ops only).")},
                     "baseCu": {"type": "integer",
                                "description": ("Override base capacity units (e.g. 1024 for F1024) when "
                                                "the SKU name doesn't resolve to a base. Falls back to "

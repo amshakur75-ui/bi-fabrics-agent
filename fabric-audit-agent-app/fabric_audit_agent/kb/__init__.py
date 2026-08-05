@@ -14,7 +14,7 @@ from .meta import META_PLAYBOOKS
 from .metric_definitions import (
     METRIC_DEFINITIONS, MetricValue, get_metric, is_proxy, is_verified,
     DOMINANT_ITEM_SHARE_PCT,
-    PCT_BASE_LIFETIME, PCT_BASE_CONVERTED, PCT_BASE_TIMEPOINT,
+    PCT_BASE_LIFETIME, PCT_BASE_CONVERTED,
 )
 
 _ALL = {

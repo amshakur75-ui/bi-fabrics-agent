@@ -59,9 +59,9 @@ class TestNewMetricDefinitions:
         assert m is not None
         assert m["formula"] == "pctBaseLifetime / 10  (== cuSeconds / (baseCu * 10) * 100)"
         assert m["metric_type"] == "presentational"
-        # Loud discrepancy flag: must NOT claim to match the Capacity Metrics app.
-        assert "pctBaseTimepoint" in m["notes"]
-        assert "NOT" in m["notes"]
+        # Must NOT claim to match the Capacity Metrics app (and the retired timepoint lens is noted).
+        assert "NOT app-comparable" in m["notes"] or "not app-comparable" in m["notes"]
+        assert "retire" in m["notes"].lower()
 
     def test_pct_base_converted_not_more_verified_than_its_input(self):
         """C3: pct_base_converted is derived (/10) from pct_base_lifetime, which is
@@ -78,13 +78,10 @@ class TestNewMetricDefinitions:
         with pytest.raises(KeyError):
             MetricValue.from_definition("no_such_metric", 1.0, confidence=ClaimConfidence.LIKELY)
 
-    def test_registry_grew_by_exactly_three_from_pre_gap2_baseline(self):
-        """M5 fix: this test previously asserted an absolute `len == 16` while being named/
-        described as testing a *delta* ("grew by exactly two") -- an absolute count silently
-        stops proving what its name claims the moment anything else changes the registry (as
-        M1's `pct_base_timepoint` addition just did), and breaking is the only signal that
-        happens. Assert the delta explicitly instead: the pre-GAP-2 baseline (everything except
-        pct_base_lifetime/pct_base_converted/pct_base_timepoint) plus exactly those three."""
+    def test_registry_is_baseline_plus_the_two_lifetime_lens_metrics(self):
+        """The pre-GAP-2 baseline plus exactly the two surviving per-operation lens metrics
+        (pct_base_lifetime + its /10 view pct_base_converted). The timepoint lens metric
+        (pct_base_timepoint) was retired in Step 4, so it must NOT be present."""
         pre_gap2_names = {
             "sku_cu_pct", "cu_limit", "peak_utilization_pct",
             "cumulative_carry_forward_pct", "minutes_to_burndown",
@@ -94,9 +91,10 @@ class TestNewMetricDefinitions:
             "user_cpu_share_pct", "user_duration_share_pct",
             "concentration_threshold_pct", "dominant_item_share_pct",
         }
-        gap2_names = {"pct_base_lifetime", "pct_base_converted", "pct_base_timepoint"}
+        gap2_names = {"pct_base_lifetime", "pct_base_converted"}
         assert set(METRIC_DEFINITIONS) == pre_gap2_names | gap2_names
-        assert len(METRIC_DEFINITIONS) == len(pre_gap2_names) + 3
+        assert "pct_base_timepoint" not in METRIC_DEFINITIONS
+        assert len(METRIC_DEFINITIONS) == len(pre_gap2_names) + 2
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +112,6 @@ _FAKE_PEAK = {
     "cuSeconds": 4825.3,
     "pctBaseLifetime": 471.2,
     "pctBaseConverted": 47.1,
-    "timepointCuSeconds": 482.53,
-    "pctBaseTimepoint": 17.68,
 }
 
 
@@ -131,7 +127,7 @@ class TestCapacityPeaksWiring:
             assert row[key] == expected, f"{key} changed: {row[key]!r} != {expected!r}"
         # top-level pre-existing keys/shape untouched
         assert out["thresholdLens"] == "lifetime"
-        assert set(out["lensExplained"]) == {"pctBaseLifetime", "pctBaseTimepoint"}
+        assert set(out["lensExplained"]) == {"pctBaseLifetime", "pctBaseConverted"}
 
     def test_metrics_attached_and_correct(self, monkeypatch):
         out = self._run(monkeypatch)
@@ -154,12 +150,8 @@ class TestCapacityPeaksWiring:
         assert conv["verified"] is False
         assert conv["metricName"] == "pct_base_converted"
 
-        # M1: pctBaseTimepoint -- the ONLY Metrics-app-comparable column -- is now also stamped.
-        tp = metrics["pctBaseTimepoint"]
-        assert tp["value"] == 17.68
-        assert tp["formula"] == "(cuSeconds / 10) / (baseCu * 30) * 100"
-        assert tp["verified"] is True
-        assert tp["metricName"] == "pct_base_timepoint"
+        # Step 4: the timepoint lens was retired — no pctBaseTimepoint stamp is emitted anymore.
+        assert "pctBaseTimepoint" not in metrics
 
     def test_metrics_rows_do_not_carry_notes_prose(self, monkeypatch):
         """I4: per-row metrics stamps must NOT duplicate the (long) catalog 'notes' prose --
@@ -175,7 +167,7 @@ class TestCapacityPeaksWiring:
         be resolvable from a single top-level 'metricsCatalog', not repeated per row."""
         out = self._run(monkeypatch)
         catalog = out["metricsCatalog"]
-        assert set(catalog) == {"pct_base_lifetime", "pct_base_converted", "pct_base_timepoint"}
+        assert set(catalog) == {"pct_base_lifetime", "pct_base_converted"}
         for name, mv in out["peaks"][0]["metrics"].items():
             entry = catalog[mv["metricName"]]
             assert entry["formula"] == mv["formula"]

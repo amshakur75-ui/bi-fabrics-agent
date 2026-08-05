@@ -6,6 +6,20 @@ Last updated: 2026-07-30 (all sessions through ADR-002 restructure + live E2 ver
 
 **Post-sprint deploy fix + live E2 verification (2026-07-30 later):** the chat app broke in prod when `mcp` 2.0.0 (released 2026-07-28) dropped `streamablehttp_client` — `databricks-mcp` still imports that name and every user turn died on the import. Fix pinned `mcp>=1.13,<2` in both packages, added `requirements.txt` files to force reinstall, and bumped `# code version:` markers in lockstep. Bump-in-lockstep is now a project rule since the platform caches on requirements.txt content hash, not package version. Databricks Git folder wedged into an unresolvable merge state (14 conflicts, `repos update` rejected with "Repository must not be in rebase/merge state") — resolved by delete + recreate of the Repo (id 390915478761326, path unchanged, no app rebinding needed); gitignored `fabric-audit-agent-app/app.yaml` re-uploaded from backup. All 4 live E2 questions passed end-to-end against the redeployed chat app: capacity health (size-up correctly suppressed under throttled verdict, recurrence surfaced), throttling events (real Mon Jul 27 episode with "no other in past 7 days" framing, no fabrication), concentration (proxy caveat present, agent noted scope shift across turns), CU%-over-time (`render_chart` called successfully per backend log, isProxy=false / sourceScope=capacity semantics reflected in the answer — **but chart component did not visually render, agent gracefully fell back to a table**; frontend Phase 8 render path bug, not a prompt or tool bug). See task #42.
 
+**Step 4 — timepoint-lens RETIREMENT (2026-08-04, deliberate simplification):** the per-operation
+`pctBaseTimepoint` lens (`(cuSeconds/10)/(baseCu*30)*100`) and its `timepointCuSeconds` field were
+**removed** from `investigation/timepoint_peaks.py`, the `capacity_peaks` tool (output + schema +
+`lensExplained`), `kb/metric_definitions.py` (the `pct_base_timepoint` metric), and the system prompt.
+This lens existed ONLY to reproduce the Capacity Metrics app's "Timepoint Detail" cell from the
+CpuTimeMs proxy — the abandoned pattern (see the system prompt's true-CU-vs-proxy principle). A proxy
+is structurally blind to costs the app's true CU sees, so the match is impossible; keeping it produced
+false "this matches the app" claims. The `lens` param now accepts only `"lifetime"`. **Deferred (a
+deliberate, larger follow-up requiring a table-format decision):** the fuller flat-share redesign —
+removing the surviving per-operation `pctBaseLifetime`/`pctBaseConverted` "% of base" columns in favor
+of raw CU-seconds + a flat share% of the pull's total — was NOT done, because it reshapes the
+heavily-tuned capacity-peaks table (exact columns specified in the system prompt). Those two columns
+remain but are now correctly framed everywhere as PROXY intensity, never app-comparable.
+
 This document is the authoritative record of every known gap, bug, behavioral problem, and missing
 feature across the `fabric-audit-agent-py` and `fabric-audit-agent-app` codebases. Grouped by type.
 Nothing omitted.
