@@ -97,6 +97,37 @@ def test_chat_write_failure_falls_back_to_root_autoinvestigate_link():
     assert store["query_active"]()["pressure::capacity"]["chatId"] is None
 
 
+def test_ack_and_snooze_suppress_the_48h_reminder():
+    """6c: an acked incident never reminds; a snoozed one stays quiet until the snooze expires."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _wc = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")
+    warn = {"check": "pressure", "peakCuPct": 130}
+
+    process_alerts([warn], now_dt=T0, **kw)   # run 1: new incident
+    cid = store["query_active"]()["pressure::capacity"]["chatId"]
+
+    # run 2: +49h (reminder due) but ACKED -> silent, no reminder
+    acked = {"get": lambda c: {"status": "acked"} if c == cid else None}
+    a = process_alerts([warn], now_dt=T0 + timedelta(hours=49), ack_store=acked, **kw)
+    assert a["reminder"] == [] and a["silent"] == ["pressure::capacity"]
+
+    # run 3: +98h, SNOOZED until the future -> still silent
+    future = (T0 + timedelta(hours=300)).isoformat()
+    snoozed = {"get": lambda c: {"status": "snoozed", "snoozeUntil": future}}
+    a = process_alerts([warn], now_dt=T0 + timedelta(hours=98), ack_store=snoozed, **kw)
+    assert a["silent"] == ["pressure::capacity"]
+
+    # run 4: snooze EXPIRED -> the reminder resumes
+    past = (T0 + timedelta(hours=50)).isoformat()
+    expired = {"get": lambda c: {"status": "snoozed", "snoozeUntil": past}}
+    a = process_alerts([warn], now_dt=T0 + timedelta(hours=147), ack_store=expired, **kw)
+    assert a["reminder"] == ["pressure::capacity"]
+
+
 def test_clear_suppress_never_calls_llm_or_sends():
     store = create_alerts_store_memory()
     r, rc = _reasoner()

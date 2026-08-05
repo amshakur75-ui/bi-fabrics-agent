@@ -5,7 +5,13 @@ import {
   type Router as RouterType,
 } from 'express';
 import { authMiddleware, requireAuth } from '../middleware/auth';
-import { getChatsByUserId, isDatabaseAvailable } from '@chat-template/db';
+import {
+  getChatsByUserId,
+  isDatabaseAvailable,
+  getAlertAckMap,
+  setAlertAck,
+  clearAlertAck,
+} from '@chat-template/db';
 
 export const alertsRouter: RouterType = Router();
 
@@ -16,7 +22,8 @@ alertsRouter.use(authMiddleware);
 const ALERT_USER_ID = 'fabric-audit-agent';
 
 /**
- * GET /api/alerts - shared Tier-2 alert conversations (system-owned, public), newest first.
+ * GET /api/alerts - shared Tier-2 alert conversations (system-owned, public), newest first, each
+ * annotated with its ack/snooze state so the sidebar can show it.
  */
 alertsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
   if (!isDatabaseAvailable()) {
@@ -25,15 +32,76 @@ alertsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
 
   const limit = Number.parseInt((req.query.limit as string) || '20');
   try {
-    const chats = await getChatsByUserId({
+    const result = await getChatsByUserId({
       id: ALERT_USER_ID,
       limit,
       startingAfter: null,
       endingBefore: null,
     });
-    res.json(chats);
+    const ackMap = await getAlertAckMap(result.chats.map((c) => c.id));
+    res.json({
+      ...result,
+      chats: result.chats.map((c) => ({ ...c, ack: ackMap[c.id] ?? null })),
+    });
   } catch (error) {
     console.error('[/api/alerts] Error in handler:', error);
     res.status(500).json({ error: 'Failed to fetch alerts' });
   }
 });
+
+/** POST /api/alerts/:chatId/ack - acknowledge an alert (stops its 48h reminders). */
+alertsRouter.post(
+  '/:chatId/ack',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      await setAlertAck({
+        chatId: req.params.chatId,
+        status: 'acked',
+        snoozeUntil: null,
+        updatedBy: req.session?.user.email ?? req.session?.user.id ?? null,
+      });
+      res.json({ ok: true, status: 'acked' });
+    } catch (error) {
+      console.error('[/api/alerts/:chatId/ack] Error:', error);
+      res.status(500).json({ error: 'Failed to acknowledge alert' });
+    }
+  },
+);
+
+/** POST /api/alerts/:chatId/snooze - snooze reminders for N days (default 7). */
+alertsRouter.post(
+  '/:chatId/snooze',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const days = Math.min(Math.max(Number(req.body?.days) || 7, 1), 90);
+    const snoozeUntil = new Date(Date.now() + days * 86400000).toISOString();
+    try {
+      await setAlertAck({
+        chatId: req.params.chatId,
+        status: 'snoozed',
+        snoozeUntil,
+        updatedBy: req.session?.user.email ?? req.session?.user.id ?? null,
+      });
+      res.json({ ok: true, status: 'snoozed', snoozeUntil });
+    } catch (error) {
+      console.error('[/api/alerts/:chatId/snooze] Error:', error);
+      res.status(500).json({ error: 'Failed to snooze alert' });
+    }
+  },
+);
+
+/** DELETE /api/alerts/:chatId/ack - clear an ack/snooze (reminders resume). */
+alertsRouter.delete(
+  '/:chatId/ack',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      await clearAlertAck(req.params.chatId);
+      res.json({ ok: true, status: null });
+    } catch (error) {
+      console.error('[/api/alerts/:chatId/ack DELETE] Error:', error);
+      res.status(500).json({ error: 'Failed to clear alert state' });
+    }
+  },
+);

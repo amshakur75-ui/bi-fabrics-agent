@@ -629,12 +629,12 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         except Exception as exc:
             print(f"[tier2] readings store init skipped ({type(exc).__name__}: {exc})")
 
-    alerts_store = reasoner = chat_writer = None
+    alerts_store = reasoner = chat_writer = ack_store = None
     app_url = env.get("APP_URL", "")
     enabled = str(env.get("TIER2_WEBHOOK_ENABLED", "")).strip().lower() in ("1", "true", "yes")
     if delivery_sinks is None and enabled and env.get("POWER_AUTOMATE_ALERT_URL"):
         from .adapters.delivery_webhook import create_webhook_sink
-        from .adapters.chat_store_lakebase import create_alert_chat
+        from .adapters.chat_store_lakebase import create_alert_chat, create_ack_store
         from .context_alerts import create_alerts_store_delta
         catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
         if catalog and schema:
@@ -642,6 +642,11 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         reasoner = _build_tier2_reasoner(env, config)
         chat_writer = create_alert_chat
         delivery_sinks = {"webhook": create_webhook_sink(env["POWER_AUTOMATE_ALERT_URL"])}
+        # 6c: ack/snooze snapshot from Lakebase — fail-open (a read error must never drop a real alert).
+        try:
+            ack_store = create_ack_store()
+        except Exception as exc:
+            print(f"[tier2] ack store unavailable ({type(exc).__name__}: {exc}); reminders unsuppressed")
     if delivery_sinks is None:
         delivery_sinks = {}
 
@@ -659,6 +664,7 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         reasoner=reasoner,
         chat_writer=chat_writer,
         app_url=app_url,
+        ack_store=ack_store,
     )
 
 

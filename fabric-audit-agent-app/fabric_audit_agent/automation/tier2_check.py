@@ -339,6 +339,29 @@ def _parse_iso(s):
         return None
 
 
+def _ack_suppressed(ack_store, chat_id, now_dt):
+    """True if a human acked (permanently) or snoozed (until a future time) this incident's chat.
+
+    ``ack_store`` is ``{"get": fn(chat_id) -> {"status","snoozeUntil"} | None}`` (Lakebase-backed in
+    prod). Missing store / chat / record, or any error, means NOT suppressed (fail-open — never
+    silently swallow a real alert)."""
+    if ack_store is None or not chat_id:
+        return False
+    try:
+        rec = ack_store["get"](chat_id)
+    except Exception:
+        return False
+    if not rec:
+        return False
+    status = (rec.get("status") or "").lower()
+    if status == "acked":
+        return True
+    if status == "snoozed":
+        until = _parse_iso(rec.get("snoozeUntil"))
+        return until is not None and now_dt < until
+    return False
+
+
 def _title_for(t):
     check = t.get("check")
     if check == "concentration":
@@ -411,7 +434,8 @@ def _investigate_query(t):
 
 
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
-                   chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48):
+                   chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48,
+                   ack_store=None):
     """Run the alert state machine over the current triggers. Returns an action summary.
 
     Ordering is cost-critical: the deterministic dedup + materiality checks decide silence WITHOUT
@@ -465,6 +489,10 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 row["delivered"] = _send("new", t, row, inv.get("summary"))
                 alerts_store["upsert"](row)
                 actions["escalation"].append(key)
+            elif _ack_suppressed(ack_store, prior.get("chatId"), now_dt):
+                # Acked or still-snoozed by a human (6c) — hold the 48h reminder. A material
+                # WORSENING still breaks through above (escalation is checked first).
+                actions["silent"].append(key)
             else:
                 last = _parse_iso(prior.get("lastRemindedAt")) or _parse_iso(prior.get("lastAlertedAt"))
                 due = last is None or (now_dt - last).total_seconds() >= reminder_hours * 3600
@@ -541,7 +569,8 @@ def _record_reading(readings_store, *, run_at, facts=None, collector_ok):
 
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                     heartbeat_store=None, readings_store=None, config=None, tenant=None, scope=None,
-                    alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None):
+                    alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None,
+                    ack_store=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
@@ -572,7 +601,7 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
         try:
             return process_alerts(trigs, alerts_store=alerts_store, delivery_sinks=delivery_sinks,
                                   reasoner=reasoner, chat_writer=chat_writer, app_url=app_url,
-                                  now_dt=now_dt)
+                                  now_dt=now_dt, ack_store=ack_store)
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 

@@ -54,6 +54,30 @@ def create_alert_chat(markdown, title, *, conn=None, user_id=SYSTEM_USER_ID, now
     return chat_id
 
 
+def create_ack_store(*, conn=None):
+    """Ack/snooze store over ``ai_chatbot.alert_ack`` (6c). The chat app writes acks/snoozes there;
+    the Tier-2 job reads them each run to suppress reminders. Snapshots the whole (tiny) table ONCE
+    and serves ``get(chat_id) -> {"status","snoozeUntil"} | None`` from memory (no per-incident
+    round-trip). ``conn`` injectable for tests. Raises on connect/query failure so the caller can
+    fail-open (ack is an optional enhancement, never a reason to drop a real alert)."""
+    snapshot = {}
+    owns = conn is None
+    c = conn if conn is not None else _lakebase_conn()
+    try:
+        cur = c.cursor()
+        cur.execute('SELECT chat_id, status, snooze_until FROM ai_chatbot.alert_ack')
+        for cid, status, until in cur.fetchall():
+            snapshot[cid] = {"status": status,
+                             "snoozeUntil": until.isoformat() if until is not None else None}
+    finally:
+        if owns:
+            try:
+                c.close()
+            except Exception:
+                pass
+    return {"get": lambda chat_id: snapshot.get(chat_id)}
+
+
 def _endpoint_path():
     """Resolve the Lakebase **endpoint** resource path used for the credential request.
 

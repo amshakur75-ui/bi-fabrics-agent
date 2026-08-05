@@ -492,3 +492,63 @@ export async function getVotesByChatId({ id }: { id: string }): Promise<Vote[]> 
   const db = await ensureDb();
   return db.select().from(vote).where(eq(vote.chatId, id));
 }
+
+// ── Tier-2 alert ack / snooze (Step 6c) ─────────────────────────────────────
+// The chat app writes ack/snooze here; the Tier-2 job reads it (ai_chatbot.alert_ack) to suppress
+// the 48h reminders. Keyed by the alert's chat_id (the handle both sides share).
+
+export type AlertAck = { status: 'acked' | 'snoozed'; snoozeUntil: string | null };
+
+export async function setAlertAck({
+  chatId,
+  status,
+  snoozeUntil,
+  updatedBy,
+}: {
+  chatId: string;
+  status: 'acked' | 'snoozed';
+  snoozeUntil?: string | null;
+  updatedBy?: string | null;
+}): Promise<void> {
+  if (!isDatabaseAvailable()) return;
+  const db = await ensureDb();
+  await db.execute(sql`
+    INSERT INTO ai_chatbot.alert_ack (chat_id, status, snooze_until, updated_by, updated_at)
+    VALUES (${chatId}, ${status}, ${snoozeUntil ?? null}, ${updatedBy ?? null}, now())
+    ON CONFLICT (chat_id) DO UPDATE SET
+      status = excluded.status,
+      snooze_until = excluded.snooze_until,
+      updated_by = excluded.updated_by,
+      updated_at = now()
+  `);
+}
+
+export async function clearAlertAck(chatId: string): Promise<void> {
+  if (!isDatabaseAvailable()) return;
+  const db = await ensureDb();
+  await db.execute(sql`DELETE FROM ai_chatbot.alert_ack WHERE chat_id = ${chatId}`);
+}
+
+export async function getAlertAckMap(
+  chatIds: string[],
+): Promise<Record<string, AlertAck>> {
+  const out: Record<string, AlertAck> = {};
+  if (!isDatabaseAvailable() || chatIds.length === 0) return out;
+  const db = await ensureDb();
+  const rows = await db.execute(sql`
+    SELECT chat_id, status, snooze_until
+    FROM ai_chatbot.alert_ack
+    WHERE chat_id = ANY(${chatIds})
+  `);
+  for (const r of rows as unknown as Array<{
+    chat_id: string;
+    status: string;
+    snooze_until: string | null;
+  }>) {
+    out[r.chat_id] = {
+      status: r.status === 'acked' ? 'acked' : 'snoozed',
+      snoozeUntil: r.snooze_until,
+    };
+  }
+  return out;
+}
