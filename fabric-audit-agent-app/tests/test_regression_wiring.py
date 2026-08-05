@@ -131,12 +131,14 @@ class TestOutboundPostDeliveryRemoval:
         assert captured == []
 
     def test_allowlist_is_closed_to_known_entries(self):
-        # Closed by construction: ado (disabled) + tier2_alert (the one ENABLED read-only
-        # notification via a webhook sink, added in sub-project #2). No data-mutating types.
+        # Closed by construction: ado (disabled) + the ENABLED read-only notification types —
+        # tier2_alert (sub-project #2) and daily_summary (Step 10), both webhook sinks. No
+        # data-mutating types.
         from fabric_audit_agent.outbound import _ALLOWLIST
-        assert set(_ALLOWLIST) == {"ado_create_ticket", "tier2_alert"}
+        assert set(_ALLOWLIST) == {"ado_create_ticket", "tier2_alert", "daily_summary"}
         assert _ALLOWLIST["ado_create_ticket"]["enabled"] is False
         assert _ALLOWLIST["tier2_alert"] == {"enabled": True, "sink": "webhook"}
+        assert _ALLOWLIST["daily_summary"] == {"enabled": True, "sink": "webhook"}
 
 
 # ---------------------------------------------------------------------------

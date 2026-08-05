@@ -683,5 +683,80 @@ def tier2_main():
     return result
 
 
+# ---- Step 10: daily 6pm capacity digest (once-a-day summary card + Acknowledge) ----
+
+def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_store=None,
+                          chat_writer=None, delivery_sinks=None, now=None):
+    """Compose + deliver the daily capacity digest. Reuses the Tier-2 alert infra (audit_alerts +
+    alert_ack + pre-created alert chats), so no new tables/UI. Ports injectable for tests; when run
+    from the job they are built from ``env`` and every optional wire degrades gracefully."""
+    env = env if env is not None else os.environ
+    app_url = env.get("APP_URL", "")
+    catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
+
+    # Day high-water CU% / throttle from a fresh 1d collect (degrade to {} on any error).
+    capacity, coverage_gaps = {}, []
+    try:
+        if collector is None:
+            collector = _build_tier2_collector(env, window="1d")
+        facts = collector["collect"]() or {}
+        cap = facts.get("capacity") or {}
+        capacity = {"peakCuPct": cap.get("peakCuPct"), "throttleMinutes": cap.get("throttleMinutes")}
+        items = facts.get("items") or []
+        from .automation.materiality import load_cfg
+        blind = load_cfg().get("blind_spot_cu", 70.0)
+        if cap.get("peakCuPct") is not None and cap["peakCuPct"] >= blind and not items:
+            coverage_gaps.append(
+                f"true CU% reached {cap['peakCuPct']:.0f}% with zero monitored activity")
+    except Exception as exc:
+        print(f"[daily] capacity collect skipped ({type(exc).__name__}: {exc})")
+
+    if alerts_store is None and catalog and schema:
+        try:
+            from .context_alerts import create_alerts_store_delta
+            alerts_store = create_alerts_store_delta(catalog, schema)
+        except Exception as exc:
+            print(f"[daily] alerts store unavailable ({type(exc).__name__}: {exc})")
+    if alerts_store is None:
+        print("[daily] no alerts store (Delta not configured) — nothing to summarize")
+        return {"delivered": False, "openTickets": 0, "unackedPrior": 0, "skipped": True}
+
+    enabled = str(env.get("DAILY_SUMMARY_ENABLED", "")).strip().lower() in ("1", "true", "yes")
+    if delivery_sinks is None and enabled and env.get("POWER_AUTOMATE_ALERT_URL"):
+        from .adapters.delivery_webhook import create_webhook_sink
+        delivery_sinks = {"webhook": create_webhook_sink(env["POWER_AUTOMATE_ALERT_URL"])}
+    if chat_writer is None and enabled:
+        try:
+            from .adapters.chat_store_lakebase import create_alert_chat
+            chat_writer = create_alert_chat
+        except Exception:
+            chat_writer = None
+    if ack_store is None:
+        try:
+            from .adapters.chat_store_lakebase import create_ack_store
+            ack_store = create_ack_store()
+        except Exception as exc:
+            print(f"[daily] ack store unavailable ({type(exc).__name__}: {exc}); prior digests uncounted")
+
+    from .automation.daily_summary import run_daily_summary
+    return run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
+                             coverage_gaps=coverage_gaps, delivery_sinks=delivery_sinks,
+                             chat_writer=chat_writer, app_url=app_url, now_dt=now)
+
+
+def daily_summary_main():
+    """The deployed Databricks wheel-task entry for the daily digest (pyproject: fabric-audit-daily)."""
+    _merge_named_params_into_env()
+    env = os.environ
+    try:
+        result = run_daily_summary_job(env=env)
+    except Exception as exc:
+        _alert_failure(exc, env)
+        raise
+    print(f"[daily] delivered={result.get('delivered')} open={result.get('openTickets')} "
+          f"unackedPrior={result.get('unackedPrior')}")
+    return result
+
+
 if __name__ == "__main__":
     main()

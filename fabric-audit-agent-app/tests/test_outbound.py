@@ -41,11 +41,12 @@ def test_email_notify_refused_after_delivery_removal():
 
 
 def test_allowlist_is_closed_to_known_entries():
-    # Closed by construction: ado (disabled placeholder) + the one ENABLED read-only
-    # notification type (tier2_alert, webhook sink) added in sub-project #2.
-    assert set(_ALLOWLIST) == {"ado_create_ticket", "tier2_alert"}
+    # Closed by construction: ado (disabled placeholder) + the ENABLED read-only notification
+    # types — tier2_alert (sub-project #2) and daily_summary (Step 10), both webhook sinks.
+    assert set(_ALLOWLIST) == {"ado_create_ticket", "tier2_alert", "daily_summary"}
     assert _ALLOWLIST["ado_create_ticket"]["enabled"] is False
     assert _ALLOWLIST["tier2_alert"] == {"enabled": True, "sink": "webhook"}
+    assert _ALLOWLIST["daily_summary"] == {"enabled": True, "sink": "webhook"}
 
 
 # ---- purity + invariant ----

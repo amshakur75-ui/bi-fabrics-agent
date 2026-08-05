@@ -16,6 +16,10 @@ _ALLOWLIST = {
     # Teams channel via a webhook sink. NOT data-mutating. Still gated: only fires when the job
     # actually provides a "webhook" sink (job wires it only when TIER2_WEBHOOK_ENABLED + secret set).
     "tier2_alert": {"enabled": True, "sink": "webhook"},
+    # Daily capacity digest (Step 10): a once-a-day read-only summary card. Same posture as
+    # tier2_alert — a notification, never data-mutating — and only fires when the daily-summary job
+    # actually wires a "webhook" sink (DAILY_SUMMARY_ENABLED + POWER_AUTOMATE_ALERT_URL set).
+    "daily_summary": {"enabled": True, "sink": "webhook"},
 }
 
 

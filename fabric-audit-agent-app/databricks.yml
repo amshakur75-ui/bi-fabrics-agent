@@ -23,6 +23,12 @@ variables:
   schedule_cron:
     description: Quartz cron for the scheduled sweep (default hourly).
     default: "0 0 * * * ?"
+  daily_summary_cron:
+    description: Quartz cron for the daily capacity digest (default 6pm).
+    default: "0 0 18 * * ?"
+  daily_summary_tz:
+    description: Timezone for the daily digest schedule (6pm local business time).
+    default: "America/New_York"
 
 artifacts:
   default:
@@ -122,6 +128,49 @@ resources:
       schedule:
         quartz_cron_expression: "0 */5 * * * ?"   # every 5 minutes
         timezone_id: UTC
+        pause_status: UNPAUSED
+
+    # ---- Step 10: daily 6pm capacity digest (once-a-day summary card + Acknowledge) ----
+    fabric_audit_daily:
+      name: fabric-audit-daily
+      tasks:
+        - task_key: daily_summary
+          python_wheel_task:
+            package_name: fabric_audit_agent
+            entry_point: fabric-audit-daily
+            named_parameters:
+              FABRIC_DELTA_CATALOG: ${var.catalog}
+              FABRIC_DELTA_SCHEMA: ${var.schema}
+              # Day high-water CU% / throttle come from a fresh 1d capacity-events collect.
+              FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
+              FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
+              FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
+              FABRIC_CAPACITY_EVENTS_CLUSTER: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_CLUSTER}}"
+              FABRIC_CAPACITY_EVENTS_DB: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_DB}}"
+              FABRIC_CAPACITY_EVENTS_KQL: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
+              FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
+              # Daily digest -> Teams delivery + Lakebase (Acknowledge rides the existing alert_ack).
+              DAILY_SUMMARY_ENABLED: "true"
+              POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
+              APP_URL: "https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com"
+              FABRIC_LAKEBASE_HOST: "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net"
+              FABRIC_LAKEBASE_USER: "abdishakur.mohamed@newellco.com"
+              FABRIC_LAKEBASE_INSTANCE: "fabrics-audit-agent-memory"
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ./dist/*.whl
+              - requests             # webhook POST
+              - msal>=1.24           # SP auth (KQL / LA)
+              - azure-kusto-data>=4.0  # Capacity Events KQL
+              - psycopg2-binary      # Lakebase chat writer
+              - databricks-sdk>=0.81 # Lakebase credential (w.postgres — Autoscaling project)
+      schedule:
+        quartz_cron_expression: ${var.daily_summary_cron}
+        timezone_id: ${var.daily_summary_tz}
         pause_status: UNPAUSED
 
 targets:

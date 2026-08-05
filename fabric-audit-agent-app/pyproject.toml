@@ -41,6 +41,7 @@ agent = [                                                   # live sweep + kusto
 fabric-audit       = "fabric_audit_agent.__main__:_console"
 fabric-audit-job   = "fabric_audit_agent.job:job_main"     # Databricks wheel-task entry (unified sweep)
 fabric-audit-tier2 = "fabric_audit_agent.job:tier2_main"   # Phase 9 Tier 2: cheap deterministic check
+fabric-audit-daily = "fabric_audit_agent.job:daily_summary_main"  # Step 10: daily 6pm capacity digest
 fabric-audit-watch = "fabric_audit_agent.watch_run:main"   # autonomous 5-min watcher (Job entry)
 start-app          = "scripts.start_app:main"
 start-server       = "agent_server.start_server:main"
