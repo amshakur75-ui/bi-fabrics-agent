@@ -15,6 +15,7 @@ Priority order of checks:
 
 Read-only absolute — this module surfaces findings, never writes/scales/refreshes.
 """
+import math
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -180,6 +181,75 @@ def _check_cross_source_blind_spot(facts, mcfg=None):
     return []
 
 
+# ---- Stateful gates (Step 2): reason across the last N readings (tier2_readings store) ----
+
+def _peak(reading):
+    try:
+        return float(reading.get("peakCuPct"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _check_sustained_band(readings, mcfg=None):
+    """Sustained-but-under-threshold (Step 2, TRUE-CU): CU% held inside the [low, high] band for
+    >= min_minutes of consecutive 5-min windows. An early-warning that pressure is building — NOT a
+    hard alert (it never crosses 100%). Reads newest-first ``readings``."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    low = float(mcfg.get("sustained_band_low", 70.0))
+    high = float(mcfg.get("sustained_band_high", 90.0))
+    k = max(2, int(math.ceil(float(mcfg.get("sustained_min_minutes", 20.0)) / 5.0)))
+    if len(readings) < k:
+        return []
+    vals = [_peak(r) for r in readings[:k]]
+    if any(v is None for v in vals):
+        return []
+    if all(low <= v <= high for v in vals):
+        return [{"check": "sustained", "peakCuPct": round(vals[0], 1), "minutesInBand": k * 5,
+                 "bandLow": low, "bandHigh": high,
+                 "normalityHint": (f"CU% has sat in the {low:.0f}-{high:.0f}% band for {k * 5}+ "
+                                   "minutes — no throttle yet, but headroom is thinning; watch for a "
+                                   "crossing.")}]
+    return []
+
+
+def _check_rate_of_change(readings, mcfg=None):
+    """Rate-of-change (Step 2, TRUE-CU): CU% jumped by >= roc_delta points between the last two
+    windows, even if still under 100% — a sharp climb worth flagging before it throttles."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    delta = float(mcfg.get("roc_delta", 15.0))
+    if len(readings) < 2:
+        return []
+    cur, prev = _peak(readings[0]), _peak(readings[1])
+    if cur is None or prev is None:
+        return []
+    rise = cur - prev
+    if rise >= delta:
+        return [{"check": "rate_change", "peakCuPct": round(cur, 1), "prevCuPct": round(prev, 1),
+                 "risePts": round(rise, 1),
+                 "normalityHint": (f"CU% climbed {rise:.0f} points in 5 minutes ({prev:.0f}% -> "
+                                   f"{cur:.0f}%) — a sharp rise; if the trend holds it may cross 100% "
+                                   "soon.")}]
+    return []
+
+
+def _check_silent_failure(readings, mcfg=None):
+    """Silent-failure / stale-data (Step 2, META): the collector returned no data (error or empty)
+    for N consecutive runs — the agent has a visibility gap and may be silently blind."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    n = int(mcfg.get("silent_fail_runs", 3))
+    if len(readings) < n:
+        return []
+    if all(r.get("collectorOk") is False for r in readings[:n]):
+        return [{"check": "silent_failure", "runs": n,
+                 "normalityHint": (f"The collector returned no usable data for {n} runs in a row — "
+                                   "the source may be down, unauthorized, or misconfigured; alerts "
+                                   "cannot be trusted until this clears.")}]
+    return []
+
+
 def _check_data_availability(facts):
     """Check for null/inconclusive data (STOP gate)."""
     result = null_data_gate(facts)
@@ -283,6 +353,12 @@ def _title_for(t):
         return f"Cross-user load: {t.get('item', '?')} ({t.get('userCount', '?')} users)"
     if check == "blind_spot":
         return f"Coverage gap: CU {t.get('peakCuPct', '?')}% but no attribution"
+    if check == "sustained":
+        return f"Sustained CU {t.get('peakCuPct', '?')}% ({t.get('minutesInBand', '?')}m in band)"
+    if check == "rate_change":
+        return f"CU climbing fast: {t.get('prevCuPct', '?')}% → {t.get('peakCuPct', '?')}%"
+    if check == "silent_failure":
+        return f"Collector blind for {t.get('runs', '?')} runs"
     return f"Tier-2: {check}"
 
 
@@ -310,6 +386,14 @@ def _facts_for(t):
              ("Users", ", ".join(str(u) for u in users[:5]) if users else None)]
     elif check == "blind_spot":
         f = [("Peak CU", f"{t.get('peakCuPct')}%"), ("Monitored items", "0 (no attribution)")]
+    elif check == "sustained":
+        f = [("Peak CU", f"{t.get('peakCuPct')}%"), ("In band", f"{t.get('minutesInBand')} min"),
+             ("Band", f"{t.get('bandLow')}-{t.get('bandHigh')}%")]
+    elif check == "rate_change":
+        f = [("From", f"{t.get('prevCuPct')}%"), ("To", f"{t.get('peakCuPct')}%"),
+             ("Rise", f"+{t.get('risePts')} pts / 5 min")]
+    elif check == "silent_failure":
+        f = [("Blind runs", t.get("runs"))]
     if (t.get("recurrence") or {}).get("isRecurring"):
         f.append(("Recurrence", "recurring (matches prior findings)"))
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
@@ -437,8 +521,26 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     return actions
 
 
+def _record_reading(readings_store, *, run_at, facts=None, collector_ok):
+    """Append this run to the rolling-readings store and return the recent window (newest-first).
+    Never fatal — a store error degrades to an empty history (stateful gates just won't fire)."""
+    if readings_store is None:
+        return []
+    cap = (facts or {}).get("capacity") or {}
+    items = (facts or {}).get("items") or []
+    reading = {"runAt": run_at, "peakCuPct": cap.get("peakCuPct"),
+               "throttleMinutes": cap.get("throttleMinutes"), "itemCount": len(items),
+               "collectorOk": bool(collector_ok)}
+    try:
+        readings_store["append"](reading)
+        return readings_store["recent"](12)
+    except Exception as exc:
+        print(f"[tier2] readings store unavailable ({type(exc).__name__}: {exc})")
+        return []
+
+
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
-                    heartbeat_store=None, config=None, tenant=None, scope=None,
+                    heartbeat_store=None, readings_store=None, config=None, tenant=None, scope=None,
                     alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
@@ -446,12 +548,16 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     ``delivery_sinks``: reserved for Phase 10 (Entra bot identity); pass None for now.
     ``findings_store``: a ``{"query": fn}`` store for recurrence cross-reference (Phase 6).
     ``heartbeat_store``: a ``{"write": fn(timestamp)}`` store for self-observability (Task 9.4).
+    ``readings_store``: a ``{"append","recent"}`` rolling store (Step 2) powering the STATEFUL gates
+    (sustained-band, rate-of-change, silent-failure). None -> those gates simply don't fire.
     ``config``: detection config (uses DEFAULT_CONFIG if None).
 
     Returns ``{"triggered": bool, "triggers": list, "delivered": dict, "checkedAt": str}``.
     """
     from ..config import DEFAULT_CONFIG
+    from .materiality import load_cfg
     config = config if config is not None else DEFAULT_CONFIG
+    mcfg = load_cfg()
     checked_at = _now_iso()
 
     if heartbeat_store is not None:
@@ -460,11 +566,24 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
         except Exception:
             pass
 
+    def _deliver(trigs):
+        if not (delivery_sinks and alerts_store is not None):
+            return {}
+        try:
+            return process_alerts(trigs, alerts_store=alerts_store, delivery_sinks=delivery_sinks,
+                                  reasoner=reasoner, chat_writer=chat_writer, app_url=app_url,
+                                  now_dt=now_dt)
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     try:
         facts = collector["collect"]()
     except Exception as exc:
         print(f"[tier2] collector FAILED: {type(exc).__name__}: {exc}")
-        return {"triggered": False, "triggers": [], "delivered": {},
+        # Record the failure so the silent-failure gate can fire after N consecutive blind runs.
+        recent = _record_reading(readings_store, run_at=checked_at, facts=None, collector_ok=False)
+        sf = _check_silent_failure(recent, mcfg)
+        return {"triggered": bool(sf), "triggers": sf, "delivered": _deliver(sf),
                 "checkedAt": checked_at, "error": "collector failed"}
 
     # Observability: what did the collector actually pull? (peakCuPct=None => no capacity data /
@@ -475,6 +594,9 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
           f"throttleMinutes={_cap.get('throttleMinutes')} overageTotalMs={_cap.get('overageTotalMs')} "
           f"items={len(_items)}")
 
+    _ok = _cap.get("peakCuPct") is not None or len(_items) > 0
+    recent = _record_reading(readings_store, run_at=checked_at, facts=facts, collector_ok=_ok)
+
     triggers = []
     triggers.extend(_check_concentration(facts, config))
     triggers.extend(_check_throttle(facts))
@@ -482,6 +604,9 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     triggers.extend(_check_overage(facts))
     triggers.extend(_check_same_item_cross_user(facts))
     triggers.extend(_check_cross_source_blind_spot(facts))
+    triggers.extend(_check_sustained_band(recent, mcfg))
+    triggers.extend(_check_rate_of_change(recent, mcfg))
+    triggers.extend(_check_silent_failure(recent, mcfg))
     triggers.extend(_check_data_availability(facts))
 
     triggers = _cross_reference_recurrence(triggers, findings_store,
@@ -491,14 +616,7 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
 
     # Delivery: sub-project #2 wires the Tier-2 -> Teams alert path when the job provides a sink +
     # an alerts store (gated on TIER2_WEBHOOK_ENABLED upstream). Otherwise stays silent (no-op).
-    delivered = {}
-    if delivery_sinks and alerts_store is not None:
-        try:
-            delivered = process_alerts(
-                triggers, alerts_store=alerts_store, delivery_sinks=delivery_sinks,
-                reasoner=reasoner, chat_writer=chat_writer, app_url=app_url, now_dt=now_dt)
-        except Exception as exc:  # delivery must never crash the deterministic check
-            delivered = {"error": f"{type(exc).__name__}: {exc}"}
+    delivered = _deliver(triggers)
 
     return {"triggered": triggered, "triggers": triggers,
             "delivered": delivered, "checkedAt": checked_at}

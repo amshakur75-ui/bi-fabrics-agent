@@ -22,6 +22,12 @@ _DEFAULTS = {
     "cross_user_min_users": 3.0,    # same-item cross-user: >= this many qualifying users
     "cross_user_share": 15.0,       # ...each driving >= this % of the item's activity
     "blind_spot_cu": 70.0,          # coverage gap: true CU% >= this with zero monitored activity
+    # Stateful gates (read the tier2_readings rolling history):
+    "sustained_band_low": 70.0,     # sustained early-warning band lower bound (true CU%)
+    "sustained_band_high": 90.0,    # ...upper bound (above this it's pressure, a harder alert)
+    "sustained_min_minutes": 20.0,  # ...held for >= this many consecutive minutes
+    "roc_delta": 15.0,              # rate-of-change: CU% rose >= this many points in one 5-min window
+    "silent_fail_runs": 3.0,        # silent-failure: collector blind for >= this many runs
 }
 
 
@@ -90,6 +96,12 @@ def classify(trigger, cfg=None):
     if check == "blind_spot":
         # only fires when true CU% is high with zero attribution — always worth surfacing
         return "report", "high true CU% with no monitored activity (coverage gap)"
+    if check == "sustained":
+        return "report", "CU% sustained in the early-warning band"
+    if check == "rate_change":
+        return "report", f"CU% climbing +{_num(trigger.get('risePts')) or 0:.0f} pts/window"
+    if check == "silent_failure":
+        return "report", "collector blind for consecutive runs"
     return "ambiguous", "unclassified trigger"
 
 

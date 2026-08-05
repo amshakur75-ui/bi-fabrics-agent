@@ -585,6 +585,17 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
     if findings_store is None:
         findings_store = _default_findings_store(env)  # for recurrence cross-reference
 
+    # Rolling-readings store (Step 2) powering the stateful gates (sustained/rate-of-change/
+    # silent-failure). Needs the Delta catalog/schema; degrades to None (gates just don't fire).
+    readings_store = None
+    _rcat, _rsch = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
+    if _rcat and _rsch:
+        try:
+            from .context_readings import create_readings_store_delta
+            readings_store = create_readings_store_delta(_rcat, _rsch)
+        except Exception as exc:
+            print(f"[tier2] readings store init skipped ({type(exc).__name__}: {exc})")
+
     alerts_store = reasoner = chat_writer = None
     app_url = env.get("APP_URL", "")
     enabled = str(env.get("TIER2_WEBHOOK_ENABLED", "")).strip().lower() in ("1", "true", "yes")
@@ -607,6 +618,7 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         delivery_sinks=delivery_sinks,
         findings_store=findings_store,
         heartbeat_store=heartbeat_store,
+        readings_store=readings_store,
         config=config,
         tenant=tenant,
         scope=scope,

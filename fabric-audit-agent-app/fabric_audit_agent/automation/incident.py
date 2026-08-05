@@ -50,7 +50,9 @@ def severity_of(trigger):
     if check == "cross_user":
         n = _num(trigger.get("userCount"))
         return "warn" if n is not None and n >= 4 else "info"
-    # blind_spot is a coverage note, never a capacity emergency
+    if check in ("rate_change", "silent_failure"):
+        return "warn"           # a sharp climb / a blind collector both warrant attention
+    # sustained (early-warning) and blind_spot (coverage note) are informational
     return "info"
 
 
@@ -67,6 +69,10 @@ def primary_metric(trigger):
         return _num(trigger.get("overageCumulativePct"))
     if check == "cross_user":
         return _num(trigger.get("userCount"))
-    if check == "blind_spot":
+    if check in ("blind_spot", "sustained"):
         return _num(trigger.get("peakCuPct"))
+    if check == "rate_change":
+        return _num(trigger.get("risePts"))
+    if check == "silent_failure":
+        return _num(trigger.get("runs"))
     return None
