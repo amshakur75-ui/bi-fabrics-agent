@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { AppSidebar } from '@/components/app-sidebar';
+import { NotificationCenter } from '@/components/notification-center';
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
 import { useSession } from '@/contexts/SessionContext';
 import { DatabricksLogo } from '@/components/DatabricksLogo';
@@ -50,6 +51,8 @@ export default function ChatLayout() {
           <Outlet />
         </div>
       </SidebarInset>
+      {/* Shared, public issue notification center (bottom-right) — replaces the old sidebar Alerts. */}
+      <NotificationCenter />
     </SidebarProvider>
   );
 }

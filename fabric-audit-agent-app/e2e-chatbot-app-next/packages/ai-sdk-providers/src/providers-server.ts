@@ -390,14 +390,19 @@ export class OAuthAwareProvider implements SmartProvider {
     const provider = await getOrCreateDatabricksProvider();
 
     const model = await (async () => {
-      if (API_PROXY) {
-        // For API proxy we always use the responses agent
-        return provider.responses(id);
-      }
+      // Utility models (title / artifact generation) ALWAYS go direct to a Foundation Model
+      // chat-completions endpoint — they must be resolved BEFORE the API_PROXY branch. Otherwise,
+      // when API_PROXY is set, `title-model` was routed to `provider.responses('title-model')` (a
+      // non-existent serving endpoint), the title call threw, and chat titles silently fell back to
+      // the truncated first user message ("first long sentence" instead of a short generated name).
       if (id === 'title-model' || id === 'artifact-model') {
         return provider.chatCompletions(
           'databricks-meta-llama-3-3-70b-instruct',
         );
+      }
+      if (API_PROXY) {
+        // For API proxy we always use the responses agent
+        return provider.responses(id);
       }
       // Server-side environment validation
       if (!process.env.DATABRICKS_SERVING_ENDPOINT) {

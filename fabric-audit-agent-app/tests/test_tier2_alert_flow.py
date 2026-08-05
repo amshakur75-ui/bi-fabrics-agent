@@ -66,12 +66,14 @@ def test_full_state_machine():
     a = process_alerts([warn], now_dt=T0 + timedelta(minutes=5), **kw)
     assert a["silent"] == ["pressure::capacity"] and rc["n"] == 1 and len(posts) == 1
 
-    # run 3: +49h, still active -> reminder that REUSES the investigation (no LLM)
+    # run 3: +49h, still active -> SILENT, NO Teams re-post (the persistent surface is the
+    # notification center now; recurring tickets must not be repeated in Teams).
     a = process_alerts([warn], now_dt=T0 + timedelta(hours=49), **kw)
-    assert a["reminder"] == ["pressure::capacity"] and rc["n"] == 1
-    assert len(posts) == 2 and "Still active" in _card(posts)["body"][0]["text"]
+    assert a["silent"] == ["pressure::capacity"] and rc["n"] == 1
+    assert len(posts) == 1  # still just the one 'new' card — no reminder re-post
 
-    # run 4: escalation (peak 130 -> 156) -> re-alert WITH a fresh LLM call
+    # run 4: escalation (peak 130 -> 156) -> re-alert WITH a fresh LLM call (a genuine worsening
+    # still breaks through — that is news, not repetition).
     a = process_alerts([{"check": "pressure", "peakCuPct": 156}],
                        now_dt=T0 + timedelta(hours=50), **kw)
     assert a["escalation"] == ["pressure::capacity"] and rc["n"] == 2
@@ -106,35 +108,26 @@ def test_chat_write_failure_falls_back_to_root_autoinvestigate_link():
     assert store["query_active"]()["pressure::capacity"]["chatId"] is None
 
 
-def test_ack_and_snooze_suppress_the_48h_reminder():
-    """6c: an acked incident never reminds; a snoozed one stays quiet until the snooze expires."""
+def test_active_incident_never_reposts_to_teams():
+    """A still-firing open incident must NOT re-post to Teams on any later run — no matter how much
+    time passes. Recurring tickets live in the app's notification center now; repeating them in
+    Teams is exactly the noise we removed. Only ONE card (the original 'new') is ever sent."""
     store = create_alerts_store_memory()
     r, _ = _reasoner()
-    w, _wc = _writer()
+    w, _ = _writer()
     posts, sink = _sink()
     kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
               app_url="https://app")
     warn = {"check": "pressure", "peakCuPct": 130}
 
-    process_alerts([warn], now_dt=T0, **kw)   # run 1: new incident
-    cid = store["query_active"]()["pressure::capacity"]["chatId"]
-
-    # run 2: +49h (reminder due) but ACKED -> silent, no reminder
-    acked = {"get": lambda c: {"status": "acked"} if c == cid else None}
-    a = process_alerts([warn], now_dt=T0 + timedelta(hours=49), ack_store=acked, **kw)
-    assert a["reminder"] == [] and a["silent"] == ["pressure::capacity"]
-
-    # run 3: +98h, SNOOZED until the future -> still silent
-    future = (T0 + timedelta(hours=300)).isoformat()
-    snoozed = {"get": lambda c: {"status": "snoozed", "snoozeUntil": future}}
-    a = process_alerts([warn], now_dt=T0 + timedelta(hours=98), ack_store=snoozed, **kw)
-    assert a["silent"] == ["pressure::capacity"]
-
-    # run 4: snooze EXPIRED -> the reminder resumes
-    past = (T0 + timedelta(hours=50)).isoformat()
-    expired = {"get": lambda c: {"status": "snoozed", "snoozeUntil": past}}
-    a = process_alerts([warn], now_dt=T0 + timedelta(hours=147), ack_store=expired, **kw)
-    assert a["reminder"] == ["pressure::capacity"]
+    process_alerts([warn], now_dt=T0, **kw)                             # run 1: new -> 1 card
+    assert len(posts) == 1
+    for hrs in (49, 98, 147, 300):                                      # long after any old 48h window
+        a = process_alerts([warn], now_dt=T0 + timedelta(hours=hrs), **kw)
+        assert a["silent"] == ["pressure::capacity"] and a["reminder"] == []
+    assert len(posts) == 1                                              # still exactly one card, ever
+    # the ticket is still open + active for the notification center
+    assert store["query_active"]()["pressure::capacity"]["currentlyActive"] is True
 
 
 def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():

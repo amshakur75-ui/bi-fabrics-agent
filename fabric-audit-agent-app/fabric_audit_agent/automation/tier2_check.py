@@ -567,22 +567,19 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
                 actions["escalation"].append(key)
-            elif _ack_suppressed(ack_store, prior.get("chatId"), now_dt):
-                # Acked or still-snoozed by a human (6c) — hold the 48h reminder. A material
-                # WORSENING still breaks through above (escalation is checked first).
-                actions["silent"].append(key)
             else:
-                last = _parse_iso(prior.get("lastRemindedAt")) or _parse_iso(prior.get("lastAlertedAt"))
-                due = last is None or (now_dt - last).total_seconds() >= reminder_hours * 3600
-                if due:
-                    row = dict(prior, lastRemindedAt=now_iso, runAt=now_iso, severity=sev,
-                               metric=metric, currentlyActive=True)
-                    row["delivered"] = _send("reminder", t, row, prior.get("investigationSummary"))
+                # An already-open incident that is STILL firing does NOT re-post to Teams. The
+                # persistent "still open" surface is the app's notification center now — re-sending a
+                # card every reminder window is exactly the repetition the user asked us to stop
+                # ("recurring tickets don't come up in Teams / aren't repeated"). We only keep the
+                # ticket fresh (currentlyActive=True) so the center reflects reality, and stay silent.
+                # A genuine WORSENING still breaks through (escalation, checked above), and a
+                # recurrence AFTER a human resolve still re-alerts (reopen branch, checked above).
+                if prior.get("currentlyActive") is not True:
+                    row = dict(prior, runAt=now_iso, currentlyActive=True)
                     alerts_store["upsert"](row)
                     _write_ticket(row, t)
-                    actions["reminder"].append(key)
-                else:
-                    actions["silent"].append(key)
+                actions["silent"].append(key)
             continue
 
         # new incident: deterministic decision, LLM only for report/ambiguous
