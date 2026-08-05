@@ -32,7 +32,7 @@ export type ChartSeries = {
 };
 
 export type ChartSpec = {
-  chartType: 'line' | 'bar' | 'grouped-bar' | 'stacked-bar' | 'pie';
+  chartType: 'line' | 'bar' | 'grouped-bar' | 'stacked-bar' | 'pie' | 'donut';
   title: string;
   series: ChartSeries[];
   axisLabels: { x: string; y: string };
@@ -65,6 +65,7 @@ function chartIcon(chartType: ChartSpec['chartType']) {
     case 'line':
       return <ChartLineIcon className="size-4 shrink-0 text-muted-foreground" />;
     case 'pie':
+    case 'donut':
       return <PieChartIcon className="size-4 shrink-0 text-muted-foreground" />;
     default:
       return <BarChartIcon className="size-4 shrink-0 text-muted-foreground" />;
@@ -259,8 +260,10 @@ function LineChartRenderer({
 
 function PieChartRenderer({
   data,
+  donut,
 }: {
   data: { name: string; value: number }[];
+  donut?: boolean;
 }) {
   return (
     <ResponsiveContainer width="100%" height={320}>
@@ -270,10 +273,18 @@ function PieChartRenderer({
           cx="50%"
           cy="50%"
           labelLine={true}
-          label={({ name, percent }) =>
-            `${name}: ${(percent * 100).toFixed(0)}%`
-          }
+          label={({ name, percent }) => {
+            // Guard: recharts passes `percent` as 0..1, but it can be undefined or NaN
+            // (zero-sum data / a single slice mid-render) -> that produced "NaN%" labels.
+            const pct =
+              typeof percent === 'number' && Number.isFinite(percent)
+                ? Math.round(percent * 100)
+                : 0;
+            return `${name}: ${pct}%`;
+          }}
+          innerRadius={donut ? 60 : 0}
           outerRadius={110}
+          paddingAngle={donut ? 2 : 0}
           fill="#8884d8"
           dataKey="value"
         >
@@ -393,6 +404,9 @@ function ChartInner({
           />
         )}
         {chart.chartType === 'pie' && <PieChartRenderer data={pieData} />}
+        {chart.chartType === 'donut' && (
+          <PieChartRenderer data={pieData} donut />
+        )}
       </div>
 
       {/* Proxy badge */}

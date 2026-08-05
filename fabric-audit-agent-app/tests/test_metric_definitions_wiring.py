@@ -285,6 +285,13 @@ class TestRenderChartProxyWiring:
         assert chart["isProxy"] is True
         assert "proxyCaveat" not in chart
 
+    def test_donut_chart_type_is_accepted(self):
+        """Step 5: 'donut' (a hollow pie) is a valid chart type."""
+        inp = self._chart_input("capacity")
+        inp["chartType"] = "donut"
+        out = _handler("render_chart")(inp)
+        assert "error" not in out and out["chart"]["chartType"] == "donut"
+
     def test_item_scope_explicit_proxy_true_gets_cpu_time_caveat(self):
         out = _handler("render_chart")(self._chart_input("item", is_proxy=True))
         chart = out["chart"]

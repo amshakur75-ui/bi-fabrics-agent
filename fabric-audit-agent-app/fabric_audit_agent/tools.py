@@ -2445,7 +2445,7 @@ def create_tool_definitions(base_dir=None):
     # ------------------------------------------------------------------
     # Phase 8: render_chart — visualization data contract
     # ------------------------------------------------------------------
-    _CHART_TYPES = ("line", "bar", "grouped-bar", "stacked-bar", "pie")
+    _CHART_TYPES = ("line", "bar", "grouped-bar", "stacked-bar", "pie", "donut")
     _CHART_SCOPES = ("capacity", "item", "user")
 
     def render_chart_handler(_input=None):
@@ -3212,8 +3212,8 @@ def create_tool_definitions(base_dir=None):
                 "properties": {
                     "chartType": {
                         "type": "string",
-                        "enum": ["line", "bar", "grouped-bar", "stacked-bar", "pie"],
-                        "description": "Chart type to render.",
+                        "enum": ["line", "bar", "grouped-bar", "stacked-bar", "pie", "donut"],
+                        "description": "Chart type to render ('donut' is a pie with a hollow center).",
                     },
                     "title": {
                         "type": "string",
