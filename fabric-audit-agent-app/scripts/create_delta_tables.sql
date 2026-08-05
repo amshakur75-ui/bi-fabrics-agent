@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.audit_alerts (
   materiality_reason    STRING   COMMENT 'Why it was reported (or suppressed)',
   investigation_summary STRING   COMMENT 'Trimmed investigation text, reused for 48h reminders',
   delivered             BOOLEAN  COMMENT 'Whether the last card was delivered',
-  run_at                STRING   COMMENT 'ISO-8601 UTC of the run that last touched this row'
+  run_at                STRING   COMMENT 'ISO-8601 UTC of the run that last touched this row',
+  currently_active      BOOLEAN  COMMENT 'Is the condition firing right now (attribution stays open when False)',
+  presence_count        INT      COMMENT 'Hysteresis streak: consecutive checks a pending signal has persisted'
 )
 USING DELTA
 COMMENT 'Tier-2 alert state machine — one row per incident (dedup / 48h reminders / escalation / resolution)'

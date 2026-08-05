@@ -86,6 +86,11 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
     """Delta-backed store on ``audit_alerts`` (Spark MERGE upsert). Use in production."""
     table = f"`{catalog}`.`{schema}`.audit_alerts"
 
+    _ensured = {"done": False}
+    # SQL type per snake_case column, for the self-heal ALTER below (default STRING).
+    _COL_SQL_TYPE = {"metric": "DOUBLE", "escalation_count": "INT", "delivered": "BOOLEAN",
+                     "currently_active": "BOOLEAN", "presence_count": "INT"}
+
     def _get_spark():
         nonlocal spark
         if spark is not None:
@@ -96,20 +101,42 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
             raise RuntimeError("No active SparkSession")
         return spark
 
+    def _ensure_schema(s):
+        """Deterministically add any missing ``_FIELDS`` column to the table (once per store).
+
+        Relying on Delta's MERGE autoMerge to evolve the schema proved unreliable in the serverless
+        job — the ``currently_active`` / ``presence_count`` columns silently never got added, which
+        left hysteresis unable to persist its streak counter (so attribution never promoted to an
+        alert). An explicit, idempotent ALTER is the robust fix. Never fatal: a failure just leaves
+        the missing column absent (degrades, doesn't crash the run)."""
+        if _ensured["done"]:
+            return
+        try:
+            existing = {r["col_name"] for r in s.sql(f"DESCRIBE TABLE {table}").collect()}
+            for _, col in _FIELDS:
+                if col not in existing:
+                    s.sql(f"ALTER TABLE {table} ADD COLUMNS ({col} {_COL_SQL_TYPE.get(col, 'STRING')})")
+        except Exception as exc:
+            print(f"[alerts] schema self-heal skipped ({type(exc).__name__}: {exc})")
+        _ensured["done"] = True
+
     def query_active():
         s = _get_spark()
+        _ensure_schema(s)
         rows = s.sql(f"SELECT * FROM {table} WHERE status = 'active'").collect()
         return {r["incident_key"]: _from_row(r.asDict()) for r in rows}
 
     def query_pending():
         s = _get_spark()
+        _ensure_schema(s)
         rows = s.sql(f"SELECT * FROM {table} WHERE status = 'pending'").collect()
         return {r["incident_key"]: _from_row(r.asDict()) for r in rows}
 
     def upsert(alert):
         s = _get_spark()
-        # Auto-evolve the table schema so newly-added columns (e.g. currently_active) don't require a
-        # manual ALTER — the MERGE below adds them on first write.
+        _ensure_schema(s)
+        # Belt-and-suspenders: also request MERGE autoMerge, but the explicit _ensure_schema above is
+        # what actually guarantees the columns exist (autoMerge proved unreliable here).
         try:
             s.sql("SET spark.databricks.delta.schema.autoMerge.enabled = true")
         except Exception:
