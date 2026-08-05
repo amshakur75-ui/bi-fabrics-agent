@@ -143,19 +143,30 @@ def _build_claude_client(ws):
     # active (PAT or OAuth) — the same mechanism the SDK's own HTTP client relies on.
 
     def _post(body, headers):
-        """POST with a hard timeout (a hung endpoint call must not outlive the request) and ONE
-        retry on transient failures (connection reset / 429 / 5xx). Budget-aware: one retry only —
-        the loop makes up to 6 of these inside the Apps proxy's 120s ceiling."""
-        for attempt in (0, 1):
+        """POST with a hard timeout (a hung endpoint call must not outlive the request) and BOUNDED
+        retry on transient failures (connection reset / 429 / 5xx), with exponential backoff and
+        honoring ``Retry-After`` on a 429. Backoff is capped (≤6s/attempt) so the up-to-6 calls the
+        loop makes stay inside the Apps proxy's 120s ceiling — a sustained 429 (endpoint over its
+        rate limit) still surfaces after the retries rather than hanging."""
+        delays = (1.5, 3.0, 6.0)  # up to 3 retries (4 attempts)
+        for i in range(len(delays) + 1):
             try:
                 r = _req.post(endpoint_url, json=body, headers=headers, timeout=(10, 90))
             except _req.exceptions.ConnectionError:
-                if attempt == 0:
-                    _time.sleep(2)
+                if i < len(delays):
+                    _time.sleep(delays[i])
                     continue
                 raise
-            if attempt == 0 and r.status_code in (429, 500, 502, 503, 504):
-                _time.sleep(2)
+            if r.status_code in (429, 500, 502, 503, 504) and i < len(delays):
+                wait = delays[i]
+                if r.status_code == 429:
+                    ra = r.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            wait = min(float(ra), 6.0)  # cap so retries don't blow the request budget
+                        except (TypeError, ValueError):
+                            pass
+                _time.sleep(wait)
                 continue
             r.raise_for_status()
             return r
@@ -549,6 +560,19 @@ def _scope_hint(inp):
     return ""
 
 
+def _friendly_failure(exc):
+    """A readable end-of-stream message for a failed turn — clean copy for a rate limit (the common
+    case: the model serving endpoint is momentarily over its request limit), generic otherwise. Never
+    dumps the raw endpoint URL at the user."""
+    msg = str(exc)
+    if "429" in msg or "Too Many Requests" in msg:
+        return ("The model is momentarily rate-limited — too many requests to the serving endpoint "
+                "right now. That's a temporary capacity limit, not a problem with your question, and "
+                "nothing was modified. Give it a few seconds and ask again.")
+    return ("The investigation failed before completing. Nothing was modified (all tools are "
+            "read-only) — please retry, or rephrase the question.")
+
+
 def _progress_text(name, inp):
     # The `user`/`item` hint echoes an identifier straight back to the requester by design --
     # acceptable only while the app viewer == the requester (see the OBO note on
@@ -606,9 +630,7 @@ async def stream_handler(request: ResponsesAgentRequest):
             # A raised exception here would abort the SSE stream mid-flight and the chat UI
             # shows a broken/blank response. End the stream with an honest, readable failure
             # instead (the non-streaming /invocations path still surfaces a proper 500).
-            final_text = (f"The investigation failed before completing: {exc}. "
-                          "Nothing was modified (all tools are read-only) — please retry, "
-                          "or rephrase the question.")
+            final_text = _friendly_failure(exc)
         yield ResponsesAgentStreamEvent(
             type="response.output_item.done",
             item=create_text_output_item(text=final_text, id="msg_1"),
