@@ -11,6 +11,8 @@ import {
   getAlertAckMap,
   setAlertAck,
   clearAlertAck,
+  resolveAlert,
+  reopenAlert,
 } from '@chat-template/db';
 
 export const alertsRouter: RouterType = Router();
@@ -87,6 +89,44 @@ alertsRouter.post(
     } catch (error) {
       console.error('[/api/alerts/:chatId/snooze] Error:', error);
       res.status(500).json({ error: 'Failed to snooze alert' });
+    }
+  },
+);
+
+/** POST /api/alerts/:chatId/resolve - resolve a ticket with a required note (Step 8/9). */
+alertsRouter.post(
+  '/:chatId/resolve',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const note = String(req.body?.note ?? '').trim();
+    if (!note) {
+      return res.status(400).json({ error: 'A resolution note is required.' });
+    }
+    try {
+      await resolveAlert({
+        chatId: req.params.chatId,
+        note,
+        resolvedBy: req.session?.user.email ?? req.session?.user.id ?? null,
+      });
+      res.json({ ok: true, status: 'resolved' });
+    } catch (error) {
+      console.error('[/api/alerts/:chatId/resolve] Error:', error);
+      res.status(500).json({ error: 'Failed to resolve ticket' });
+    }
+  },
+);
+
+/** POST /api/alerts/:chatId/reopen - reopen a resolved ticket (reminders + alerts resume). */
+alertsRouter.post(
+  '/:chatId/reopen',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      await reopenAlert(req.params.chatId);
+      res.json({ ok: true, status: 'open' });
+    } catch (error) {
+      console.error('[/api/alerts/:chatId/reopen] Error:', error);
+      res.status(500).json({ error: 'Failed to reopen ticket' });
     }
   },
 );

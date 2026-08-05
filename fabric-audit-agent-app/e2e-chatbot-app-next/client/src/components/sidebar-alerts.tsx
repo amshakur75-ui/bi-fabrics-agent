@@ -8,21 +8,26 @@ import {
   SidebarMenu,
 } from '@/components/ui/sidebar';
 
-type AlertAck = { status: 'acked' | 'snoozed'; snoozeUntil: string | null };
+type AlertAck = {
+  status: 'acked' | 'snoozed' | 'resolved';
+  resolutionNote?: string | null;
+  updatedBy?: string | null;
+};
 type AlertChat = { id: string; title: string; ack?: AlertAck | null };
 type AlertsData = { chats: AlertChat[]; hasMore: boolean };
 
-async function post(path: string, method: 'POST' | 'DELETE', body?: unknown) {
+async function post(path: string, body?: unknown) {
   await fetch(path, {
-    method,
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
 }
 
 /**
- * Shared "Alerts" section: system-owned, public Tier-2 alert conversations (via /api/alerts), each
- * with Ack / Snooze controls (6c) that suppress the 48h reminders. Hidden when there are none.
+ * Shared "Alerts" section: system-owned Tier-2 alert tickets (via /api/alerts). Each open ticket
+ * gets a Resolve control (requires a "what changed" note, Step 8/9); resolved tickets show who
+ * resolved them + the note, with Reopen. Hidden when there are none.
  */
 export function SidebarAlerts() {
   const { data, mutate } = useSWR<AlertsData>('/api/alerts?limit=20', fetcher, {
@@ -34,16 +39,16 @@ export function SidebarAlerts() {
     return null;
   }
 
-  const ack = async (id: string) => {
-    await post(`/api/alerts/${id}/ack`, 'POST');
+  const resolve = async (id: string) => {
+    const note = window.prompt(
+      'Resolve this alert — what changed / what did you find? (required)',
+    );
+    if (!note || !note.trim()) return;
+    await post(`/api/alerts/${id}/resolve`, { note: note.trim() });
     mutate();
   };
-  const snooze = async (id: string) => {
-    await post(`/api/alerts/${id}/snooze`, 'POST', { days: 7 });
-    mutate();
-  };
-  const clear = async (id: string) => {
-    await post(`/api/alerts/${id}/ack`, 'DELETE');
+  const reopen = async (id: string) => {
+    await post(`/api/alerts/${id}/reopen`);
     mutate();
   };
 
@@ -61,49 +66,37 @@ export function SidebarAlerts() {
                 setOpenMobile={() => {}}
               />
               <div className="flex items-center gap-1 px-2 pb-1 pl-8 text-[11px] text-muted-foreground">
-                {chat.ack?.status === 'acked' ? (
+                {chat.ack?.status === 'resolved' ? (
                   <>
-                    <span className="text-emerald-600 dark:text-emerald-400">
-                      ✓ acked
+                    <span
+                      className="min-w-0 flex-1 truncate text-emerald-600 dark:text-emerald-400"
+                      title={
+                        chat.ack.resolutionNote
+                          ? `${chat.ack.resolutionNote}${chat.ack.updatedBy ? ` — ${chat.ack.updatedBy}` : ''}`
+                          : 'resolved'
+                      }
+                    >
+                      ✓ resolved
+                      {chat.ack.resolutionNote
+                        ? ` — ${chat.ack.resolutionNote}`
+                        : ''}
                     </span>
                     <button
                       type="button"
-                      onClick={() => clear(chat.id)}
-                      className="ml-auto rounded px-1 hover:bg-sidebar-accent hover:text-foreground"
+                      onClick={() => reopen(chat.id)}
+                      className="shrink-0 rounded px-1 hover:bg-sidebar-accent hover:text-foreground"
                     >
-                      undo
-                    </button>
-                  </>
-                ) : chat.ack?.status === 'snoozed' ? (
-                  <>
-                    <span className="text-amber-600 dark:text-amber-400">
-                      💤 snoozed
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => clear(chat.id)}
-                      className="ml-auto rounded px-1 hover:bg-sidebar-accent hover:text-foreground"
-                    >
-                      undo
+                      reopen
                     </button>
                   </>
                 ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => ack(chat.id)}
-                      className="rounded px-1.5 py-0.5 hover:bg-sidebar-accent hover:text-foreground"
-                    >
-                      Ack
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => snooze(chat.id)}
-                      className="rounded px-1.5 py-0.5 hover:bg-sidebar-accent hover:text-foreground"
-                    >
-                      Snooze 7d
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => resolve(chat.id)}
+                    className="rounded px-1.5 py-0.5 hover:bg-sidebar-accent hover:text-foreground"
+                  >
+                    Resolve
+                  </button>
                 )}
               </div>
             </div>

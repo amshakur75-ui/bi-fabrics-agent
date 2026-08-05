@@ -354,7 +354,9 @@ def _ack_suppressed(ack_store, chat_id, now_dt):
     if not rec:
         return False
     status = (rec.get("status") or "").lower()
-    if status == "acked":
+    if status in ("acked", "resolved"):
+        # Acked, or a human-resolved ticket (Step 8/9) — hold reminders. (If the condition later
+        # goes absent and RECURS, the app's Reopen clears this so reminders + alerts resume.)
         return True
     if status == "snoozed":
         until = _parse_iso(rec.get("snoozeUntil"))

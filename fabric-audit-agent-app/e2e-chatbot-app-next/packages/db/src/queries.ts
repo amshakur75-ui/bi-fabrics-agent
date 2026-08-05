@@ -497,7 +497,41 @@ export async function getVotesByChatId({ id }: { id: string }): Promise<Vote[]> 
 // The chat app writes ack/snooze here; the Tier-2 job reads it (ai_chatbot.alert_ack) to suppress
 // the 48h reminders. Keyed by the alert's chat_id (the handle both sides share).
 
-export type AlertAck = { status: 'acked' | 'snoozed'; snoozeUntil: string | null };
+export type AlertAck = {
+  status: 'acked' | 'snoozed' | 'resolved';
+  snoozeUntil: string | null;
+  resolutionNote?: string | null;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+};
+
+export async function resolveAlert({
+  chatId,
+  note,
+  resolvedBy,
+}: {
+  chatId: string;
+  note: string;
+  resolvedBy?: string | null;
+}): Promise<void> {
+  if (!isDatabaseAvailable()) return;
+  const db = await ensureDb();
+  await db.execute(sql`
+    INSERT INTO ai_chatbot.alert_ack (chat_id, status, resolution_note, updated_by, updated_at)
+    VALUES (${chatId}, 'resolved', ${note}, ${resolvedBy ?? null}, now())
+    ON CONFLICT (chat_id) DO UPDATE SET
+      status = 'resolved',
+      resolution_note = excluded.resolution_note,
+      snooze_until = NULL,
+      updated_by = excluded.updated_by,
+      updated_at = now()
+  `);
+}
+
+export async function reopenAlert(chatId: string): Promise<void> {
+  // Reopen = clear the ticket state so reminders + alerts resume (Step 8 recurrence handling).
+  await clearAlertAck(chatId);
+}
 
 export async function setAlertAck({
   chatId,
@@ -536,7 +570,7 @@ export async function getAlertAckMap(
   if (!isDatabaseAvailable() || chatIds.length === 0) return out;
   const db = await ensureDb();
   const rows = await db.execute(sql`
-    SELECT chat_id, status, snooze_until
+    SELECT chat_id, status, snooze_until, resolution_note, updated_by, updated_at
     FROM ai_chatbot.alert_ack
     WHERE chat_id = ANY(${chatIds})
   `);
@@ -544,10 +578,18 @@ export async function getAlertAckMap(
     chat_id: string;
     status: string;
     snooze_until: string | null;
+    resolution_note: string | null;
+    updated_by: string | null;
+    updated_at: string | null;
   }>) {
+    const status =
+      r.status === 'acked' || r.status === 'resolved' ? r.status : 'snoozed';
     out[r.chat_id] = {
-      status: r.status === 'acked' ? 'acked' : 'snoozed',
+      status,
       snoozeUntil: r.snooze_until,
+      resolutionNote: r.resolution_note,
+      updatedBy: r.updated_by,
+      updatedAt: r.updated_at,
     };
   }
   return out;
