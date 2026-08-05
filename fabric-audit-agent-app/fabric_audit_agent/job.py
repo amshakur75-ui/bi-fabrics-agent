@@ -527,7 +527,8 @@ def _build_tier2_collector(env, window="5m"):
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
             _require(env, "FABRIC_CLIENT_SECRET"),
         )
-        la_cfg = {"window": window}
+        # topUsers cap raised (default 3) so the same-item cross-user gate can see >=N users/item.
+        la_cfg = {"window": window, "topUsers": int(env.get("FABRIC_LA_TOP_USERS", "8"))}
         if env.get("FABRIC_LA_WORKSPACE_FILTER"):
             la_cfg["workspaceFilter"] = env["FABRIC_LA_WORKSPACE_FILTER"]
         if env.get("FABRIC_LA_KQL"):

@@ -122,6 +122,64 @@ def _check_overage(facts):
     return []
 
 
+def _check_same_item_cross_user(facts, mcfg=None):
+    """Same-item cross-user pattern (Step 2, PROXY): >= N distinct users EACH driving >= X% of one
+    item's monitored activity. A broadly-hit item (shared/popular report), NOT a single-user runaway
+    — the fix is the item's design, not one person. Uses per-user cuSeconds share within the item."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    min_users = int(mcfg.get("cross_user_min_users", 3))
+    share_each = float(mcfg.get("cross_user_share", 15.0))
+    triggers = []
+    for it in (facts or {}).get("items") or []:
+        try:
+            item_cu = float(it.get("cuSeconds"))
+        except (TypeError, ValueError):
+            continue
+        top = it.get("topUsers") or []
+        if item_cu <= 0 or len(top) < min_users:
+            continue
+        qualifying = []
+        for u in top:
+            try:
+                ucu = float(u.get("cuSeconds"))
+            except (TypeError, ValueError):
+                continue
+            if ucu / item_cu * 100 >= share_each:
+                qualifying.append(u.get("user"))
+        if len(qualifying) >= min_users:
+            triggers.append({
+                "check": "cross_user", "item": it.get("name"), "workspace": it.get("workspace"),
+                "userCount": len(qualifying), "users": qualifying,
+                "sharePct": round(float(it.get("sharePct") or 0), 1),
+                "normalityHint": (f"{len(qualifying)} users are each driving a large share of this one "
+                                  "item — a shared/popular item (e.g. a broadly-used report), not a "
+                                  "single-user runaway; look at the item's design, not one person."),
+            })
+    return triggers
+
+
+def _check_cross_source_blind_spot(facts, mcfg=None):
+    """Cross-source consistency / blind-spot (Step 2, META): true CU% is high but monitored activity
+    came back empty — we can see the load but not WHO. Distinct from a quiet window (low CU) and from
+    a concentration alert. Flags a visibility/coverage gap, not a capacity emergency."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    cap = (facts or {}).get("capacity") or {}
+    items = (facts or {}).get("items") or []
+    try:
+        peak = float(cap.get("peakCuPct"))
+    except (TypeError, ValueError):
+        return []
+    threshold = float(mcfg.get("blind_spot_cu", 70.0))
+    if peak >= threshold and not items:
+        return [{"check": "blind_spot", "peakCuPct": round(peak, 1),
+                 "normalityHint": ("Capacity shows real load but no monitored activity came back this "
+                                   "window — attribution (Log Analytics) may be lagging, filtered, or "
+                                   "unconfigured, so WHO is driving this load is not visible.")}]
+    return []
+
+
 def _check_data_availability(facts):
     """Check for null/inconclusive data (STOP gate)."""
     result = null_data_gate(facts)
@@ -150,11 +208,15 @@ def _cross_reference_recurrence(triggers, findings_store, scope=None, tenant=Non
             # Map Tier 2 check names to finding key prefixes used in the full sweep
             key_prefixes = {
                 "concentration": "capacity.concentration",
+                "cross_user": "capacity.concentration",
                 "throttle": "capacity.throttle",
                 "pressure": "capacity.pressure",
                 "overage": "capacity.overage",
             }
-            prefix = key_prefixes.get(check, "")
+            prefix = key_prefixes.get(check)
+            if not prefix:  # unknown/meta check (e.g. blind_spot) -> never "matches all keys"
+                t["recurrence"] = {"isRecurring": False}
+                continue
             matching = [k for k in recent_keys if k and k.startswith(prefix)]
             if matching:
                 t["recurrence"] = {
@@ -217,6 +279,10 @@ def _title_for(t):
         return f"CU pressure: peak {t.get('peakCuPct', '?')}%"
     if check == "overage":
         return "Capacity overage accumulating"
+    if check == "cross_user":
+        return f"Cross-user load: {t.get('item', '?')} ({t.get('userCount', '?')} users)"
+    if check == "blind_spot":
+        return f"Coverage gap: CU {t.get('peakCuPct', '?')}% but no attribution"
     return f"Tier-2: {check}"
 
 
@@ -237,6 +303,13 @@ def _facts_for(t):
     elif check == "overage":
         f = [("Overage", f"{t.get('overageTotalMs')} ms"),
              ("Burndown", f"{t.get('minutesToBurndown')} min")]
+    elif check == "cross_user":
+        users = t.get("users") or []
+        f = [("Item", t.get("item")), ("Workspace", t.get("workspace")),
+             ("Distinct users", t.get("userCount")), ("Item share", f"{t.get('sharePct')}%"),
+             ("Users", ", ".join(str(u) for u in users[:5]) if users else None)]
+    elif check == "blind_spot":
+        f = [("Peak CU", f"{t.get('peakCuPct')}%"), ("Monitored items", "0 (no attribution)")]
     if (t.get("recurrence") or {}).get("isRecurring"):
         f.append(("Recurrence", "recurring (matches prior findings)"))
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
@@ -282,7 +355,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             base = f"{app_url.rstrip('/')}/chat/{cid}" if cid else f"{app_url.rstrip('/')}/"
             chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(trigger))
         # Concentration/attribution alerts rank a CPU-time PROXY, not true CU — the card must say so.
-        disclosure = PROXY_RANKING_DISCLOSURE if trigger.get("check") == "concentration" else None
+        disclosure = (PROXY_RANKING_DISCLOSURE
+                      if trigger.get("check") in ("concentration", "cross_user") else None)
         card = build_card(kind, title=_title_for(trigger), severity=row.get("severity", "info"),
                           facts=_facts_for(trigger), summary=summary, chat_url=chat_url,
                           disclosure=disclosure)
@@ -406,6 +480,8 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     triggers.extend(_check_throttle(facts))
     triggers.extend(_check_pressure(facts))
     triggers.extend(_check_overage(facts))
+    triggers.extend(_check_same_item_cross_user(facts))
+    triggers.extend(_check_cross_source_blind_spot(facts))
     triggers.extend(_check_data_availability(facts))
 
     triggers = _cross_reference_recurrence(triggers, findings_store,

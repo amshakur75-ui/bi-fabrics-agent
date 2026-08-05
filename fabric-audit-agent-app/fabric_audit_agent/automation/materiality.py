@@ -18,6 +18,10 @@ _DEFAULTS = {
     "overage_burndown": 60.0,       # report if minutes-to-burndown below this
     "esc_share_delta": 15.0,        # escalation: share% rose by >= this
     "esc_peak_delta": 20.0,         # escalation: peak CU% rose by >= this
+    # Step 2 gates (env-overridable, tune once running):
+    "cross_user_min_users": 3.0,    # same-item cross-user: >= this many qualifying users
+    "cross_user_share": 15.0,       # ...each driving >= this % of the item's activity
+    "blind_spot_cu": 70.0,          # coverage gap: true CU% >= this with zero monitored activity
 }
 
 
@@ -77,6 +81,15 @@ def classify(trigger, cfg=None):
         if mtb is not None and mtb < cfg["overage_burndown"]:
             return "report", f"burndown in {mtb:.0f}m < {cfg['overage_burndown']:.0f}m"
         return "ambiguous", "overage accumulating, burndown not urgent"
+    if check == "cross_user":
+        # already gated on >= N users each >= X% share, so a fired trigger is material
+        n = _num(trigger.get("userCount"))
+        reason = (f"{n:.0f} users each driving a large share of one item" if n
+                  else "multiple users driving one item")
+        return "report", reason
+    if check == "blind_spot":
+        # only fires when true CU% is high with zero attribution — always worth surfacing
+        return "report", "high true CU% with no monitored activity (coverage gap)"
     return "ambiguous", "unclassified trigger"
 
 

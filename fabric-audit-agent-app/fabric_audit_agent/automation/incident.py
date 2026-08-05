@@ -24,10 +24,10 @@ def incident_key(trigger):
     trigger carries one, else the literal ``capacity``.
     """
     check = (trigger or {}).get("check", "unknown")
-    if check == "concentration":
+    if check in ("concentration", "cross_user"):
         ws = trigger.get("workspace") or "?"
         item = trigger.get("item") or "?"
-        return f"concentration::{ws}/{item}"
+        return f"{check}::{ws}/{item}"
     cap = trigger.get("capacityId") or "capacity"
     return f"{check}::{cap}"
 
@@ -47,6 +47,10 @@ def severity_of(trigger):
     if check == "overage":
         mtb = _num(trigger.get("minutesToBurndown"))
         return "warn" if mtb is not None and mtb < 60 else "info"
+    if check == "cross_user":
+        n = _num(trigger.get("userCount"))
+        return "warn" if n is not None and n >= 4 else "info"
+    # blind_spot is a coverage note, never a capacity emergency
     return "info"
 
 
@@ -61,4 +65,8 @@ def primary_metric(trigger):
         return _num(trigger.get("peakCuPct"))
     if check == "overage":
         return _num(trigger.get("overageCumulativePct"))
+    if check == "cross_user":
+        return _num(trigger.get("userCount"))
+    if check == "blind_spot":
+        return _num(trigger.get("peakCuPct"))
     return None
