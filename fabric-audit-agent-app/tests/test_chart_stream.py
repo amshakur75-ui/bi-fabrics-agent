@@ -1,49 +1,51 @@
-"""agent_server.chart_stream — surface render_chart tool calls to the chat UI as Responses items.
+"""agent_server.chart_stream — carry render_chart specs to the UI as ```fabric-chart fences.
 
-The agentic tool loop consumes tool results internally, so a render_chart call's chart spec never
-reaches the client and the UI's render_chart tool-part path (which renders <Chart>) never fires.
-chart_output_items builds the function_call + function_call_output items that carry the spec out.
-Pure/stdlib — importable without mlflow."""
+The agentic tool loop consumes tool results internally, so a render_chart call's spec never reaches
+the client and the UI's <Chart> path never fires. chart_fences/append_chart_fences embed the spec in
+the answer text so message.tsx can split it out and render the real chart. Pure/stdlib."""
 import json
 
-from agent_server.chart_stream import chart_output_items
+from agent_server.chart_stream import chart_fences, append_chart_fences, CHART_FENCE_LANG
 
 
-def _tr(tool, result, call_id="c1", inp=None):
-    return {"tool": tool, "callId": call_id, "input": inp or {}, "result": result}
+def _tr(tool, result):
+    return {"tool": tool, "callId": "c1", "input": {}, "result": result}
 
 
-def test_render_chart_emits_paired_function_call_and_output():
-    chart = {"chart": {"chartType": "bar", "title": "t", "series": [], "sourceScope": "capacity",
-                       "isProxy": False}}
-    items = chart_output_items([_tr("render_chart", chart, call_id="abc", inp={"chartType": "bar"})])
-    assert len(items) == 2
-    call, out = items
-    assert call["type"] == "function_call" and call["name"] == "render_chart"
-    assert call["call_id"] == "abc" and json.loads(call["arguments"]) == {"chartType": "bar"}
-    assert out["type"] == "function_call_output" and out["call_id"] == "abc"
-    # the output the frontend parses back into RenderChartOutput carries the chart verbatim
-    assert json.loads(out["output"]) == chart
+def _chart():
+    return {"chart": {"chartType": "bar", "title": "t", "series": [], "axisLabels": {"x": "", "y": ""},
+                      "sourceScope": "capacity", "isProxy": False}}
 
 
-def test_fallback_result_is_still_surfaced():
-    fb = {"fallback": True, "text": "Only one data point.", "reason": "thin", "totalPoints": 1}
-    items = chart_output_items([_tr("render_chart", fb)])
-    assert len(items) == 2 and json.loads(items[1]["output"]) == fb
+def test_render_chart_becomes_a_fabric_chart_fence():
+    out = chart_fences([_tr("render_chart", _chart())])
+    assert out.startswith("```" + CHART_FENCE_LANG + "\n") and out.rstrip().endswith("```")
+    body = out.split("\n", 1)[1].rsplit("\n```", 1)[0]
+    assert json.loads(body) == _chart()          # the fence body is the render_chart output verbatim
 
 
-def test_non_render_chart_tools_are_ignored():
-    assert chart_output_items([_tr("capacity_peaks", {"peaks": []})]) == []
+def test_fallback_result_is_still_fenced():
+    fb = {"fallback": True, "text": "Only one point.", "reason": "thin", "totalPoints": 1}
+    out = chart_fences([_tr("render_chart", fb)])
+    body = out.split("\n", 1)[1].rsplit("\n```", 1)[0]
+    assert json.loads(body) == fb
 
 
-def test_render_chart_without_chart_or_fallback_is_ignored():
-    # e.g. a validation error result — nothing renderable, so don't emit a broken tool part
-    assert chart_output_items([_tr("render_chart", {"error": "bad chartType"})]) == []
+def test_non_render_chart_and_error_results_emit_nothing():
+    assert chart_fences([_tr("capacity_peaks", {"peaks": []})]) == ""
+    assert chart_fences([_tr("render_chart", {"error": "bad chartType"})]) == ""
+    assert chart_fences([]) == ""
 
 
-def test_multiple_charts_get_distinct_paired_call_ids():
-    c = {"chart": {"chartType": "pie", "title": "p", "series": [], "sourceScope": "user",
-                   "isProxy": True}}
-    items = chart_output_items([_tr("render_chart", c, call_id="a"),
-                                _tr("render_chart", c, call_id="b")])
-    assert [it["call_id"] for it in items] == ["a", "a", "b", "b"]
+def test_multiple_charts_separated_by_blank_line():
+    out = chart_fences([_tr("render_chart", _chart()), _tr("render_chart", _chart())])
+    assert out.count("```" + CHART_FENCE_LANG) == 2 and "\n\n```" in out
+
+
+def test_append_leaves_text_untouched_when_no_charts():
+    assert append_chart_fences("the answer", [_tr("capacity_peaks", {})]) == "the answer"
+
+
+def test_append_adds_fence_after_the_answer_text():
+    out = append_chart_fences("The peak was 28%.", [_tr("render_chart", _chart())])
+    assert out.startswith("The peak was 28%.\n\n```" + CHART_FENCE_LANG)

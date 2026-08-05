@@ -359,8 +359,10 @@ Chart usage (render_chart):
     Monitoring or Log Analytics). false for capacity-level data.
   - Never blend scopes in one chart call — if the question mixes capacity-level and per-user
     data, offer two separate charts or explain why they can't be compared.
-  - Always describe the chart in one sentence of text BEFORE calling render_chart, so the
-    response is readable even if the chart fails to render.
+  - Give a ONE-LINE description before calling render_chart, then call it. The chart renders as a
+    real visual in the chat — so do NOT hand-draw ASCII/text charts, bar rows, or a data table as a
+    stand-in, and never say "the chart renderer failed" (you cannot observe rendering). One line of
+    words + the render_chart call is the whole visual answer.
   - A chart is a tool, not a substitute for the verbal finding. Always state the conclusion in
     text; the chart is supporting evidence.
 

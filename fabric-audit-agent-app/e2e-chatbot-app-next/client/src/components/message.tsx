@@ -18,6 +18,7 @@ import {
   McpApprovalActions,
 } from './elements/mcp-tool';
 import { Chart, type RenderChartOutput } from './elements/chart';
+import { splitChartSegments } from '@/lib/chart-segments';
 import { MessageActions } from './message-actions';
 import { PreviewAttachment } from './preview-attachment';
 import equal from 'fast-deep-equal';
@@ -209,6 +210,11 @@ const PurePreviewMessage = ({
                 );
               }
               if (mode === 'view') {
+                // Split out ```fabric-chart fences (appended by the backend) so each renders as the
+                // real <Chart> instead of a JSON code block; plain text renders via <Response>.
+                const segments = splitChartSegments(
+                  joinMessagePartSegments(parts),
+                );
                 return (
                   <div key={key}>
                     <MessageContent
@@ -220,9 +226,19 @@ const PurePreviewMessage = ({
                           message.role === 'assistant',
                       })}
                     >
-                      <Response>
-                        {sanitizeText(joinMessagePartSegments(parts))}
-                      </Response>
+                      {segments.map((seg, i) =>
+                        seg.type === 'chart' ? (
+                          <Chart
+                            key={`${key}-chart-${i}`}
+                            output={seg.output}
+                            className="my-2"
+                          />
+                        ) : (
+                          <Response key={`${key}-text-${i}`}>
+                            {sanitizeText(seg.text)}
+                          </Response>
+                        ),
+                      )}
                     </MessageContent>
                   </div>
                 );

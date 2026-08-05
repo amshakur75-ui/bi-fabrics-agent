@@ -53,7 +53,7 @@ _MCP_URL = os.environ.get("FABRIC_MCP_URL", "")
 # ---------------------------------------------------------------------------
 
 from .system_prompt import build_system_prompt, wrap_untrusted as _wrap_untrusted
-from .chart_stream import chart_output_items
+from .chart_stream import append_chart_fences
 
 
 
@@ -475,12 +475,12 @@ async def _run(request, on_tool=None):
 @invoke()
 async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentResponse:
     r = await _run(request)
-    text_item = create_text_output_item(text=r["text"], id="msg_1")
-    # Surface render_chart calls as tool-part items so the chat UI renders the <Chart> (parity with
-    # the streaming path); charts first, then the answer text.
-    output = chart_output_items(r.get("toolResults")) + [text_item]
+    # Append render_chart specs as ```fabric-chart fences so the chat UI renders the <Chart> (parity
+    # with the streaming path).
+    text_item = create_text_output_item(
+        text=append_chart_fences(r["text"], r.get("toolResults")), id="msg_1")
     return ResponsesAgentResponse(
-        output=output,
+        output=[text_item],
         custom_outputs={"trajectory": r["trajectory"], "toolResults": r.get("toolResults"),
                         "stoppedReason": r["stoppedReason"], "trail": r.get("trail")},
     )
@@ -596,11 +596,12 @@ async def stream_handler(request: ResponsesAgentRequest):
                 type="response.output_item.done",
                 item=create_text_output_item(text=_progress_line(name, inp), id=f"progress_{idx}"),
             )
-        chart_items = []
         try:
             r = task.result()
-            final_text = r["text"]
-            chart_items = chart_output_items(r.get("toolResults"))
+            # Append any render_chart specs as ```fabric-chart fences so the chat UI renders the
+            # real <Chart> (the tool loop consumes results internally, so without this the chart
+            # spec never reaches the client and the answer falls back to an ASCII table).
+            final_text = append_chart_fences(r["text"], r.get("toolResults"))
         except Exception as exc:
             # A raised exception here would abort the SSE stream mid-flight and the chat UI
             # shows a broken/blank response. End the stream with an honest, readable failure
@@ -608,15 +609,6 @@ async def stream_handler(request: ResponsesAgentRequest):
             final_text = (f"The investigation failed before completing: {exc}. "
                           "Nothing was modified (all tools are read-only) — please retry, "
                           "or rephrase the question.")
-        # Surface any render_chart calls as tool-part items BEFORE the final text so the chat UI
-        # renders the <Chart> above the answer (the tool loop consumes results internally, so
-        # without this the chart spec never reaches the client). Guarded: a bad item is skipped,
-        # never aborts the stream.
-        for _it in chart_items:
-            try:
-                yield ResponsesAgentStreamEvent(type="response.output_item.done", item=_it)
-            except Exception as _exc:
-                print(f"[chart] stream item skipped: {type(_exc).__name__}")
         yield ResponsesAgentStreamEvent(
             type="response.output_item.done",
             item=create_text_output_item(text=final_text, id="msg_1"),
