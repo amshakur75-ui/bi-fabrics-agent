@@ -41,6 +41,23 @@ _MODEL = os.environ.get("DATABRICKS_CLAUDE_ENDPOINT", "databricks-claude-opus-4-
 _MCP_URL = os.environ.get("FABRIC_MCP_URL", "")
 
 
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Per-tool wall-clock ceiling (env FABRIC_TOOL_TIMEOUT_S) — a single slow/hung MCP tool must not
+# stall the whole investigation or hang the stream. Generous enough for a real KQL read.
+_TOOL_TIMEOUT_S = _int_env("FABRIC_TOOL_TIMEOUT_S", 45)
+
+# Streaming keep-alive cadence (env FABRIC_HEARTBEAT_S): emit a "still working…" event if no tool
+# call or final result has arrived in this many seconds, so a long tool-less synthesis step never
+# leaves the stream silent (proxy idle-timeout) or looking frozen.
+_HEARTBEAT_S = _int_env("FABRIC_HEARTBEAT_S", 12)
+
+
 # ---------------------------------------------------------------------------
 # System prompt + untrusted-telemetry spotlighting.
 #
@@ -101,6 +118,25 @@ async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, ma
         if getattr(resp, "stop_reason", None) != "tool_use":
             text = "".join(getattr(b, "text", "") for b in resp.content
                            if getattr(b, "type", None) == "text")
+            if not text.strip():
+                # Observed live: a slow/loaded serving endpoint ended the turn with NO text after
+                # the tool work, so the user saw progress then a blank answer (looked frozen). One
+                # bounded, tool-less retry demanding a plain-text answer; then a non-empty fallback.
+                # Kept in sync with loop.py::run_tool_loop.
+                print(f"[agent] empty synthesis after {len(trajectory)} tool(s) at step {step}; "
+                      "retrying tool-less", flush=True)
+                messages.append({"role": "user", "content": (
+                    "[SYSTEM] Your previous reply was empty. Write your COMPLETE final answer now, "
+                    "in plain text, from the evidence already gathered. Do not call any tools.")})
+                resp = await asyncio.to_thread(client.messages.create, model=model, max_tokens=4096,
+                                               system=system, messages=messages, tools=[])
+                text = "".join(getattr(b, "text", "") for b in resp.content
+                               if getattr(b, "type", None) == "text")
+            if not text.strip():
+                text = ("I pulled the capacity and activity readings but couldn't compose a written "
+                        "conclusion this time — the model returned an empty response. Nothing was "
+                        "modified (all tools are read-only). Please ask again, or say "
+                        "\"summarize what you found\".")
             return {"text": text, "trajectory": trajectory, "toolResults": tool_results,
                     "stoppedReason": "answer"}
 
@@ -287,7 +323,15 @@ async def _mcp_tools_and_dispatch(ws):
                "input_schema": t.inputSchema or {}} for t in listed]
 
     async def _call(name, inp):
-        result = await mcp.acall_tool(name, inp or {})
+        # Bound every tool call: a slow/hung MCP tool (e.g. a long Log Analytics KQL, or an
+        # unresponsive MCP server) must not stall the whole investigation — which previously ran to
+        # ~100s and, with no ceiling, could hang the stream indefinitely. On timeout, return an error
+        # the model can reason about instead of blocking forever.
+        try:
+            result = await asyncio.wait_for(mcp.acall_tool(name, inp or {}), timeout=_TOOL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return {"error": f"tool '{name}' timed out after {_TOOL_TIMEOUT_S}s — "
+                    "it may be a slow query or an unavailable source; try a narrower window"}
         for c in (result.content or []):
             text = getattr(c, "text", None)
             if text is not None:
@@ -621,7 +665,20 @@ async def stream_handler(request: ResponsesAgentRequest):
     idx = 0
     while True:
         getter = asyncio.create_task(queue.get())
-        done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait({getter, task}, timeout=_HEARTBEAT_S,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            # No tool call and no result for a while — the model is composing the final answer (or a
+            # tool is running long). Emit a keep-alive so the stream never goes silent: it stops the
+            # Apps proxy idle-timeout from cutting the connection AND reassures the user it isn't
+            # frozen during the last, tool-less synthesis step (which shows no 🔎 progress line).
+            getter.cancel()
+            idx += 1
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item=create_text_output_item(text="⏳ still working…\n\n", id=f"progress_{idx}"),
+            )
+            continue
         if getter in done:
             name, inp = getter.result()
             idx += 1

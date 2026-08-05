@@ -136,6 +136,41 @@ def test_loop_forces_answer_on_last_step():
     assert out["stoppedReason"] == "answer"
 
 
+def test_loop_retries_when_final_answer_is_empty():
+    """Regression: a slow/loaded serving endpoint returned an end_turn with EMPTY text after the
+    tool work — the user saw progress markers then a blank answer (looked frozen). The loop must
+    make one bounded, tool-less retry demanding a plain-text answer, and surface it."""
+    scripted = [
+        _M([_B("tool_use", id="t1", name="investigate_user", input={"user": "a"})], "tool_use"),
+        _M([_B("text", text="")], "end_turn"),                       # empty final answer
+        _M([_B("text", text="here is the real conclusion")], "end_turn"),  # retry succeeds
+    ]
+    dispatch, _ = _dispatch()
+    client = FakeClient(scripted)
+    out = run_tool_loop(client, model="m", system="s",
+                        messages=[{"role": "user", "content": "investigate"}],
+                        tools=[{"name": "investigate_user"}], dispatch=dispatch, max_steps=6)
+    assert "real conclusion" in out["text"] and out["stoppedReason"] == "answer"
+    assert client.calls[-1]["tools"] == []                            # retry withheld tools
+    assert "empty" in str(client.calls[-1]["messages"][-1]).lower()   # explicit "your reply was empty" nudge
+
+
+def test_loop_falls_back_to_nonempty_when_answer_stays_empty():
+    """If even the retry comes back blank, the loop must return a non-empty, honest message —
+    never an empty string that renders as a frozen/blank chat bubble."""
+    scripted = [
+        _M([_B("tool_use", id="t1", name="investigate_user", input={"user": "a"})], "tool_use"),
+        _M([_B("text", text="")], "end_turn"),      # empty
+        _M([_B("text", text="   ")], "end_turn"),   # still blank on retry
+    ]
+    dispatch, _ = _dispatch()
+    out = run_tool_loop(FakeClient(scripted), model="m", system="s",
+                        messages=[{"role": "user", "content": "investigate"}],
+                        tools=[{"name": "investigate_user"}], dispatch=dispatch, max_steps=6)
+    assert out["stoppedReason"] == "answer"
+    assert out["text"].strip()                       # non-empty fallback, not a blank bubble
+
+
 def test_loop_budget_exhaustion_message():
     """Pathological case: even the final stripped-tools call returns tool_use (a misbehaving model).
     The loop should exhaust the step budget and return stoppedReason='budget' with a non-empty message."""

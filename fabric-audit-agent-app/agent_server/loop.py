@@ -40,6 +40,22 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
         if getattr(resp, "stop_reason", None) != "tool_use":
             text = "".join(getattr(b, "text", "") for b in resp.content
                            if getattr(b, "type", None) == "text")
+            if not text.strip():
+                # Observed live: a slow/loaded serving endpoint ended the turn with NO text after
+                # the tool work, so the user saw progress then a blank answer. One bounded, tool-less
+                # retry that demands a plain-text answer; then a non-empty fallback. Never blank.
+                messages.append({"role": "user", "content": (
+                    "[SYSTEM] Your previous reply was empty. Write your COMPLETE final answer now, "
+                    "in plain text, from the evidence already gathered. Do not call any tools.")})
+                resp = client.messages.create(model=model, max_tokens=4096, system=system,
+                                              messages=messages, tools=[])
+                text = "".join(getattr(b, "text", "") for b in resp.content
+                               if getattr(b, "type", None) == "text")
+            if not text.strip():
+                text = ("I pulled the capacity and activity readings but couldn't compose a written "
+                        "conclusion this time — the model returned an empty response. Nothing was "
+                        "modified (all tools are read-only). Please ask again, or say "
+                        "\"summarize what you found\".")
             return {"text": text, "trajectory": trajectory, "toolResults": tool_results,
                     "stoppedReason": "answer"}
 
