@@ -239,19 +239,38 @@ const PurePreviewMessage = ({
                           message.role === 'assistant',
                       })}
                     >
-                      {segments.map((seg, i) =>
-                        seg.type === 'chart' ? (
-                          <Chart
-                            key={`${key}-chart-${i}`}
-                            output={seg.output}
-                            className="my-2"
-                          />
-                        ) : (
-                          <Response key={`${key}-text-${i}`}>
-                            {sanitizeText(seg.text)}
-                          </Response>
-                        ),
-                      )}
+                      {segments.map((seg, i) => {
+                        if (seg.type === 'chart') {
+                          return (
+                            <Chart
+                              key={`${key}-chart-${i}`}
+                              output={seg.output}
+                              className="my-2"
+                            />
+                          );
+                        }
+                        // Progress lines ("🔎 …") — dim + shrink them so the answer stands out.
+                        // Only when the WHOLE segment is progress lines, so the answer is never dimmed.
+                        const isProgress =
+                          seg.text.trim().length > 0 &&
+                          seg.text
+                            .trim()
+                            .split('\n')
+                            .every(
+                              (l) => !l.trim() || l.trim().startsWith('🔎'),
+                            );
+                        return (
+                          <div
+                            key={`${key}-text-${i}`}
+                            className={cn({
+                              'text-sm text-muted-foreground [&_p]:my-0.5':
+                                isProgress,
+                            })}
+                          >
+                            <Response>{sanitizeText(seg.text)}</Response>
+                          </div>
+                        );
+                      })}
                     </MessageContent>
                   </div>
                 );

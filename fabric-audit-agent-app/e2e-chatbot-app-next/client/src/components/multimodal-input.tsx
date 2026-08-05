@@ -316,7 +316,7 @@ function PureMultimodalInput({
                 status={status}
                 variant="tertiary"
                 disabled={!input.trim() || uploadQueue.length > 0}
-                className="size-8 rounded-full bg-secondary hover:bg-action-tertiary-background-hover text-foreground transition-colors duration-200 disabled:opacity-50 disabled:text-muted-foreground"
+                className="size-8 rounded-full bg-[#5b7be8] hover:bg-[#4a6ad6] text-white shadow-sm transition-colors duration-200 disabled:bg-secondary disabled:text-muted-foreground disabled:shadow-none"
               >
                 <DbIcon icon={ArrowUpIcon} className="size-4" />
               </PromptInputSubmit>
