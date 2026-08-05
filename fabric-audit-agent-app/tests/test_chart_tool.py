@@ -46,6 +46,38 @@ def test_thin_data_falls_back_to_text():
     assert out.get("fallback") is True and out["totalPoints"] == 1
 
 
+def test_accepts_label_value_points_for_donut():
+    # models naturally emit {label, value} for pie/donut — coerce to {x, y}
+    out = render_chart_spec({"chartType": "donut", "title": "share", "sourceScope": "capacity",
+                             "series": [{"name": "Hourly share",
+                                         "data": [{"label": "00:00", "value": 18.8},
+                                                  {"label": "01:00", "value": 14.5}]}]})
+    assert "chart" in out
+    pts = out["chart"]["series"][0]["data"]
+    assert pts[0] == {"x": "00:00", "y": 18.8} and pts[1]["x"] == "01:00"
+
+
+def test_coerces_percent_and_number_strings_and_pairs():
+    out = render_chart_spec({"chartType": "bar", "title": "CU%", "sourceScope": "capacity",
+                             "series": [{"name": "CU%",
+                                         "data": [{"x": "07:00", "y": "26.5%"},
+                                                  ["08:00", "25.8"], {"x": "09:00", "y": 23.6}]}]})
+    ys = [p["y"] for p in out["chart"]["series"][0]["data"]]
+    assert ys == [26.5, 25.8, 23.6]
+
+
+def test_missing_source_scope_defaults_to_capacity():
+    out = render_chart_spec({"chartType": "line", "title": "t", "series": _series()})
+    assert out["chart"]["sourceScope"] == "capacity" and out["chart"]["isProxy"] is False
+
+
+def test_uncoercible_point_is_rejected():
+    out = render_chart_spec({"chartType": "bar", "title": "t", "sourceScope": "capacity",
+                             "series": [{"name": "s", "data": [{"x": "a", "y": "not-a-number"},
+                                                               {"x": "b", "y": 2}]}]})
+    assert "error" in out
+
+
 def test_tool_registration_exposes_render_chart():
     tools, dispatch = chart_tool_and_dispatch()
     assert tools[0]["name"] == "render_chart" and "render_chart" in dispatch

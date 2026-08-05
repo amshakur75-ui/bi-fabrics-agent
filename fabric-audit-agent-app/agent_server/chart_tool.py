@@ -20,35 +20,95 @@ _PROXY_CAVEAT = (
 )
 
 
+def _num(v):
+    """Coerce a y-value to a float: accept numbers, and strings like '26.5%' / '1,024' / '18.8'.
+    Returns None if it can't be a number (so the caller can reject that point)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip().rstrip("%").strip().replace(",", "")
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_point(pt):
+    """Normalize a data point to ``{"x", "y"}`` — tolerating the shapes models naturally emit:
+    ``{x,y}``, ``{label,value}`` / ``{name,value}`` / ``{category,count}`` (pie/donut), and ``[x, y]``
+    pairs. ``y`` is coerced to a number. Returns None if it can't form a valid {x, numeric y}."""
+    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+        x, y = pt[0], _num(pt[1])
+    elif isinstance(pt, dict):
+        x = pt.get("x")
+        if x is None:
+            x = pt.get("label", pt.get("name", pt.get("category")))
+        y = _num(pt.get("y") if pt.get("y") is not None else
+                 pt.get("value", pt.get("count")))
+    else:
+        return None
+    if x is None or y is None:
+        return None
+    return {"x": x, "y": y}
+
+
+def _reject(inp, message):
+    """Return a render_chart error AND log the offending payload shape server-side, so a rejection is
+    diagnosable without guessing. Logs only keys + a 2-point sample, never the full payload."""
+    try:
+        s0 = ((inp or {}).get("series") or [{}])[0]
+        sample = (s0.get("data") or [])[:2] if isinstance(s0, dict) else None
+        print(f"[render_chart] rejected: {message} | keys={sorted((inp or {}).keys())} "
+              f"chartType={(inp or {}).get('chartType')!r} sampleData={sample!r}", flush=True)
+    except Exception:
+        pass
+    return {"error": message}
+
+
 def render_chart_spec(inp):
     """Validate a chart spec and return the render_chart output dict: ``{chart}`` | ``{fallback}`` |
-    ``{error}``. Pure — the exact contract the frontend <Chart> consumes."""
+    ``{error}``. Pure — the exact contract the frontend <Chart> consumes. Tolerant of the point
+    shapes models emit (label/value, [x,y]) and coerces percent/number strings."""
     inp = inp or {}
     chart_type = inp.get("chartType")
     if chart_type not in _CHART_TYPES:
-        return {"error": f"chartType must be one of {list(_CHART_TYPES)}, got {chart_type!r}"}
+        return _reject(inp, f"chartType must be one of {list(_CHART_TYPES)}, got {chart_type!r}")
     title = inp.get("title")
     if not title or not str(title).strip():
-        return {"error": "title is required"}
+        return _reject(inp, "title is required")
     series = inp.get("series")
     if not series or not isinstance(series, list):
-        return {"error": "series must be a non-empty list of {name, data:[{x,y}]}"}
+        return _reject(inp, "series must be a non-empty list of {name, data:[{x,y}]}")
+    # Normalize each series' data IN PLACE to {x, numeric y}, tolerating label/value & [x,y] shapes.
+    norm_series = []
     for i, s in enumerate(series):
-        if not isinstance(s, dict) or not s.get("name"):
-            return {"error": f"series[{i}] must be a dict with a name"}
+        if not isinstance(s, dict):
+            return _reject(inp, f"series[{i}] must be a dict with name + data")
+        name = s.get("name") or s.get("label") or f"Series {i + 1}"
         data = s.get("data")
         if not isinstance(data, list):
-            return {"error": f"series[{i}].data must be a list of {{x, y}}"}
+            return _reject(inp, f"series[{i}].data must be a list of points")
+        norm_data = []
         for j, pt in enumerate(data):
-            if not isinstance(pt, dict) or "x" not in pt or "y" not in pt:
-                return {"error": f"series[{i}].data[{j}] must have both x and y"}
+            cp = _coerce_point(pt)
+            if cp is None:
+                return _reject(inp, f"series[{i}].data[{j}] needs a label/x and a numeric value/y "
+                                    f"(got {pt!r})")
+            norm_data.append(cp)
+        norm_series.append({"name": str(name), "data": norm_data})
+    series = norm_series
 
     axis = inp.get("axisLabels")
     if not isinstance(axis, dict):
         axis = {"x": "", "y": ""}
     scope = inp.get("sourceScope")
+    if scope is None:
+        scope = "capacity"  # lenient default — most charts here are capacity-level true CU%
     if scope not in _CHART_SCOPES:
-        return {"error": f"sourceScope must be one of {list(_CHART_SCOPES)}, got {scope!r}"}
+        return _reject(inp, f"sourceScope must be one of {list(_CHART_SCOPES)}, got {scope!r}")
 
     is_proxy = inp.get("isProxy")
     is_proxy = (scope == "user") if is_proxy is None else bool(is_proxy)
