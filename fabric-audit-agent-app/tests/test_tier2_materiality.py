@@ -50,15 +50,19 @@ def test_recurring_always_reports():
     assert classify(t, CFG)[0] == "report"
 
 
-def test_attribution_severity_floor_no_info_cards():
-    # Step 2 anti-flapping: attribution signals only card at Warning+ (or when recurring). An
-    # Info-level concentration/cross-user is suppressed (logged only), never a standalone card.
-    assert classify({"check": "concentration", "sharePct": 55}, CFG)[0] == "report"   # warn (>=50)
-    assert classify({"check": "concentration", "sharePct": 45}, CFG)[0] == "suppress"  # info -> floor
-    assert classify({"check": "concentration", "sharePct": 31}, CFG)[0] == "suppress"
+def test_attribution_uses_gate_not_severity_floor():
+    # Attribution materiality is decided by the GATE (share/user thresholds), and anti-flapping is
+    # enforced separately by HYSTERESIS in process_alerts — NOT by a blanket Info-level severity
+    # floor (an earlier floor silenced the product's whole concentration/cross-user alert stream,
+    # since live attribution is almost always Info-severity). So an Info-level but material share
+    # still REPORTS here; hysteresis is what makes it wait for persistence before it cards.
+    assert classify({"check": "concentration", "sharePct": 55}, CFG)[0] == "report"    # warn (>=50)
+    assert classify({"check": "concentration", "sharePct": 45}, CFG)[0] == "report"    # info but >=40
+    assert classify({"check": "concentration", "sharePct": 36}, CFG)[0] == "ambiguous"  # 33..40 band
+    assert classify({"check": "concentration", "sharePct": 31}, CFG)[0] == "suppress"  # < 33, a blip
     assert classify({"check": "cross_user", "userCount": 4}, CFG)[0] == "report"       # warn (>=4)
-    assert classify({"check": "cross_user", "userCount": 3}, CFG)[0] == "suppress"     # info -> floor
-    # recurring still cards even below the Warning cutoff
+    assert classify({"check": "cross_user", "userCount": 3}, CFG)[0] == "report"       # detector-gated
+    # recurring always reports
     assert classify({"check": "concentration", "sharePct": 45,
                      "recurrence": {"isRecurring": True}}, CFG)[0] == "report"
 

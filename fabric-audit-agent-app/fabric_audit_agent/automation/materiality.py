@@ -64,13 +64,13 @@ def classify(trigger, cfg=None):
     if severity_of(trigger) == "warn":
         return "report", "derived severity=warn"
 
-    # Severity floor for attribution / user-item signals (Step 2, anti-flapping): concentration and
-    # same-item cross-user shares vary tick-to-tick, so an Info-level one (below its Warning cutoff)
-    # must NOT generate a standalone Teams card. Only Warning+ (handled just above) or a recurring
-    # one (handled above that) cards; everything else is logged / rolled into the digest only.
-    if check in ("concentration", "cross_user"):
-        return "suppress", f"{check} below Warning severity — logged only, no standalone card"
-
+    # Anti-flapping for attribution (concentration / same-item cross-user) is enforced by HYSTERESIS
+    # in process_alerts (a signal must persist N consecutive 5-min checks before it alerts), NOT by a
+    # severity floor here. An earlier build suppressed ALL Info-level attribution outright, which
+    # silenced the product's core concentration / cross-user alerts entirely — because live
+    # attribution is almost always Info-severity — so that floor was removed. The materiality gate
+    # below decides whether a fired signal is worth surfacing; hysteresis decides whether it has
+    # lasted long enough to be real (a flapping/rotating signal never reaches the streak).
     if check == "concentration":
         share = _num(trigger.get("sharePct"))
         if share is not None and share >= cfg["concentration_report"]:

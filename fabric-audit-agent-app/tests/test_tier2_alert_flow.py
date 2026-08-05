@@ -251,10 +251,12 @@ def test_ambiguous_uses_llm_verdict():
     def reasoner_suppress(t):
         return {"markdown": "m", "summary": "s", "report": False}
 
-    # concentration 36 -> ambiguous; LLM says suppress -> silent, no card
+    # concentration 36 -> ambiguous; LLM says suppress -> silent, no card. Hysteresis disabled so
+    # the ambiguous->LLM path is exercised on the first tick (otherwise the signal would sit in
+    # pending for the persistence window before the reasoner is ever consulted).
     a = process_alerts([{"check": "concentration", "workspace": "W", "item": "I", "sharePct": 36}],
                        alerts_store=store, delivery_sinks={"webhook": sink},
-                       reasoner=reasoner_suppress, now_dt=T0)
+                       reasoner=reasoner_suppress, now_dt=T0, cfg=_cfg_no_hysteresis())
     assert a["silent"] and posts == []
 
 
@@ -287,6 +289,30 @@ def test_hysteresis_holds_attribution_pending_until_it_persists():
     assert a["new"] == [key] and len(posts) == 1
     assert set(store["query_active"]()) == {key}
     assert store["query_pending"]() == {}  # the pending row was consumed on promotion
+
+
+def test_info_level_concentration_still_alerts_once_it_persists():
+    """Regression guard for the "stopped getting alerts" outage: an Info-severity but MATERIAL
+    concentration (share >= report threshold, but < the Warning cutoff) must still alert once it
+    persists the hysteresis window. A prior build suppressed all Info attribution outright, which
+    silenced the entire concentration / cross-user stream."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")  # default cfg -> hysteresis_ticks = 3
+    # share 46% -> Info severity (warn cutoff is 50%) but >= the 40% report threshold -> material
+    con = {"check": "concentration", "item": "Ent-Sales", "workspace": "Fin", "sharePct": 46}
+    key = "concentration::Fin/Ent-Sales"
+
+    a = process_alerts([con], now_dt=T0, **kw)
+    assert a["pending"] == [key] and a["new"] == [] and posts == []      # held, not suppressed
+    a = process_alerts([con], now_dt=T0 + timedelta(minutes=5), **kw)
+    assert a["pending"] == [key] and posts == []
+    a = process_alerts([con], now_dt=T0 + timedelta(minutes=10), **kw)   # 3rd consecutive -> promote
+    assert a["new"] == [key] and len(posts) == 1
+    assert set(store["query_active"]()) == {key}
 
 
 def test_hysteresis_resets_when_the_signal_lapses():
