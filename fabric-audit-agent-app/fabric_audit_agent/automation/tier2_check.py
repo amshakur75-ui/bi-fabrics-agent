@@ -424,11 +424,16 @@ def _facts_for(t):
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
 
 
-def _investigate_query(t):
+def _investigate_query(t, *, prefix=None):
     """The prompt auto-sent when the alert deep-link is opened — kicks off a live agent
-    investigation (real MCP tools), so clicking the card gives the root cause, not just facts."""
+    investigation (real MCP tools), so clicking the card gives the root cause, not just facts.
+
+    ``prefix`` (optional) carries ticket memory the agent cannot otherwise see — e.g. on a recurrence
+    of a human-resolved ticket, the prior resolution note — so the auto-investigation opens knowing
+    it is a standing ticket, not a blank slate (Step 7 ticket memory)."""
     check = t.get("check")
-    return (f"Investigate this {check} alert and give me the root cause. {_title_for(t)}. "
+    lead = (prefix.strip() + " ") if prefix else ""
+    return (f"{lead}Investigate this {check} alert and give me the root cause. {_title_for(t)}. "
             "Pull the recent capacity + activity, identify the top consumers and any expensive "
             "operations or refresh contention driving it, and tell me what's causing it and what "
             "to do. Distinguish true CU% (ground truth) from the monitored-activity proxy — do not "
@@ -461,7 +466,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": [],
                "inactive": [], "reopened": [], "pending": []}
 
-    def _send(kind, trigger, row, summary):
+    def _send(kind, trigger, row, summary, *, investigate_prefix=None):
         cid = row.get("chatId")
         chat_url = None
         if app_url and kind != "resolved":
@@ -469,7 +474,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             # opens a fresh chat. Either way ?query auto-runs a live investigation on open, so the
             # link is always present AND always resolves (never a fake /chat/<uuid> that 404s).
             base = f"{app_url.rstrip('/')}/chat/{cid}" if cid else f"{app_url.rstrip('/')}/"
-            chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(trigger))
+            chat_url = base + "?query=" + urllib.parse.quote(
+                _investigate_query(trigger, prefix=investigate_prefix))
         # Concentration/attribution alerts rank a CPU-time PROXY, not true CU — the card must say so.
         disclosure = (PROXY_RANKING_DISCLOSURE
                       if trigger.get("check") in ("concentration", "cross_user") else None)
@@ -503,9 +509,15 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 _note = _ticket.get("resolutionNote")
                 summary = ("Recurred after being marked resolved"
                            + (f" — prior note: {_note}" if _note else "") + ".")
+                # Ticket memory (Step 7): tell the auto-investigation this is a recurrence of a
+                # human-resolved ticket + the prior note, so it opens knowing the history.
+                _prefix = ("NOTE: this ticket was previously marked RESOLVED"
+                           + (f" (prior resolution note: \"{_note}\")" if _note else "")
+                           + " and has now RECURRED. First decide whether the same cause returned or "
+                           "a new driver is behind it this time.")
                 row = dict(prior, currentlyActive=True, status="active", lastAlertedAt=now_iso,
                            runAt=now_iso, investigationSummary=summary)
-                row["delivered"] = _send("new", t, row, summary)
+                row["delivered"] = _send("new", t, row, summary, investigate_prefix=_prefix)
                 alerts_store["upsert"](row)
                 actions["reopened"].append(key)
             elif is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric")}, cfg):

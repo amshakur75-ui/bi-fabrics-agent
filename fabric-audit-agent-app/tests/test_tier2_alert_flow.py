@@ -194,6 +194,10 @@ def test_resolved_incident_reopens_on_recurrence():
     assert reopened["n"] == 1                                    # the resolve was cleared
     assert store["query_active"]()[key]["currentlyActive"] is True
     assert "Recurred" in json.dumps(posts[-1])                  # re-alert notes the recurrence
+    # ticket memory (Step 7): the deep-link's auto-investigate query carries the prior note so the
+    # investigation opens knowing this is a recurrence of a human-resolved ticket.
+    _deeplink = _card(posts)["actions"][0]["url"]
+    assert "RECURRED" in _deeplink and "fixed%20the%20query" in _deeplink
 
 
 def test_clear_suppress_never_calls_llm_or_sends():
