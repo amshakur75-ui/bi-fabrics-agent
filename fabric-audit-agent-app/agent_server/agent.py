@@ -453,14 +453,14 @@ async def _run(request, on_tool=None):
     if direct_tools:
         tools = tools + direct_tools
         dispatch = {**dispatch, **direct_dispatch}
-    # render_chart as a DIRECT tool so the agent can actually draw charts (it wasn't in the MCP
-    # toolset, so the model improvised chart JSON as text). Skip if MCP already provides it, so we
-    # never send Claude two tools with the same name.
-    if "render_chart" not in dispatch:
-        from .chart_tool import chart_tool_and_dispatch
-        chart_tools, chart_dispatch = chart_tool_and_dispatch()
-        tools = tools + chart_tools
-        dispatch = {**dispatch, **chart_dispatch}
+    # render_chart: ALWAYS use OUR direct tool, OVERRIDING any render_chart the MCP server provides.
+    # The deployed MCP ships an older, stricter render_chart (no 'donut', rejects label/value & '%'
+    # payloads) — the agent was calling THAT and every chart bounced. Drop the MCP one from the tool
+    # list and register ours (tolerant + donut); our dispatch handler wins on name collision.
+    from .chart_tool import chart_tool_and_dispatch
+    chart_tools, chart_dispatch = chart_tool_and_dispatch()
+    tools = [t for t in tools if t.get("name") != "render_chart"] + chart_tools
+    dispatch = {**dispatch, **chart_dispatch}
     messages = _messages_from_request(request)
     question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     budget = _step_budget(question)
