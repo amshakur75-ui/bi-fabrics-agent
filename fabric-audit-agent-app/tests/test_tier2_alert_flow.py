@@ -2,9 +2,18 @@
 from datetime import datetime, timezone, timedelta
 
 from fabric_audit_agent.automation.tier2_check import process_alerts
+from fabric_audit_agent.automation.materiality import load_cfg
 from fabric_audit_agent.context_alerts import create_alerts_store_memory
 
 T0 = datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def _cfg_no_hysteresis():
+    """Config with hysteresis disabled — for tests exercising absence/reopen in isolation, where
+    the attribution incident must go active on the first run (hysteresis is covered separately)."""
+    c = load_cfg()
+    c["hysteresis_ticks"] = 1
+    return c
 
 
 def _reasoner():
@@ -138,7 +147,7 @@ def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():
     w, _ = _writer()
     posts, sink = _sink()
     kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
-              app_url="https://app")
+              app_url="https://app", cfg=_cfg_no_hysteresis())
     xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
           "users": ["a", "b", "c", "d"], "sharePct": 30}
     pr = {"check": "pressure", "peakCuPct": 130}
@@ -165,7 +174,7 @@ def test_resolved_incident_reopens_on_recurrence():
     w, _ = _writer()
     posts, sink = _sink()
     kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
-              app_url="https://app")
+              app_url="https://app", cfg=_cfg_no_hysteresis())
     xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
           "users": ["a", "b", "c", "d"], "sharePct": 30}
     key = "cross_user::Fin/Sales"
@@ -210,3 +219,61 @@ def test_ambiguous_uses_llm_verdict():
                        alerts_store=store, delivery_sinks={"webhook": sink},
                        reasoner=reasoner_suppress, now_dt=T0)
     assert a["silent"] and posts == []
+
+
+def test_hysteresis_holds_attribution_pending_until_it_persists():
+    """Step 2.3 anti-flap: a fresh attribution signal must persist 3 consecutive 5-min checks
+    (15 min) before it alerts. The first two ticks are 'pending' — no card, no chat, not active —
+    and only the third promotes it to a real, delivered incident."""
+    store = create_alerts_store_memory()
+    r, rc = _reasoner()
+    w, wc = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")  # default cfg -> hysteresis_ticks = 3
+    xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
+          "users": ["a", "b", "c", "d"], "sharePct": 30}
+    key = "cross_user::Fin/Sales"
+
+    # tick 1 & 2: pending — nothing delivered, nothing active, no LLM/chat spend
+    a = process_alerts([xu], now_dt=T0, **kw)
+    assert a["pending"] == [key] and a["new"] == [] and posts == []
+    assert store["query_active"]() == {} and rc["n"] == 0 and wc["n"] == 0
+    assert store["query_pending"]()[key]["presenceCount"] == 1
+
+    a = process_alerts([xu], now_dt=T0 + timedelta(minutes=5), **kw)
+    assert a["pending"] == [key] and posts == []
+    assert store["query_pending"]()[key]["presenceCount"] == 2
+
+    # tick 3: sustained across the full window -> promoted to a real, delivered incident
+    a = process_alerts([xu], now_dt=T0 + timedelta(minutes=10), **kw)
+    assert a["new"] == [key] and len(posts) == 1
+    assert set(store["query_active"]()) == {key}
+    assert store["query_pending"]() == {}  # the pending row was consumed on promotion
+
+
+def test_hysteresis_resets_when_the_signal_lapses():
+    """A pending streak only counts CONSECUTIVE checks: if the signal is absent for a tick, its
+    pending row is dropped and the count restarts from 1 — a flapping signal never promotes."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")  # default cfg -> hysteresis_ticks = 3
+    xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
+          "users": ["a", "b", "c", "d"], "sharePct": 30}
+    key = "cross_user::Fin/Sales"
+
+    process_alerts([xu], now_dt=T0, **kw)                          # pending count 1
+    process_alerts([xu], now_dt=T0 + timedelta(minutes=5), **kw)   # pending count 2
+    assert store["query_pending"]()[key]["presenceCount"] == 2
+
+    # gap: signal absent -> streak broken, pending row dropped
+    process_alerts([], now_dt=T0 + timedelta(minutes=10), **kw)
+    assert store["query_pending"]() == {}
+
+    # signal returns -> starts over at 1, still NOT active (never reached 3 in a row)
+    a = process_alerts([xu], now_dt=T0 + timedelta(minutes=15), **kw)
+    assert a["pending"] == [key] and store["query_active"]() == {} and posts == []
+    assert store["query_pending"]()[key]["presenceCount"] == 1

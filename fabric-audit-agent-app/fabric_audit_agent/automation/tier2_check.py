@@ -452,9 +452,14 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     now_dt = now_dt if now_dt is not None else datetime.now(timezone.utc)
     now_iso = now_dt.isoformat().replace("+00:00", "Z")
     active = alerts_store["query_active"]()
+    # Hysteresis (Step 2.3): attribution signals must persist N consecutive checks before alerting.
+    _ATTR_CHECKS = ("concentration", "cross_user")
+    hysteresis_ticks = int(cfg.get("hysteresis_ticks", 3))
+    pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
+    pending_seen = set()
     seen = set()
     actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": [],
-               "inactive": [], "reopened": []}
+               "inactive": [], "reopened": [], "pending": []}
 
     def _send(kind, trigger, row, summary):
         cid = row.get("chatId")
@@ -533,7 +538,27 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         decision, reason = classify(t, cfg)
         if decision == "suppress":
             actions["silent"].append(key)
+            if key in pending:  # a fluctuating candidate dropped below the bar -> reset its streak
+                alerts_store.get("delete", lambda _k: None)(key)
             continue
+        # Hysteresis: an attribution candidate must be present for N consecutive checks before it
+        # alerts (physical capacity checks alert immediately). Track a pending streak; promote when
+        # it reaches the threshold. Prevents a single-tick share wobble from paging anyone.
+        if t.get("check") in _ATTR_CHECKS and hysteresis_ticks > 1:
+            p = pending.get(key)
+            count = ((p.get("presenceCount") or 0) if p else 0) + 1
+            pending_seen.add(key)
+            if count < hysteresis_ticks:
+                alerts_store["upsert"]({
+                    "incidentKey": key, "status": "pending", "severity": sev,
+                    "checkType": t.get("check"),
+                    "resource": t.get("item") or t.get("workspace") or "capacity",
+                    "presenceCount": count, "metric": metric,
+                    "firstAlertedAt": (p.get("firstAlertedAt") if p else now_iso),
+                    "runAt": now_iso, "delivered": False})
+                actions["pending"].append(key)
+                continue
+            # sustained across the window -> promote to a real incident (falls through to alert)
         inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": decision == "report"}
         report = True if decision == "report" else bool(inv.get("report"))
         if not report:
@@ -580,6 +605,14 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             if prior.get("currentlyActive") is not False:
                 alerts_store["upsert"](dict(prior, currentlyActive=False, runAt=now_iso))
             actions["inactive"].append(key)
+
+    # Hysteresis cleanup: a pending candidate that did NOT fire this run breaks its streak, so its
+    # row is dropped — the count only survives while the condition holds every consecutive check.
+    _delete = alerts_store.get("delete") if hasattr(alerts_store, "get") else None
+    if _delete is not None:
+        for key in pending:
+            if key not in pending_seen and key not in seen:
+                _delete(key)
 
     return actions
 

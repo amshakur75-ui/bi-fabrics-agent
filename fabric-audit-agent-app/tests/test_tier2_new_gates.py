@@ -8,7 +8,7 @@ from fabric_audit_agent.automation.tier2_check import (
     _check_same_item_cross_user, _check_cross_source_blind_spot, _title_for, _facts_for,
     process_alerts)
 from fabric_audit_agent.automation.incident import incident_key, severity_of
-from fabric_audit_agent.automation.materiality import classify
+from fabric_audit_agent.automation.materiality import classify, load_cfg
 from fabric_audit_agent.context_alerts import create_alerts_store_memory
 from fabric_audit_agent.adapters.delivery_webhook import PROXY_RANKING_DISCLOSURE
 
@@ -69,8 +69,9 @@ def test_cross_user_alert_carries_proxy_disclosure_end_to_end():
     posts, sink = _sink()
     trig = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
             "users": ["a", "b", "c", "d"], "sharePct": 30.0}
+    cfg = load_cfg(); cfg["hysteresis_ticks"] = 1  # isolate disclosure check from the persistence gate
     a = process_alerts([trig], now_dt=T0, alerts_store=store, delivery_sinks={"webhook": sink},
                        reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True},
-                       app_url="https://app")
+                       app_url="https://app", cfg=cfg)
     assert a["new"] == ["cross_user::Fin/Sales"]
     assert PROXY_RANKING_DISCLOSURE in __import__("json").dumps(posts[-1])

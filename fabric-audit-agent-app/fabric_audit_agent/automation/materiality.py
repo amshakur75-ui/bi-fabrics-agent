@@ -28,6 +28,7 @@ _DEFAULTS = {
     "sustained_min_minutes": 20.0,  # ...held for >= this many consecutive minutes
     "roc_delta": 15.0,              # rate-of-change: CU% rose >= this many points in one 5-min window
     "silent_fail_runs": 3.0,        # silent-failure: collector blind for >= this many runs
+    "hysteresis_ticks": 3.0,        # attribution must persist >= this many consecutive checks before it alerts
 }
 
 

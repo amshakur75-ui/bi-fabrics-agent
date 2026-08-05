@@ -26,6 +26,7 @@ _FIELDS = [
     ("delivered", "delivered"),
     ("runAt", "run_at"),
     ("currentlyActive", "currently_active"),
+    ("presenceCount", "presence_count"),
 ]
 
 
@@ -46,6 +47,9 @@ def create_alerts_store_memory(initial=None):
     def query_active():
         return {k: dict(v) for k, v in data.items() if v.get("status") == "active"}
 
+    def query_pending():
+        return {k: dict(v) for k, v in data.items() if v.get("status") == "pending"}
+
     def upsert(alert):
         data[alert["incidentKey"]] = dict(alert)
 
@@ -56,7 +60,11 @@ def create_alerts_store_memory(initial=None):
             cur["resolvedAt"] = at
             cur["runAt"] = at
 
-    return {"query_active": query_active, "upsert": upsert, "resolve": resolve, "_data": data}
+    def delete(incident_key):
+        data.pop(incident_key, None)
+
+    return {"query_active": query_active, "query_pending": query_pending, "upsert": upsert,
+            "resolve": resolve, "delete": delete, "_data": data}
 
 
 def _schema():
@@ -65,7 +73,8 @@ def _schema():
             StructType, StructField, StringType, DoubleType, IntegerType, BooleanType,
         )
         t = {"metric": DoubleType(), "escalation_count": IntegerType(),
-             "delivered": BooleanType(), "currently_active": BooleanType()}
+             "delivered": BooleanType(), "currently_active": BooleanType(),
+             "presence_count": IntegerType()}
         return StructType([
             StructField(col, t.get(col, StringType()), True) for _, col in _FIELDS
         ])
@@ -90,6 +99,11 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
     def query_active():
         s = _get_spark()
         rows = s.sql(f"SELECT * FROM {table} WHERE status = 'active'").collect()
+        return {r["incident_key"]: _from_row(r.asDict()) for r in rows}
+
+    def query_pending():
+        s = _get_spark()
+        rows = s.sql(f"SELECT * FROM {table} WHERE status = 'pending'").collect()
         return {r["incident_key"]: _from_row(r.asDict()) for r in rows}
 
     def upsert(alert):
@@ -118,4 +132,10 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
             f"run_at = '{safe_at}' WHERE incident_key = '{safe}' AND status = 'active'"
         )
 
-    return {"query_active": query_active, "upsert": upsert, "resolve": resolve}
+    def delete(incident_key):
+        s = _get_spark()
+        safe = str(incident_key).replace("'", "''")
+        s.sql(f"DELETE FROM {table} WHERE incident_key = '{safe}'")
+
+    return {"query_active": query_active, "query_pending": query_pending, "upsert": upsert,
+            "resolve": resolve, "delete": delete}

@@ -11,7 +11,7 @@ def test_row_mapping_round_trips():
         "firstAlertedAt": "t0", "lastAlertedAt": "t0", "lastRemindedAt": None,
         "resolvedAt": None, "escalationCount": 0, "materialityReason": "throttle 8m",
         "investigationSummary": "sustained throttle", "delivered": True, "runAt": "t0",
-        "currentlyActive": None,
+        "currentlyActive": None, "presenceCount": None,
     }
     row = _to_row(alert)
     assert row["incident_key"] == "throttle::capacity"
