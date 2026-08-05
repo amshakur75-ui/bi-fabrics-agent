@@ -545,8 +545,11 @@ class TestStreamingProgress(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(events), 1)
         final = _agent.create_text_output_item.call_args_list[-1].kwargs.get("text", "")
-        self.assertIn("MCP unreachable", final)
+        # The user sees a CLEAN, honest failure — not the raw exception (which could leak a serving
+        # URL / internal detail); the exception is logged server-side for diagnosis instead.
+        self.assertNotIn("MCP unreachable", final)
         self.assertIn("read-only", final)   # reassures nothing was modified
+        self.assertRegex(final.lower(), r"fail|retry")
 
 
 if __name__ == "__main__":

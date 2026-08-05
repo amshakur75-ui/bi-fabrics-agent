@@ -362,9 +362,42 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
         _append_error_record(store, t0)
         raise
     _write_outputs(out_dir, envelope)
+    _deliver_sweep_findings(envelope, env)
     _maybe_alert(envelope, prev_history, env)
     _check_tier2_health(env)
     return envelope
+
+
+def _deliver_sweep_findings(envelope, env):
+    """Step 6a: deliver the sweep's NEW material findings to Teams — only the finding families Tier-2
+    does NOT own, deduped via the shared ``audit_alerts`` store so nothing is alerted twice. Gated on
+    ``SWEEP_WEBHOOK_ENABLED`` + ``POWER_AUTOMATE_ALERT_URL``. Failure-isolated: never fails the sweep."""
+    enabled = str(env.get("SWEEP_WEBHOOK_ENABLED", "")).strip().lower() in ("1", "true", "yes")
+    if not (enabled and env.get("POWER_AUTOMATE_ALERT_URL")):
+        return None
+    try:
+        from .adapters.delivery_webhook import create_webhook_sink
+        from .adapters.chat_store_lakebase import create_alert_chat
+        from .context_alerts import create_alerts_store_delta
+        from .automation.sweep_delivery import deliver_new_findings
+        catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
+        if not (catalog and schema):
+            return None
+        findings = (envelope.get("data") or {}).get("findings") or []
+        result = deliver_new_findings(
+            findings,
+            alerts_store=create_alerts_store_delta(catalog, schema),
+            delivery_sinks={"webhook": create_webhook_sink(env["POWER_AUTOMATE_ALERT_URL"])},
+            app_url=env.get("APP_URL", ""),
+            chat_writer=create_alert_chat,
+            min_level=env.get("SWEEP_MIN_LEVEL", "Warning"),
+        )
+        print(f"[sweep] delivered {len(result['delivered'])} new finding(s); skipped "
+              f"dup={result['skipped_dup']} tier2={result['skipped_tier2']} minor={result['skipped_minor']}")
+        return result
+    except Exception as exc:  # delivery must never crash the sweep
+        print(f"[sweep] delivery failed: {type(exc).__name__}: {exc}")
+        return None
 
 
 def _check_tier2_health(env):
