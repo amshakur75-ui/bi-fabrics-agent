@@ -200,6 +200,39 @@ def test_resolved_incident_reopens_on_recurrence():
     assert "RECURRED" in _deeplink and "fixed%20the%20query" in _deeplink
 
 
+def test_ticket_writer_gets_detail_metadata_on_new_and_inactive():
+    """Step 9: a new alert writes its descriptive metadata (chat_id -> what/where/severity/active)
+    to the ticket store the app reads; when the condition goes absent, currentlyActive flips to
+    False so the sidebar can show it's no longer firing."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    tickets = {}
+
+    def ticket_writer(chat_id, meta):
+        tickets[chat_id] = dict(meta)
+
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app", ticket_writer=ticket_writer, cfg=_cfg_no_hysteresis())
+    xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
+          "users": ["a", "b", "c", "d"], "sharePct": 30}
+
+    process_alerts([xu], now_dt=T0, **kw)
+    cid = store["query_active"]()["cross_user::Fin/Sales"]["chatId"]
+    assert cid in tickets
+    m = tickets[cid]
+    assert m["checkType"] == "cross_user" and m["resource"] == "Sales" and m["workspace"] == "Fin"
+    assert m["severity"] == "warn" and m["currentlyActive"] is True
+    assert m["incidentKey"] == "cross_user::Fin/Sales" and m["firstDetected"]
+
+    # condition absent next run -> ticket flips to currentlyActive False (sidebar shows "inactive")
+    # and workspace is preserved (derived from the incident key, since no trigger is present).
+    process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)
+    assert tickets[cid]["currentlyActive"] is False
+    assert tickets[cid]["workspace"] == "Fin"
+
+
 def test_clear_suppress_never_calls_llm_or_sends():
     store = create_alerts_store_memory()
     r, rc = _reasoner()

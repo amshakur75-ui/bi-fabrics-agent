@@ -424,6 +424,17 @@ def _facts_for(t):
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
 
 
+def _workspace_from_key(key):
+    """Derive the workspace from an incident key: ``cross_user::Fin/Sales`` -> ``Fin``;
+    ``throttle::capacity`` -> None. Used to keep the ticket's workspace stable on the inactive tick,
+    when no trigger is present to read it from."""
+    try:
+        rest = key.split("::", 1)[1]
+    except (AttributeError, IndexError):
+        return None
+    return rest.split("/", 1)[0] if "/" in rest else None
+
+
 def _investigate_query(t, *, prefix=None):
     """The prompt auto-sent when the alert deep-link is opened — kicks off a live agent
     investigation (real MCP tools), so clicking the card gives the root cause, not just facts.
@@ -442,7 +453,7 @@ def _investigate_query(t, *, prefix=None):
 
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                    chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48,
-                   ack_store=None):
+                   ack_store=None, ticket_writer=None):
     """Run the alert state machine over the current triggers. Returns an action summary.
 
     Ordering is cost-critical: the deterministic dedup + materiality checks decide silence WITHOUT
@@ -485,6 +496,31 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
         return bool(res.get("delivered"))
 
+    def _write_ticket(row, trigger):
+        """Step 9: mirror this ticket's descriptive metadata into the app-readable store (Lakebase
+        ``alert_ticket``) keyed by chat_id, so the Alerts sidebar can show what/where/when/active.
+        Lifecycle (open/investigating/resolved) is derived app-side from the ack map — not stored
+        here. Failure-isolated: a metadata write must never drop or fail a real alert."""
+        cid = row.get("chatId")
+        if not (ticket_writer and cid):
+            return
+        # workspace comes from the trigger when firing; on the inactive tick there is no trigger, so
+        # fall back to the incident key ("cross_user::Fin/Sales" -> "Fin") to avoid nulling it.
+        ws = trigger.get("workspace") or _workspace_from_key(row.get("incidentKey"))
+        try:
+            ticket_writer(cid, {
+                "incidentKey": row.get("incidentKey"),
+                "checkType": row.get("checkType"),
+                "severity": row.get("severity"),
+                "resource": row.get("resource"),
+                "workspace": ws,
+                "detail": row.get("materialityReason") or row.get("investigationSummary") or "",
+                "firstDetected": row.get("firstAlertedAt"),
+                "currentlyActive": row.get("currentlyActive"),
+            })
+        except Exception as exc:
+            print(f"[tier2] ticket metadata write failed ({type(exc).__name__}: {exc})")
+
     for t in triggers:
         if t.get("check") == "data_unavailable":
             continue
@@ -519,6 +555,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            runAt=now_iso, investigationSummary=summary)
                 row["delivered"] = _send("new", t, row, summary, investigate_prefix=_prefix)
                 alerts_store["upsert"](row)
+                _write_ticket(row, t)
                 actions["reopened"].append(key)
             elif is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric")}, cfg):
                 inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": True}
@@ -528,6 +565,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
                 row["delivered"] = _send("new", t, row, inv.get("summary"))
                 alerts_store["upsert"](row)
+                _write_ticket(row, t)
                 actions["escalation"].append(key)
             elif _ack_suppressed(ack_store, prior.get("chatId"), now_dt):
                 # Acked or still-snoozed by a human (6c) — hold the 48h reminder. A material
@@ -541,6 +579,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                                metric=metric, currentlyActive=True)
                     row["delivered"] = _send("reminder", t, row, prior.get("investigationSummary"))
                     alerts_store["upsert"](row)
+                    _write_ticket(row, t)
                     actions["reminder"].append(key)
                 else:
                     actions["silent"].append(key)
@@ -595,6 +634,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                "delivered": False, "runAt": now_iso, "currentlyActive": True}
         row["delivered"] = _send("new", t, row, summary)
         alerts_store["upsert"](row)
+        _write_ticket(row, t)
         actions["new"].append(key)
 
     # resolution: incidents that were active but no longer fire this run
@@ -615,7 +655,9 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             # ticket stays open; we only flip a display-only currentlyActive flag. A human Resolve
             # (Step 9) is what closes it.
             if prior.get("currentlyActive") is not False:
-                alerts_store["upsert"](dict(prior, currentlyActive=False, runAt=now_iso))
+                _row = dict(prior, currentlyActive=False, runAt=now_iso)
+                alerts_store["upsert"](_row)
+                _write_ticket(_row, {"workspace": prior.get("workspace")})
             actions["inactive"].append(key)
 
     # Hysteresis cleanup: a pending candidate that did NOT fire this run breaks its streak, so its
@@ -650,7 +692,7 @@ def _record_reading(readings_store, *, run_at, facts=None, collector_ok):
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                     heartbeat_store=None, readings_store=None, config=None, tenant=None, scope=None,
                     alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None,
-                    ack_store=None):
+                    ack_store=None, ticket_writer=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
@@ -681,7 +723,7 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
         try:
             return process_alerts(trigs, alerts_store=alerts_store, delivery_sinks=delivery_sinks,
                                   reasoner=reasoner, chat_writer=chat_writer, app_url=app_url,
-                                  now_dt=now_dt, ack_store=ack_store)
+                                  now_dt=now_dt, ack_store=ack_store, ticket_writer=ticket_writer)
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 

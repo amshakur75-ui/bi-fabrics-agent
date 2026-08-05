@@ -629,12 +629,12 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         except Exception as exc:
             print(f"[tier2] readings store init skipped ({type(exc).__name__}: {exc})")
 
-    alerts_store = reasoner = chat_writer = ack_store = None
+    alerts_store = reasoner = chat_writer = ack_store = ticket_writer = None
     app_url = env.get("APP_URL", "")
     enabled = str(env.get("TIER2_WEBHOOK_ENABLED", "")).strip().lower() in ("1", "true", "yes")
     if delivery_sinks is None and enabled and env.get("POWER_AUTOMATE_ALERT_URL"):
         from .adapters.delivery_webhook import create_webhook_sink
-        from .adapters.chat_store_lakebase import create_alert_chat, create_ack_store
+        from .adapters.chat_store_lakebase import create_alert_chat, create_ack_store, create_ticket_writer
         from .context_alerts import create_alerts_store_delta
         catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
         if catalog and schema:
@@ -647,6 +647,12 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
             ack_store = create_ack_store()
         except Exception as exc:
             print(f"[tier2] ack store unavailable ({type(exc).__name__}: {exc}); reminders unsuppressed")
+        # Step 9: ticket-detail writer (Lakebase alert_ticket) — the app reads it for the sidebar.
+        # Fail-open: metadata is best-effort, never a reason to drop an alert.
+        try:
+            ticket_writer = create_ticket_writer()
+        except Exception as exc:
+            print(f"[tier2] ticket writer unavailable ({type(exc).__name__}: {exc}); sidebar detail off")
     if delivery_sinks is None:
         delivery_sinks = {}
 
@@ -665,6 +671,7 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         chat_writer=chat_writer,
         app_url=app_url,
         ack_store=ack_store,
+        ticket_writer=ticket_writer,
     )
 
 

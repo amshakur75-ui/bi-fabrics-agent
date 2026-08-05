@@ -9,6 +9,7 @@ import {
   getChatsByUserId,
   isDatabaseAvailable,
   getAlertAckMap,
+  getAlertTicketMap,
   setAlertAck,
   clearAlertAck,
   resolveAlert,
@@ -40,10 +41,18 @@ alertsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
       startingAfter: null,
       endingBefore: null,
     });
-    const ackMap = await getAlertAckMap(result.chats.map((c) => c.id));
+    const chatIds = result.chats.map((c) => c.id);
+    const [ackMap, ticketMap] = await Promise.all([
+      getAlertAckMap(chatIds),
+      getAlertTicketMap(chatIds),
+    ]);
     res.json({
       ...result,
-      chats: result.chats.map((c) => ({ ...c, ack: ackMap[c.id] ?? null })),
+      chats: result.chats.map((c) => ({
+        ...c,
+        ack: ackMap[c.id] ?? null,
+        ticket: ticketMap[c.id] ?? null,
+      })),
     });
   } catch (error) {
     console.error('[/api/alerts] Error in handler:', error);

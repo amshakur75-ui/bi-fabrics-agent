@@ -594,3 +594,59 @@ export async function getAlertAckMap(
   }
   return out;
 }
+
+// ── Tier-2 alert ticket detail (Step 9) ─────────────────────────────────────
+// The Tier-2 job WRITES this (ai_chatbot.alert_ticket) and the app READS it — the reverse of the
+// ack boundary above — so the Alerts sidebar can show what/where/since-when/active for each ticket.
+// Lifecycle (open/investigating/resolved) is derived in the UI from the ack map, not stored here.
+
+export type AlertTicket = {
+  checkType: string | null;
+  severity: string | null;
+  resource: string | null;
+  workspace: string | null;
+  detail: string | null;
+  firstDetected: string | null;
+  currentlyActive: boolean | null;
+};
+
+export async function getAlertTicketMap(
+  chatIds: string[],
+): Promise<Record<string, AlertTicket>> {
+  const out: Record<string, AlertTicket> = {};
+  if (!isDatabaseAvailable() || chatIds.length === 0) return out;
+  const db = await ensureDb();
+  let rows: unknown = [];
+  try {
+    rows = await db.execute(sql`
+      SELECT chat_id, check_type, severity, resource, workspace, detail,
+             first_detected, currently_active
+      FROM ai_chatbot.alert_ticket
+      WHERE chat_id = ANY(${chatIds})
+    `);
+  } catch {
+    // Table may not exist yet on an older deployment — degrade to no detail, never break the list.
+    return out;
+  }
+  for (const r of rows as unknown as Array<{
+    chat_id: string;
+    check_type: string | null;
+    severity: string | null;
+    resource: string | null;
+    workspace: string | null;
+    detail: string | null;
+    first_detected: string | null;
+    currently_active: boolean | null;
+  }>) {
+    out[r.chat_id] = {
+      checkType: r.check_type,
+      severity: r.severity,
+      resource: r.resource,
+      workspace: r.workspace,
+      detail: r.detail,
+      firstDetected: r.first_detected,
+      currentlyActive: r.currently_active,
+    };
+  }
+  return out;
+}
