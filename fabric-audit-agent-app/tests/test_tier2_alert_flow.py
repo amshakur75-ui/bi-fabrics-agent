@@ -156,6 +156,37 @@ def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():
     assert len(resolved_cards) == 1                          # ONLY the capacity resolved card
 
 
+def test_resolved_incident_reopens_on_recurrence():
+    """Step 8: a resolved attribution ticket that goes absent then RECURS reopens the same ticket
+    (clears the resolve + re-alerts with a recurrence note) — not silently suppressed, not a new one."""
+    import json
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")
+    xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
+          "users": ["a", "b", "c", "d"], "sharePct": 30}
+    key = "cross_user::Fin/Sales"
+
+    process_alerts([xu], now_dt=T0, **kw)                       # new active ticket
+    cid = store["query_active"]()[key]["chatId"]
+    process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)  # absent -> currentlyActive False
+    assert store["query_active"]()[key]["currentlyActive"] is False
+
+    reopened = {"n": 0}
+    ack = {"get": lambda c: ({"status": "resolved", "resolutionNote": "fixed the query"}
+                             if c == cid else None),
+           "reopen": lambda c: reopened.__setitem__("n", reopened["n"] + 1)}
+    posts.clear()
+    a = process_alerts([xu], now_dt=T0 + timedelta(minutes=10), ack_store=ack, **kw)  # recurs
+    assert a["reopened"] == [key]
+    assert reopened["n"] == 1                                    # the resolve was cleared
+    assert store["query_active"]()[key]["currentlyActive"] is True
+    assert "Recurred" in json.dumps(posts[-1])                  # re-alert notes the recurrence
+
+
 def test_clear_suppress_never_calls_llm_or_sends():
     store = create_alerts_store_memory()
     r, rc = _reasoner()

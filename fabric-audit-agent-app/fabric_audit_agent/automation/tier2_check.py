@@ -454,7 +454,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     active = alerts_store["query_active"]()
     seen = set()
     actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": [],
-               "inactive": []}
+               "inactive": [], "reopened": []}
 
     def _send(kind, trigger, row, summary):
         cid = row.get("chatId")
@@ -484,9 +484,29 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         metric = primary_metric(t)
 
         if prior:  # already-active incident
-            if is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric")}, cfg):
+            _ticket = (ack_store["get"](prior.get("chatId"))
+                       if (ack_store and prior.get("chatId")) else None)
+            _resolved = bool(_ticket) and (_ticket.get("status") or "").lower() == "resolved"
+            if _resolved and prior.get("currentlyActive") is False:
+                # RECURRENCE after a human Resolve (Step 8): reopen the SAME ticket + re-alert,
+                # rather than staying silent or minting a new one.
+                try:
+                    if ack_store.get("reopen"):
+                        ack_store["reopen"](prior.get("chatId"))
+                except Exception as exc:
+                    print(f"[tier2] reopen failed ({type(exc).__name__}: {exc})")
+                _note = _ticket.get("resolutionNote")
+                summary = ("Recurred after being marked resolved"
+                           + (f" — prior note: {_note}" if _note else "") + ".")
+                row = dict(prior, currentlyActive=True, status="active", lastAlertedAt=now_iso,
+                           runAt=now_iso, investigationSummary=summary)
+                row["delivered"] = _send("new", t, row, summary)
+                alerts_store["upsert"](row)
+                actions["reopened"].append(key)
+            elif is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric")}, cfg):
                 inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": True}
                 row = dict(prior, severity=sev, metric=metric, lastAlertedAt=now_iso, runAt=now_iso,
+                           currentlyActive=True,
                            escalationCount=(prior.get("escalationCount") or 0) + 1,
                            investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
                 row["delivered"] = _send("new", t, row, inv.get("summary"))
@@ -500,7 +520,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 last = _parse_iso(prior.get("lastRemindedAt")) or _parse_iso(prior.get("lastAlertedAt"))
                 due = last is None or (now_dt - last).total_seconds() >= reminder_hours * 3600
                 if due:
-                    row = dict(prior, lastRemindedAt=now_iso, runAt=now_iso, severity=sev, metric=metric)
+                    row = dict(prior, lastRemindedAt=now_iso, runAt=now_iso, severity=sev,
+                               metric=metric, currentlyActive=True)
                     row["delivered"] = _send("reminder", t, row, prior.get("investigationSummary"))
                     alerts_store["upsert"](row)
                     actions["reminder"].append(key)
@@ -534,7 +555,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                "metric": metric, "firstAlertedAt": now_iso, "lastAlertedAt": now_iso,
                "lastRemindedAt": None, "resolvedAt": None, "escalationCount": 0,
                "materialityReason": reason, "investigationSummary": summary,
-               "delivered": False, "runAt": now_iso}
+               "delivered": False, "runAt": now_iso, "currentlyActive": True}
         row["delivered"] = _send("new", t, row, summary)
         alerts_store["upsert"](row)
         actions["new"].append(key)

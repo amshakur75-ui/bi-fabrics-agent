@@ -65,17 +65,35 @@ def create_ack_store(*, conn=None):
     c = conn if conn is not None else _lakebase_conn()
     try:
         cur = c.cursor()
-        cur.execute('SELECT chat_id, status, snooze_until FROM ai_chatbot.alert_ack')
-        for cid, status, until in cur.fetchall():
+        cur.execute('SELECT chat_id, status, snooze_until, resolution_note FROM ai_chatbot.alert_ack')
+        for cid, status, until, note in cur.fetchall():
             snapshot[cid] = {"status": status,
-                             "snoozeUntil": until.isoformat() if until is not None else None}
+                             "snoozeUntil": until.isoformat() if until is not None else None,
+                             "resolutionNote": note}
     finally:
         if owns:
             try:
                 c.close()
             except Exception:
                 pass
-    return {"get": lambda chat_id: snapshot.get(chat_id)}
+
+    def reopen(chat_id):
+        """Clear a ticket's ack/resolve state (Step 8 auto-reopen on recurrence) so reminders +
+        alerts resume. Opens its own short-lived connection (rare path)."""
+        rc = conn if conn is not None else _lakebase_conn()
+        try:
+            cur2 = rc.cursor()
+            cur2.execute('DELETE FROM ai_chatbot.alert_ack WHERE chat_id = %s', (chat_id,))
+            rc.commit()
+            snapshot.pop(chat_id, None)
+        finally:
+            if conn is None:
+                try:
+                    rc.close()
+                except Exception:
+                    pass
+
+    return {"get": lambda chat_id: snapshot.get(chat_id), "reopen": reopen}
 
 
 def _endpoint_path():

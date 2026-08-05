@@ -25,6 +25,7 @@ _FIELDS = [
     ("investigationSummary", "investigation_summary"),
     ("delivered", "delivered"),
     ("runAt", "run_at"),
+    ("currentlyActive", "currently_active"),
 ]
 
 
@@ -64,7 +65,7 @@ def _schema():
             StructType, StructField, StringType, DoubleType, IntegerType, BooleanType,
         )
         t = {"metric": DoubleType(), "escalation_count": IntegerType(),
-             "delivered": BooleanType()}
+             "delivered": BooleanType(), "currently_active": BooleanType()}
         return StructType([
             StructField(col, t.get(col, StringType()), True) for _, col in _FIELDS
         ])
@@ -93,6 +94,12 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
 
     def upsert(alert):
         s = _get_spark()
+        # Auto-evolve the table schema so newly-added columns (e.g. currently_active) don't require a
+        # manual ALTER — the MERGE below adds them on first write.
+        try:
+            s.sql("SET spark.databricks.delta.schema.autoMerge.enabled = true")
+        except Exception:
+            pass
         df = s.createDataFrame([_to_row(alert)], schema=_schema())
         df.createOrReplaceTempView("_audit_alert_upsert")
         s.sql(
