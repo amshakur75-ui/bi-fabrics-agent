@@ -25,6 +25,7 @@ type AlertTicket = {
 type AlertChat = {
   id: string;
   title: string;
+  createdAt?: string | null;
   ack?: AlertAck | null;
   ticket?: AlertTicket | null;
 };
@@ -52,7 +53,7 @@ const STATUS_STYLE: Record<string, string> = {
   resolved: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
 };
 
-function firstDetectedLabel(iso?: string | null): string | null {
+function dateLabel(iso?: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
@@ -102,7 +103,10 @@ export function SidebarAlerts() {
           {chats.map((chat) => {
             const status = lifecycle(chat.ack);
             const t = chat.ticket;
-            const detected = firstDetectedLabel(t?.firstDetected);
+            // Always show a date: the incident's first-detected time when we have it, else the
+            // chat's created time (which every alert has). The chat is created the moment the alert
+            // fires, so the two are effectively the same instant.
+            const detected = dateLabel(t?.firstDetected ?? chat.createdAt);
             const where = t
               ? [t.resource, t.workspace].filter(Boolean).join(' · ')
               : '';

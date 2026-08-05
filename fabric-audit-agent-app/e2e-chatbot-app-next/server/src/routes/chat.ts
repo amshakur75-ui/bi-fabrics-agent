@@ -580,9 +580,10 @@ async function generateTitleFromUserMessage({
   const { text: title } = await generateText({
     model,
     system: `\n
-    - you will generate a short title based on the first message a user begins a conversation with
-    - ensure it is not more than 80 characters long
-    - the title should be a summary of the user's message
+    - you will generate a very short title from the first message of a capacity/BI conversation
+    - keep it to 3-6 words, at most 48 characters (a quick glanceable label, not a sentence)
+    - name the concrete subject: the item, user, metric, or question (e.g. "Sales model refresh spike",
+      "Who drove Ecomm today", "F1024 sizing check") — not a generic "capacity question"
     - do not use quotes or colons. do not include other expository content ("I'll help...")`,
     prompt: JSON.stringify(truncatedMessage),
   });
