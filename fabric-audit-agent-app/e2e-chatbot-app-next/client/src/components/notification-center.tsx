@@ -41,6 +41,7 @@ const ACTIONABLE = new Set([
   'throttle',
   'pressure',
   'overage',
+  'manual', // user-flagged tickets created from a chat conversation
 ]);
 
 async function post(path: string, body?: unknown) {
@@ -63,10 +64,15 @@ function dateLabel(iso?: string | null): string | null {
   });
 }
 
+function firstDetectedLabelSafe(c: AlertChat): string | null {
+  return dateLabel(c.ticket?.firstDetected ?? c.createdAt);
+}
+
 export function NotificationCenter() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'open' | 'resolved'>('open');
+  const [detail, setDetail] = useState<AlertChat | null>(null);
   const { data, mutate } = useSWR<AlertsData>('/api/alerts?limit=50', fetcher, {
     fallbackData: { chats: [] },
     refreshInterval: 60000,
@@ -93,11 +99,108 @@ export function NotificationCenter() {
   };
   const chatAbout = (id: string) => {
     setOpen(false);
+    setDetail(null);
     navigate(`/chat/${id}`);
   };
 
   return (
     <>
+      {/* Hover-detail card: a quick-glance, centered view of one ticket — what it is, the problem,
+          and enough context to act — without opening the full chat investigation. */}
+      {detail && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setDetail(null)}
+        >
+          <div
+            className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+              <div className="flex items-center gap-2">
+                <span className="text-lg leading-none">
+                  {detail.ticket?.severity === 'warn' ? '⚠️' : 'ℹ️'}
+                </span>
+                <h3 className="text-sm font-semibold">{detail.title}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetail(null)}
+                aria-label="Close"
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4 text-sm">
+              <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1.5 text-[13px]">
+                {detail.ticket?.checkType ? (
+                  <>
+                    <dt className="text-muted-foreground">Type</dt>
+                    <dd className="capitalize">
+                      {detail.ticket.checkType.replace('_', ' ')}
+                    </dd>
+                  </>
+                ) : null}
+                {detail.ticket?.resource ? (
+                  <>
+                    <dt className="text-muted-foreground">Item</dt>
+                    <dd>{detail.ticket.resource}</dd>
+                  </>
+                ) : null}
+                {detail.ticket?.workspace ? (
+                  <>
+                    <dt className="text-muted-foreground">Workspace</dt>
+                    <dd>{detail.ticket.workspace}</dd>
+                  </>
+                ) : null}
+                <dt className="text-muted-foreground">Status</dt>
+                <dd className="capitalize">
+                  {detail.ack?.status === 'resolved'
+                    ? 'Resolved'
+                    : detail.ticket?.currentlyActive === false
+                      ? 'Open (inactive now)'
+                      : 'Open'}
+                </dd>
+                {firstDetectedLabelSafe(detail) ? (
+                  <>
+                    <dt className="text-muted-foreground">Since</dt>
+                    <dd>{firstDetectedLabelSafe(detail)}</dd>
+                  </>
+                ) : null}
+              </dl>
+              {detail.ticket?.detail ? (
+                <p className="rounded-lg bg-muted/50 p-3 text-[13px] leading-relaxed text-foreground/90">
+                  {detail.ticket.detail}
+                </p>
+              ) : null}
+              {detail.ack?.status === 'resolved' && detail.ack.resolutionNote ? (
+                <p className="text-[12px] text-emerald-600 dark:text-emerald-400">
+                  ✓ Resolved — {detail.ack.resolutionNote}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+              {detail.ack?.status !== 'resolved' && (
+                <button
+                  type="button"
+                  onClick={() => resolve(detail.id)}
+                  className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  Resolve
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => chatAbout(detail.id)}
+                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-background hover:opacity-90"
+              >
+                Investigate in chat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {open && (
         <div className="fixed bottom-20 right-4 z-50 flex max-h-[70vh] w-[22rem] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -154,9 +257,9 @@ export function NotificationCenter() {
                       </span>
                       <button
                         type="button"
-                        onClick={() => chatAbout(t.id)}
+                        onClick={() => setDetail(t)}
                         className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:underline"
-                        title={t.title}
+                        title="Open details"
                       >
                         {t.title}
                       </button>

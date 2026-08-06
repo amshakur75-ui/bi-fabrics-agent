@@ -505,6 +505,12 @@ async def _run(request, on_tool=None):
     chart_tools, chart_dispatch = chart_tool_and_dispatch()
     tools = [t for t in tools if t.get("name") != "render_chart"] + chart_tools
     dispatch = {**dispatch, **chart_dispatch}
+    # Manual ticket creation (the one write surface): lets the user flag something from the chat
+    # into the shared notification center for the team. Reuses the automated-ticket infra.
+    from .ticket_tool import create_ticket_tool_and_dispatch
+    ticket_tools, ticket_dispatch = create_ticket_tool_and_dispatch()
+    tools = tools + ticket_tools
+    dispatch = {**dispatch, **ticket_dispatch}
     messages = _messages_from_request(request)
     question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     budget = _step_budget(question)

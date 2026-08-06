@@ -325,6 +325,22 @@ def build_collector_from_env(env, window=None):
         except Exception as exc:
             print(f"[sweep] refresh collector skipped ({type(exc).__name__}: {exc})")
 
+    # Model metadata via the Scanner API (FIX C) — feeds detectors/model.py (bidirectional
+    # relationships) which powers coaching. OFF unless FABRIC_SCANNER_WORKSPACE_IDS is set (a
+    # comma-separated workspace-id list); estate-wide enumeration + the async scan cost make a
+    # bounded, deliberate rollout the right call rather than scanning all 96 workspaces every sweep.
+    if env.get("FABRIC_SCANNER_WORKSPACE_IDS") and env.get("FABRIC_CLIENT_ID"):
+        try:
+            from .adapters.clients import EntraHttp, build_entra_token_provider
+            from .adapters.collector_scanner import create_scanner_models_collector
+            ws_ids = [w.strip() for w in env["FABRIC_SCANNER_WORKSPACE_IDS"].split(",") if w.strip()]
+            http = EntraHttp(build_entra_token_provider(
+                _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
+                _require(env, "FABRIC_CLIENT_SECRET")))
+            collectors.append(create_scanner_models_collector(http, {"workspaceIds": ws_ids}))
+        except Exception as exc:
+            print(f"[sweep] scanner models collector skipped ({type(exc).__name__}: {exc})")
+
     if not collectors:
         raise RuntimeError("build_collector_from_env: no sources configured — set FABRIC_CSV_PATHS "
                            "and/or the live-source env (FABRIC_*_URL / FABRIC_KUSTO_*).")
