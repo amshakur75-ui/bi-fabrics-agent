@@ -90,4 +90,8 @@ def score_severity(flag, config=None):
     if t == "meta.detector-error":
         return {"level": "Warning", "reason": "a detector failed and was skipped"}
 
+    if t == "pattern.cross-workspace":   # B4: a systemic pattern across N workspaces is material
+        n = (e or {}).get("workspaceCount")
+        return {"level": "Warning", "reason": f"same pattern in {n} workspaces" if n else "systemic pattern"}
+
     return {"level": "Info", "reason": "unclassified"}

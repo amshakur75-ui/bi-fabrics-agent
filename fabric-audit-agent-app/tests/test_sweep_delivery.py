@@ -29,10 +29,33 @@ def test_delivers_new_material_non_tier2_findings_only():
     assert set(out["delivered"]) == {"model.bidirectional::Sales", "refresh.contention::WS"}
     assert out["skipped_tier2"] == 1 and out["skipped_minor"] == 1
     assert len(posts) == 2
-    # each delivered finding becomes an active incident + carries an auto-investigate deep-link
+    # each delivered finding becomes an active incident (checkType = the finding family) + a deep-link
     active = store["query_active"]()
-    assert "refresh.contention::WS" in active and active["refresh.contention::WS"]["checkType"] == "sweep"
+    assert "refresh.contention::WS" in active and active["refresh.contention::WS"]["checkType"] == "refresh"
+    assert active["model.bidirectional::Sales"]["checkType"] == "model"
     assert "/?query=" in json.dumps(posts[0]) or "/chat/" in json.dumps(posts[0])
+
+
+def test_sweep_findings_write_notification_center_tickets():
+    """The estate-wide sweep finding must also become an app notification-center TICKET (alert_ticket
+    row, checkType = family), not only a Teams card — otherwise it's invisible in the app."""
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    tickets = {}
+
+    def ticket_writer(chat_id, meta):
+        tickets[chat_id] = dict(meta)
+
+    out = deliver_new_findings([_f("model.bidirectional::Sales Model", "Warning",
+                                   what="Model has 6 bidirectional relationships", where="Finance / Sales")],
+                               alerts_store=store, delivery_sinks={"webhook": sink},
+                               app_url="https://app", chat_writer=lambda m, t: "chat-7",
+                               ticket_writer=ticket_writer)
+    assert out["delivered"] == ["model.bidirectional::Sales Model"]
+    assert "chat-7" in tickets
+    m = tickets["chat-7"]
+    assert m["checkType"] == "model" and m["currentlyActive"] is True
+    assert m["resource"] == "Finance / Sales" and "bidirectional" in m["detail"]
 
 
 def test_dedups_against_already_active_incidents():

@@ -35,12 +35,23 @@ type AlertsData = { chats: AlertChat[] };
 // (sustained early-warning, rate-of-change, the daily digest) so the center is a to-do list of real
 // problems, not "capacity is N% today" repeated all day.
 const ACTIONABLE = new Set([
+  // Tier-2 real-time capacity + attribution
   'concentration',
   'cross_user',
   'blind_spot',
   'throttle',
   'pressure',
   'overage',
+  // Hourly estate-wide sweep families (checkType = the finding family)
+  'model',
+  'report',
+  'refresh',
+  'security',
+  'pipeline',
+  'cost',
+  'blast_radius',
+  'pattern', // cross-workspace systemic patterns (B4)
+  'sweep', // generic fallback
   'manual', // user-flagged tickets created from a chat conversation
 ]);
 

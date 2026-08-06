@@ -433,19 +433,27 @@ def _deliver_sweep_findings(envelope, env):
         return None
     try:
         from .adapters.delivery_webhook import create_webhook_sink
-        from .adapters.chat_store_lakebase import create_alert_chat
+        from .adapters.chat_store_lakebase import create_alert_chat, create_ticket_writer
         from .context_alerts import create_alerts_store_delta
         from .automation.sweep_delivery import deliver_new_findings
         catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
         if not (catalog and schema):
             return None
         findings = (envelope.get("data") or {}).get("findings") or []
+        # ticket_writer -> estate-wide sweep findings also appear in the app notification center
+        # (not just Teams). Fail-open: without it, delivery still works, just no sidebar ticket.
+        try:
+            _ticket_writer = create_ticket_writer()
+        except Exception as exc:
+            print(f"[sweep] ticket writer unavailable ({type(exc).__name__}: {exc})")
+            _ticket_writer = None
         result = deliver_new_findings(
             findings,
             alerts_store=create_alerts_store_delta(catalog, schema),
             delivery_sinks={"webhook": create_webhook_sink(env["POWER_AUTOMATE_ALERT_URL"])},
             app_url=env.get("APP_URL", ""),
             chat_writer=create_alert_chat,
+            ticket_writer=_ticket_writer,
             min_level=env.get("SWEEP_MIN_LEVEL", "Warning"),
         )
         print(f"[sweep] delivered {len(result['delivered'])} new finding(s); skipped "

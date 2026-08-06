@@ -60,6 +60,10 @@ resources:
               FABRIC_CAPACITY_EVENTS_KQL: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits"
               FABRIC_CAPACITY_EVENTS_WINDOW: "1d"
               FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
+              # --- FIX C: estate-wide security/access detection (external shares, admin grants) via
+              # Activity Events. Reachable now with the SP admin grant; feeds the notification center. ---
+              FABRIC_SECURITY_ENABLED: "true"
+              FABRIC_ORG_DOMAINS: "newellco.com"
               # --- Step 6a: Teams delivery of NEW/material findings (shared audit_alerts dedup) ---
               SWEEP_WEBHOOK_ENABLED: "true"
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"

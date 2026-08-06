@@ -29,13 +29,20 @@ def _investigate_query(what):
             "consumption.")
 
 
+def _family(key):
+    """The finding family (checkType) from its key: ``model.bidirectional`` -> ``model``."""
+    return (str(key or "").split(".")[0] or "sweep")
+
+
 def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
-                         chat_writer=None, min_level="Warning", now_iso=None):
+                         chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None):
     """Deliver NEW material sweep findings; dedup via the shared ``audit_alerts`` store.
 
     Returns ``{"delivered":[keys], "skipped_dup":n, "skipped_tier2":n, "skipped_minor":n}``.
     A finding is delivered iff: not a Tier-2-owned family, level >= ``min_level``, and its key is not
-    already an active incident. On delivery it's upserted active (so the next sweep / Tier-2 dedups).
+    already an active incident. On delivery it's upserted active (so the next sweep / Tier-2 dedups)
+    AND — via ``ticket_writer`` — an ``alert_ticket`` row is written so the estate-wide finding SHOWS
+    IN THE APP NOTIFICATION CENTER, not just Teams (checkType = the finding family, e.g. ``model``).
     """
     from ..outbound import dispatch_outbound
     from ..adapters.delivery_webhook import build_card
@@ -77,19 +84,33 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                     else f"{app_url.rstrip('/')}/")
             chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(what))
 
+        family = _family(key)
+        sev = "warn" if _LEVEL_RANK.get(level, 0) >= 1 else "info"
         facts = [(n, v) for n, v in (("Severity", level), ("Where", f.get("where")),
                                      ("Finding", key)) if v]
-        card = build_card("new", title=title, severity="warn", facts=facts, summary=what,
+        card = build_card("new", title=title, severity=sev, facts=facts, summary=what,
                           chat_url=chat_url)
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
         alerts_store["upsert"]({
-            "incidentKey": key, "status": "active", "severity": "warn", "checkType": "sweep",
+            "incidentKey": key, "status": "active", "severity": sev, "checkType": family,
             "resource": f.get("where") or key, "chatId": chat_id,
             "metric": float(_LEVEL_RANK.get(level, 0)), "firstAlertedAt": now_iso,
             "lastAlertedAt": now_iso, "lastRemindedAt": None, "resolvedAt": None,
             "escalationCount": 0, "materialityReason": f"sweep finding ({level})",
             "investigationSummary": what, "delivered": bool(res.get("delivered")), "runAt": now_iso,
+            "currentlyActive": True,
         })
+        # Write the app-readable ticket row so this estate-wide finding appears in the notification
+        # center (not just Teams). Failure-isolated: metadata must never drop the delivery.
+        if ticket_writer and chat_id:
+            try:
+                ticket_writer(chat_id, {
+                    "incidentKey": key, "checkType": family, "severity": sev,
+                    "resource": f.get("where") or key, "workspace": None,
+                    "detail": (f.get("recommendation") or what)[:500],
+                    "firstDetected": now_iso, "currentlyActive": True})
+            except Exception as exc:
+                print(f"[sweep] ticket metadata write failed ({type(exc).__name__}: {exc})")
         out["delivered"].append(key)
 
     return out
