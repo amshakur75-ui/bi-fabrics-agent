@@ -52,8 +52,9 @@ def test_build_lists_tickets_capacity_and_unacked_banner():
 
 def test_run_delivers_records_and_excludes_digest_rows():
     store = create_alerts_store_memory()
-    store["upsert"]({"incidentKey": "throttle::capacity", "status": "active", "severity": "warn",
-                     "checkType": "throttle", "resource": "capacity", "currentlyActive": True})
+    # an attribution ticket (the class the digest DOES roll up — capacity is excluded by Fix B)
+    store["upsert"]({"incidentKey": "cross_user::Fin/Sales", "status": "active", "severity": "warn",
+                     "checkType": "cross_user", "resource": "Sales", "currentlyActive": True})
     # yesterday's digest, NOT acknowledged -> must re-surface and be counted
     store["upsert"]({"incidentKey": digest_key("2026-08-04"), "status": "active", "severity": "info",
                      "checkType": "daily_summary", "resource": "capacity",
@@ -95,6 +96,22 @@ def test_run_resolves_acknowledged_prior_digest():
     assert digest_key("2026-08-04") not in store["query_active"]()   # acked -> resolved, dropped
     assert store["_data"][digest_key("2026-08-04")]["status"] == "resolved"
     assert "awaiting acknowledgement" not in json.dumps(posts[-1])   # no banner when nothing pending
+
+
+def test_fixB_capacity_tickets_excluded_from_digest():
+    """Fix B: capacity incidents (throttle/pressure/overage) have their own real-time alert +
+    auto-resolve lifecycle and must NOT appear in the daily digest's open tickets — only the
+    attribution/coverage issues the digest exists to roll up."""
+    store = create_alerts_store_memory()
+    store["upsert"]({"incidentKey": "throttle::capacity", "status": "active",
+                     "checkType": "throttle", "resource": "capacity", "currentlyActive": True})
+    store["upsert"]({"incidentKey": "pressure::capacity", "status": "active",
+                     "checkType": "pressure", "resource": "capacity", "currentlyActive": True})
+    store["upsert"]({"incidentKey": "cross_user::Fin/Sales", "status": "active",
+                     "checkType": "cross_user", "resource": "Sales", "currentlyActive": True})
+    res = run_daily_summary(alerts_store=store, ack_store=None, delivery_sinks=None,
+                            chat_writer=lambda m, t: "c1", app_url="https://app", now_dt=NOW)
+    assert res["openTickets"] == 1                       # only the cross_user ticket, not capacity
 
 
 def test_run_without_delivery_still_records_digest():

@@ -477,8 +477,12 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
     pending_seen = set()
     seen = set()
+    # FIX A: is there a REAL capacity event firing this run? (throttle/pressure/overage = true-CU
+    # over-threshold). A recurring attribution pattern only earns a live ticket when it actually
+    # correlates with one of these; absent that, it's a known-stable pattern, logged informational.
+    capacity_linked = any((t.get("check") in _TEAMS_CHECKS) for t in triggers)
     actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": [],
-               "inactive": [], "reopened": [], "pending": []}
+               "inactive": [], "reopened": [], "pending": [], "informational": []}
 
     def _send(kind, trigger, row, summary, *, investigate_prefix=None):
         # Teams is reserved for CAPACITY EMERGENCIES only. Attribution issues (concentration /
@@ -617,6 +621,24 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 actions["pending"].append(key)
                 continue
             # sustained across the window -> promote to a real incident (falls through to alert)
+        # FIX A: a RECURRING attribution pattern (concentration / cross_user) earns a live ticket +
+        # reasoner call ONLY if it correlates with a real capacity event this run. A stable,
+        # already-known pattern with no true-CU linkage is logged informational-only (feeds the daily
+        # digest) — the deterministic layer must not mint a "go investigate this person" ticket that
+        # the LLM investigation would just conclude isn't the driver. A genuinely NEW pattern (not
+        # recurring) always reports; a recurring one that IS capacity-linked reports (real event).
+        if (t.get("check") in _ATTR_CHECKS
+                and (t.get("recurrence") or {}).get("isRecurring")
+                and not capacity_linked):
+            alerts_store["upsert"]({
+                "incidentKey": key, "status": "informational", "severity": sev,
+                "checkType": t.get("check"),
+                "resource": t.get("item") or t.get("workspace") or "capacity",
+                "metric": metric, "materialityReason": reason,
+                "firstAlertedAt": (pending.get(key, {}).get("firstAlertedAt") or now_iso),
+                "runAt": now_iso, "delivered": False, "currentlyActive": True})
+            actions["informational"].append(key)
+            continue
         inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": decision == "report"}
         report = True if decision == "report" else bool(inv.get("report"))
         if not report:

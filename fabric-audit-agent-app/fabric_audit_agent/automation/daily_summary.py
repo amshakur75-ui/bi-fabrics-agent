@@ -43,17 +43,20 @@ def _ticket_line(t):
 
 
 def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
-                        app_url="", ack_url=None, unacked_prior=0):
+                        app_url="", ack_url=None, unacked_prior=0, informational=None):
     """Build the digest as ``(markdown, card, summary)``. Pure — no I/O.
 
-    ``open_tickets``: active ``audit_alerts`` rows (digest rows already excluded).
+    ``open_tickets``: active ``audit_alerts`` rows (digest AND capacity rows already excluded —
+    capacity has its own real-time alert + auto-resolve lifecycle, so it does not belong here).
     ``capacity``: ``{"peakCuPct": float|None, "throttleMinutes": float|None}`` day high-water, or {}.
     ``coverage_gaps``: short strings (e.g. silent-failure / coverage-gap notes) to list.
     ``unacked_prior``: number of earlier digests not yet acknowledged (drives the banner).
+    ``informational``: stable, known attribution patterns (Fix A) — noted for awareness, no action.
     ``ack_url``: where the Acknowledge action points (defaults to ``{app_url}/alerts``).
     """
     open_tickets = list(open_tickets or [])
     coverage_gaps = list(coverage_gaps or [])
+    informational = list(informational or [])
     capacity = capacity or {}
     warn, info = _sev_counts(open_tickets)
     peak = capacity.get("peakCuPct")
@@ -74,6 +77,8 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         md.append(f"**Throttle minutes today:** {throttle:.0f}")
     if coverage_gaps:
         md.append(f"**Coverage gaps:** {len(coverage_gaps)}")
+    if informational:
+        md.append(f"**Stable patterns noted (informational — no action):** {len(informational)}")
     if open_tickets:
         md += ["", "## Open tickets"]
         for t in open_tickets[:_MAX_TICKET_LINES]:
@@ -83,6 +88,12 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     if coverage_gaps:
         md += ["", "## Coverage gaps"]
         md += [f"- {g}" for g in coverage_gaps]
+    if informational:
+        md += ["", "## Stable patterns (informational — no action needed)"]
+        for t in informational[:_MAX_TICKET_LINES]:
+            md.append(f"- {_ticket_line(t)}")
+        if len(informational) > _MAX_TICKET_LINES:
+            md.append(f"- …and {len(informational) - _MAX_TICKET_LINES} more")
     markdown = "\n".join(md)
 
     # ---- adaptive card (v1.2 for mobile Teams) ----
@@ -103,6 +114,8 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         facts.append({"title": "Throttle minutes", "value": f"{throttle:.0f}"})
     if coverage_gaps:
         facts.append({"title": "Coverage gaps", "value": str(len(coverage_gaps))})
+    if informational:
+        facts.append({"title": "Stable patterns (info)", "value": str(len(informational))})
     body.append({"type": "FactSet", "facts": facts})
     if open_tickets:
         listing = "\n".join(f"- {_ticket_line(t)}" for t in open_tickets[:_MAX_TICKET_LINES])
@@ -150,7 +163,18 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
 
     active = alerts_store["query_active"]()
     prior_digests = {k: v for k, v in active.items() if v.get("checkType") == DIGEST_CHECK}
-    open_tickets = [v for k, v in active.items() if v.get("checkType") != DIGEST_CHECK]
+    # FIX B: capacity incidents (throttle/pressure/overage) have their own real-time alert +
+    # auto-resolve lifecycle — they must NOT also appear in the digest (that mixes already-resolved
+    # real-time events with the attribution/coverage issues the digest actually exists to roll up).
+    _EXCLUDE = (DIGEST_CHECK, "throttle", "pressure", "overage")
+    open_tickets = [v for k, v in active.items() if v.get("checkType") not in _EXCLUDE]
+
+    # Fix A informational patterns (stable, known, non-capacity-linked attribution) — noted here for
+    # awareness, no live ticket. Best-effort: a store without the query just contributes nothing.
+    try:
+        informational = list((alerts_store.get("query_informational", lambda: {})() or {}).values())
+    except Exception:
+        informational = []
 
     # Reconcile earlier digests: resolve the acknowledged ones, count the rest (they re-surface).
     unacked_prior = 0
@@ -164,7 +188,8 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
 
     markdown, card, summary = build_daily_summary(
         open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
-        date_str=date_str, app_url=app_url, unacked_prior=unacked_prior)
+        date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
+        informational=informational)
 
     # Pre-create the digest chat so it appears in the Alerts sidebar and is ackable there.
     chat_id = None

@@ -50,6 +50,9 @@ def create_alerts_store_memory(initial=None):
     def query_pending():
         return {k: dict(v) for k, v in data.items() if v.get("status") == "pending"}
 
+    def query_informational():
+        return {k: dict(v) for k, v in data.items() if v.get("status") == "informational"}
+
     def upsert(alert):
         data[alert["incidentKey"]] = dict(alert)
 
@@ -63,7 +66,8 @@ def create_alerts_store_memory(initial=None):
     def delete(incident_key):
         data.pop(incident_key, None)
 
-    return {"query_active": query_active, "query_pending": query_pending, "upsert": upsert,
+    return {"query_active": query_active, "query_pending": query_pending,
+            "query_informational": query_informational, "upsert": upsert,
             "resolve": resolve, "delete": delete, "_data": data}
 
 
@@ -130,6 +134,12 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
         s = _get_spark()
         _ensure_schema(s)
         rows = s.sql(f"SELECT * FROM {table} WHERE status = 'pending'").collect()
+        return {r["incident_key"]: _from_row(r.asDict()) for r in rows}
+
+    def query_informational():
+        s = _get_spark()
+        _ensure_schema(s)
+        rows = s.sql(f"SELECT * FROM {table} WHERE status = 'informational'").collect()
         return {r["incident_key"]: _from_row(r.asDict()) for r in rows}
 
     def upsert(alert):

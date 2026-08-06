@@ -226,6 +226,58 @@ def test_ticket_writer_gets_detail_metadata_on_new_and_inactive():
     assert tickets[cid]["workspace"] == "Fin"
 
 
+def _recurring(t):
+    return {**t, "recurrence": {"isRecurring": True}}
+
+
+def test_fixA_new_attribution_still_reports():
+    """Fix A: a genuinely NEW concentration (no prior recurrence) always earns a live ticket."""
+    store = create_alerts_store_memory()
+    r, rc = _reasoner()
+    w, wc = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app", cfg=_cfg_no_hysteresis())
+    con = {"check": "concentration", "item": "DTC", "workspace": "Ent", "sharePct": 46}
+    a = process_alerts([con], now_dt=T0, **kw)
+    assert a["new"] == ["concentration::Ent/DTC"] and a["informational"] == []
+    assert rc["n"] == 1                                   # reasoner ran for the real ticket
+
+
+def test_fixA_recurring_but_capacity_linked_reports():
+    """Fix A: a recurring concentration that DOES correlate with a real capacity event this run
+    (a throttle fired too) is a real incident — it reports."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app", cfg=_cfg_no_hysteresis())
+    con = _recurring({"check": "concentration", "item": "DTC", "workspace": "Ent", "sharePct": 46})
+    thr = {"check": "throttle", "throttleMinutes": 8}     # real capacity event in the same run
+    a = process_alerts([con, thr], now_dt=T0, **kw)
+    assert "concentration::Ent/DTC" in a["new"] and a["informational"] == []
+
+
+def test_fixA_recurring_flat_no_capacity_link_is_informational_only():
+    """Fix A (the actual bug): a recurring, non-capacity-linked concentration — the stable
+    daily-cadence pattern the LLM investigation concludes ISN'T the driver — must NOT mint a live
+    ticket or spend a reasoner call. It's logged informational (feeds the digest)."""
+    store = create_alerts_store_memory()
+    r, rc = _reasoner()
+    w, wc = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app", cfg=_cfg_no_hysteresis())
+    con = _recurring({"check": "concentration", "item": "DTC", "workspace": "Ent", "sharePct": 46})
+    key = "concentration::Ent/DTC"
+    a = process_alerts([con], now_dt=T0, **kw)
+    assert a["informational"] == [key] and a["new"] == []
+    assert rc["n"] == 0 and wc["n"] == 0 and posts == []   # no reasoner, no chat, no Teams
+    assert key in store["query_informational"]()           # persisted for the daily digest
+    assert store["query_active"]() == {}                   # NOT a live notification-center ticket
+
+
 def test_clear_suppress_never_calls_llm_or_sends():
     store = create_alerts_store_memory()
     r, rc = _reasoner()

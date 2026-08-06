@@ -280,6 +280,10 @@ const PurePreviewMessage = ({
                             className={cn({
                               'text-sm text-muted-foreground [&_p]:my-0.5':
                                 isProgress,
+                              // Gloss/shimmer sweep across the live status lines while the
+                              // investigation is still streaming, so a long run reads as active
+                              // (not stuck). Only while streaming — historical progress stays dim.
+                              'fabric-shimmer': isProgress && isLoading,
                             })}
                           >
                             <Response>{sanitizeText(seg.text)}</Response>
