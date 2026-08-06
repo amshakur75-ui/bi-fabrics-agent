@@ -10,7 +10,14 @@ Async flow (all admin, confirmed reachable given current SP grants):
   GET  admin/workspaces/scanResult/{scanId}         -> {"workspaces":[{"datasets":[{"relationships":[...]}]}]}
 
 Maps each dataset to the shape model.py expects. ``bidirectionalRels`` = relationships whose
-``crossFilteringBehavior`` is ``BothDirections``. ``autoDateTime`` and ``refreshFailRatePct`` are
+``crossFilteringBehavior`` is ``BothDirections``.
+
+TENANT-SETTING GAP (confirmed by live scan 2026-08-06): the scan returns datasets, but their
+``tables`` / ``relationships`` come back EMPTY unless the Fabric admin has enabled *"Enhance admin
+API responses with detailed metadata"* (and *"...with DAX and mashup expressions"* for
+relationships) in the Admin Portal tenant settings. Without those, this collector still enumerates
+models but ``bidirectionalRels`` is 0 for all (no false positives) — the bidirectional signal is
+gated on that one tenant setting, not on code. Documented, not silently wrong. ``autoDateTime`` and ``refreshFailRatePct`` are
 NOT exposed by the scan (documented gap) -> left None, so model.py simply doesn't flag on them
 (no false positives). HTTP client (get_json/post_json) + sleep are injected -> unit-testable
 offline. Read-only. Fail-open: any error yields no models, never aborts the wider collect.
