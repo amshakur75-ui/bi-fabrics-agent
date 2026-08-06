@@ -72,6 +72,41 @@ def test_sweep_findings_write_notification_center_tickets():
     assert m["resource"] == "Finance / Sales" and "bidirectional" in m["detail"]
 
 
+def test_per_user_concentration_suppressed_on_healthy_capacity():
+    # a 35% share on a HEALTHY capacity is normal usage, not a user-addressable problem -> not alerted
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    f = [_f("capacity.user-concentration::Ann", "Warning", what="Ann is driving ~35% of capacity")]
+    out = deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink},
+                               app_url="https://app", capacity={"peakCuPct": 62.0, "throttleMinutes": 0})
+    assert out["delivered"] == [] and out["skipped_healthy"] == 1 and posts == []
+
+
+def test_per_user_concentration_delivered_and_actionable_when_stressed():
+    # same finding on a STRESSED capacity IS delivered, and surfaces as the actionable 'concentration'
+    # checkType (not the bare 'capacity' family the notification center filters out)
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    f = [_f("capacity.user-concentration::Ann", "Warning", what="Ann is driving ~35% of capacity",
+            where="Ann")]
+    out = deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink},
+                               app_url="https://app", chat_writer=lambda m, t: "c1",
+                               capacity={"peakCuPct": 118.0, "throttleMinutes": 6.0})
+    assert out["delivered"] == ["capacity.user-concentration::Ann"]
+    assert store["query_active"]()["capacity.user-concentration::Ann"]["checkType"] == "concentration"
+
+
+def test_investigate_query_anchors_to_the_fire_time():
+    import urllib.parse
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    f = [_f("model.bidirectional::Sales", "Warning", what="6 bidirectional relationships")]
+    deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink}, app_url="https://app",
+                         chat_writer=lambda m, t: "c9", now_iso="2026-08-06T03:17:00Z")
+    blob = urllib.parse.unquote(json.dumps(posts[0]))
+    assert "2026-08-06T03:17:00Z" in blob and "TIME WINDOW" in blob
+
+
 def test_dedups_against_already_active_incidents():
     # a finding tier2 (or a prior sweep) already alerted -> not repeated
     store = create_alerts_store_memory({"model.autodate::M1": {"incidentKey": "model.autodate::M1",

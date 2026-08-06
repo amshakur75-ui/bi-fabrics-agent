@@ -7,6 +7,7 @@ import {
 import {
   convertToModelMessages,
   createUIMessageStream,
+  generateText,
   streamText,
   type LanguageModelUsage,
   pipeUIMessageStreamToResponse,
@@ -590,8 +591,9 @@ export function deriveShortTitle(raw: string): string {
   return truncated ? `${s}…` : s;
 }
 
-// Kept async + same signature so callers (the new-chat title promise and POST /api/chat/title)
-// are unchanged. `maxMessageLength` is accepted for compatibility but no longer needed.
+// Generate a short, standardized chat title with the LLM (like a real chat app), falling back to the
+// deterministic `deriveShortTitle` heuristic on any error. The call runs in the background title
+// promise, so it never blocks the streamed response. `maxMessageLength` kept for signature compat.
 async function generateTitleFromUserMessage({
   message,
 }: {
@@ -601,8 +603,27 @@ async function generateTitleFromUserMessage({
   const text = (message?.parts ?? [])
     .filter((part) => part.type === 'text')
     .map((part) => (part.type === 'text' ? part.text : ''))
-    .join(' ');
-  return deriveShortTitle(text);
+    .join(' ')
+    .trim();
+  if (!text) return 'New chat';
+  try {
+    const model = await myProvider.languageModel('title-model');
+    const { text: raw } = await generateText({
+      model,
+      system:
+        'You generate a short, specific title for a chat, based on the user\'s first message. ' +
+        'Rules: 3-6 words, title case, no surrounding quotes, no trailing punctuation, no "Title:" ' +
+        'prefix. Summarize the topic — do not echo the message verbatim.',
+      prompt: text.slice(0, 1000),
+    });
+    // Normalize the model output (strip stray quotes/markdown, cap length); if it comes back empty,
+    // fall back to a cleaned version of the user's own message.
+    const fromLlm = deriveShortTitle(raw);
+    return fromLlm && fromLlm !== 'New chat' ? fromLlm : deriveShortTitle(text);
+  } catch (error) {
+    console.error('LLM title generation failed; using heuristic:', error);
+    return deriveShortTitle(text);
+  }
 }
 
 function truncatePreserveWords(input: string, maxLength: number): string {

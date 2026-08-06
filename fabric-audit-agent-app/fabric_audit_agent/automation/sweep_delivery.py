@@ -57,35 +57,78 @@ def _tier2_owned(key):
     return any((key or "").startswith(p) for p in _TIER2_OWNED_PREFIXES)
 
 
-def _investigate_query(what):
-    return (f"Investigate this finding and give me the root cause and the specific fix: {what}. "
+def _investigate_query(what, when=None):
+    """The prompt auto-sent when the alert deep-link is opened. ``when`` (the fire time) anchors the
+    agent to the moment the finding was detected — otherwise it investigates the live 'now' (often
+    hours later, when the event has passed) and wrongly concludes nothing is wrong / the named user
+    wasn't involved."""
+    anchor = ""
+    if when:
+        anchor = (f" This was detected around {when} — investigate the capacity and activity IN THAT "
+                  "TIME WINDOW as your primary anchor (use it as a direction, ±30 min), not the current "
+                  "moment; the live 'now' may look clean because the event has already passed.")
+    return (f"Investigate this finding and give me the root cause and the specific fix: {what}.{anchor} "
             "Pull the recent capacity + activity and name what's driving it. Distinguish true CU% "
             "(ground truth) from the monitored-activity proxy — do not present the proxy as capacity "
             "consumption.")
 
 
+# Compound keys whose first segment ("capacity") is NOT a UI-actionable checkType — map them to the
+# specific type the app's notification center recognises, so per-user concentration findings surface
+# instead of being silently filtered out under a bare "capacity" family.
+_FAMILY_MAP = {"capacity.user-concentration": "concentration", "capacity.user-ranking": "concentration"}
+
+
 def _family(key):
-    """The finding family (checkType) from its key: ``model.bidirectional`` -> ``model``."""
-    return (str(key or "").split(".")[0] or "sweep")
+    """The finding family (checkType) from its key: ``model.bidirectional`` -> ``model``;
+    ``capacity.user-concentration`` -> ``concentration`` (an actionable notification-center type)."""
+    k = str(key or "")
+    for prefix, check_type in _FAMILY_MAP.items():
+        if k.startswith(prefix):
+            return check_type
+    return (k.split(".")[0] or "sweep")
+
+
+def _healthy_capacity(capacity):
+    """True iff capacity health is KNOWN and NOT stressed (no throttling, peak under 100% CU).
+    Used to suppress per-user concentration on a healthy capacity — a 30% share only matters when
+    the capacity was actually constrained. Unknown health (no capacity data) returns False (keep)."""
+    if not capacity:
+        return False
+    thr = capacity.get("throttleMinutes")
+    if isinstance(thr, (int, float)) and not isinstance(thr, bool) and thr > 0:
+        return False
+    peak = capacity.get("peakCuPct")
+    if not (isinstance(peak, (int, float)) and not isinstance(peak, bool)):
+        return False   # peak unknown -> don't claim healthy
+    return peak < 100
 
 
 def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
-                         chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None):
+                         chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None,
+                         capacity=None):
     """Deliver NEW material sweep findings; dedup via the shared ``audit_alerts`` store.
 
-    Returns ``{"delivered":[keys], "skipped_dup":n, "skipped_tier2":n, "skipped_minor":n}``.
-    A finding is delivered iff: not a Tier-2-owned family, level >= ``min_level``, and its key is not
-    already an active incident. On delivery it's upserted active (so the next sweep / Tier-2 dedups)
-    AND — via ``ticket_writer`` — an ``alert_ticket`` row is written so the estate-wide finding SHOWS
-    IN THE APP NOTIFICATION CENTER, not just Teams (checkType = the finding family, e.g. ``model``).
+    Returns ``{"delivered":[keys], "skipped_dup", "skipped_tier2", "skipped_minor", "skipped_healthy"}``.
+    A finding is delivered iff: not a Tier-2-owned family, level >= ``min_level``, its key is not
+    already an active incident, AND — for per-user concentration — the capacity was genuinely stressed.
+    On delivery it's upserted active (so the next sweep / Tier-2 dedups) AND — via ``ticket_writer`` —
+    an ``alert_ticket`` row is written so the estate-wide finding SHOWS IN THE APP NOTIFICATION
+    CENTER, not just Teams (checkType = the finding family, e.g. ``model``/``concentration``).
+
+    ``capacity`` ({"peakCuPct", "throttleMinutes"}) gates per-user concentration to GENUINELY
+    unhealthy capacities — heavy share on a healthy capacity is normal usage, not a user-addressable
+    problem, so it is not turned into an actionable ticket.
     """
     from ..outbound import dispatch_outbound
     from ..adapters.delivery_webhook import build_card
 
     now_iso = now_iso or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     min_rank = _LEVEL_RANK.get(min_level, 1)
+    healthy = _healthy_capacity(capacity)
     active = alerts_store["query_active"]()
-    out = {"delivered": [], "skipped_dup": 0, "skipped_tier2": 0, "skipped_minor": 0}
+    out = {"delivered": [], "skipped_dup": 0, "skipped_tier2": 0, "skipped_minor": 0,
+           "skipped_healthy": 0}
 
     for f in findings or []:
         key = f.get("key")
@@ -94,6 +137,10 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
         level = (f.get("score") or {}).get("level")
         if _tier2_owned(key):
             out["skipped_tier2"] += 1
+            continue
+        # A per-user concentration finding is only actionable when the capacity was actually stressed.
+        if healthy and str(key).startswith("capacity.user-concentration"):
+            out["skipped_healthy"] += 1
             continue
         if _LEVEL_RANK.get(level, 0) < min_rank:
             out["skipped_minor"] += 1
@@ -117,7 +164,8 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
         if app_url:
             base = (f"{app_url.rstrip('/')}/chat/{chat_id}" if chat_id
                     else f"{app_url.rstrip('/')}/")
-            chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(what))
+            when = f.get("when") or now_iso   # anchor the investigation to when the finding fired
+            chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(what, when=when))
 
         family = _family(key)
         sev = "warn" if _LEVEL_RANK.get(level, 0) >= 1 else "info"

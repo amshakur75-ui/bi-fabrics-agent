@@ -52,7 +52,8 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     ``coverage_gaps``: short strings (e.g. silent-failure / coverage-gap notes) to list.
     ``unacked_prior``: number of earlier digests not yet acknowledged (drives the banner).
     ``informational``: stable, known attribution patterns (Fix A) — noted for awareness, no action.
-    ``ack_url``: where the Acknowledge action points (defaults to ``{app_url}/alerts``).
+    ``ack_url``: where the Acknowledge action points (defaults to the app root ``{app_url}/`` — the
+    app has no ``/alerts`` route, so callers should pass the digest chat deep-link when they have it).
     """
     open_tickets = list(open_tickets or [])
     coverage_gaps = list(coverage_gaps or [])
@@ -126,7 +127,7 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     content = {"type": "AdaptiveCard",
                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                "version": "1.2", "body": body}
-    target = ack_url or (f"{app_url.rstrip('/')}/alerts" if app_url else None)
+    target = ack_url or (f"{app_url.rstrip('/')}/" if app_url else None)
     if target:
         content["actions"] = [{"type": "Action.OpenUrl",
                                "title": "Review & acknowledge", "url": target}]
@@ -186,18 +187,28 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
         else:
             unacked_prior += 1
 
-    markdown, card, summary = build_daily_summary(
-        open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
-        date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
-        informational=informational)
+    def _compose(ack_url):
+        return build_daily_summary(
+            open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
+            date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
+            informational=informational, ack_url=ack_url)
 
-    # Pre-create the digest chat so it appears in the Alerts sidebar and is ackable there.
+    # Pre-create the digest chat FIRST (its body is ack-independent) so the card's "Review &
+    # acknowledge" action can deep-link to THAT chat — the app has no /alerts route, so the old
+    # default 404'd. Fall back to the app root when there's no chat id.
+    markdown, _, summary = _compose(None)
     chat_id = None
     if chat_writer:
         try:
             chat_id = chat_writer(markdown, f"Daily summary — {date_str}")
         except Exception as exc:
             print(f"[daily] digest chat write failed ({type(exc).__name__}: {exc})")
+
+    ack_url = None
+    if app_url:
+        ack_url = (f"{app_url.rstrip('/')}/chat/{chat_id}" if chat_id
+                   else f"{app_url.rstrip('/')}/")
+    _, card, _ = _compose(ack_url)
 
     delivered = False
     if delivery_sinks:

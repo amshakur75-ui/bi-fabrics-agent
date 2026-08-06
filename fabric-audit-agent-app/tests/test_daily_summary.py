@@ -24,8 +24,17 @@ def test_build_all_clear_digest_has_ack_action():
     content = card["content"]
     assert content["version"] == "1.2"  # mobile Teams
     assert content["actions"][0]["title"] == "Review & acknowledge"
-    assert content["actions"][0]["url"] == "https://app/alerts"
+    # App has no /alerts route -> default target is the app root (callers pass the digest chat link).
+    assert content["actions"][0]["url"] == "https://app/"
     assert "0 open ticket" in summary
+
+
+def test_build_uses_explicit_ack_url_deep_link():
+    # run_daily_summary passes the digest chat deep-link so the action opens the digest, not a 404.
+    _, card, _ = build_daily_summary(open_tickets=[], capacity={}, coverage_gaps=[],
+                                     date_str="2026-08-05", app_url="https://app",
+                                     ack_url="https://app/chat/abc-123")
+    assert card["content"]["actions"][0]["url"] == "https://app/chat/abc-123"
 
 
 def test_build_lists_tickets_capacity_and_unacked_banner():

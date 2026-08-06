@@ -435,16 +435,25 @@ def _workspace_from_key(key):
     return rest.split("/", 1)[0] if "/" in rest else None
 
 
-def _investigate_query(t, *, prefix=None):
+def _investigate_query(t, *, prefix=None, when=None):
     """The prompt auto-sent when the alert deep-link is opened — kicks off a live agent
     investigation (real MCP tools), so clicking the card gives the root cause, not just facts.
 
     ``prefix`` (optional) carries ticket memory the agent cannot otherwise see — e.g. on a recurrence
     of a human-resolved ticket, the prior resolution note — so the auto-investigation opens knowing
-    it is a standing ticket, not a blank slate (Step 7 ticket memory)."""
+    it is a standing ticket, not a blank slate (Step 7 ticket memory).
+
+    ``when`` (the fire time) anchors the investigation to when the alert fired. Without it the agent
+    investigates the live 'now' — often hours after the click, when the event has passed — and wrongly
+    concludes nothing is wrong or the named user wasn't the driver."""
     check = t.get("check")
     lead = (prefix.strip() + " ") if prefix else ""
-    return (f"{lead}Investigate this {check} alert and give me the root cause. {_title_for(t)}. "
+    anchor = ""
+    if when:
+        anchor = (f" This alert fired around {when} — investigate the capacity and activity IN THAT "
+                  "TIME WINDOW as your primary anchor (use it as a direction, ±30 min), not the current "
+                  "moment; the live 'now' may look clean because the event has already passed.")
+    return (f"{lead}Investigate this {check} alert and give me the root cause. {_title_for(t)}.{anchor} "
             "Pull the recent capacity + activity, identify the top consumers and any expensive "
             "operations or refresh contention driving it, and tell me what's causing it and what "
             "to do. Distinguish true CU% (ground truth) from the monitored-activity proxy — do not "
@@ -500,7 +509,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             # link is always present AND always resolves (never a fake /chat/<uuid> that 404s).
             base = f"{app_url.rstrip('/')}/chat/{cid}" if cid else f"{app_url.rstrip('/')}/"
             chat_url = base + "?query=" + urllib.parse.quote(
-                _investigate_query(trigger, prefix=investigate_prefix))
+                _investigate_query(trigger, prefix=investigate_prefix, when=now_iso))
         # Concentration/attribution alerts rank a CPU-time PROXY, not true CU — the card must say so.
         disclosure = (PROXY_RANKING_DISCLOSURE
                       if trigger.get("check") in ("concentration", "cross_user") else None)

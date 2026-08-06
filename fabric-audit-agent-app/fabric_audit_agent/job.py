@@ -439,7 +439,13 @@ def _deliver_sweep_findings(envelope, env):
         catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
         if not (catalog and schema):
             return None
-        findings = (envelope.get("data") or {}).get("findings") or []
+        data = envelope.get("data") or {}
+        findings = data.get("findings") or []
+        # Capacity health gates per-user concentration to genuinely-stressed capacities (a 30% share
+        # on a healthy capacity is normal usage, not a user-addressable problem).
+        verdict = data.get("verdict") or {}
+        capacity = {"peakCuPct": verdict.get("peakCuPct"),
+                    "throttleMinutes": verdict.get("throttleMinutes")}
         # ticket_writer -> estate-wide sweep findings also appear in the app notification center
         # (not just Teams). Fail-open: without it, delivery still works, just no sidebar ticket.
         try:
@@ -455,9 +461,11 @@ def _deliver_sweep_findings(envelope, env):
             chat_writer=create_alert_chat,
             ticket_writer=_ticket_writer,
             min_level=env.get("SWEEP_MIN_LEVEL", "Warning"),
+            capacity=capacity,
         )
         print(f"[sweep] delivered {len(result['delivered'])} new finding(s); skipped "
-              f"dup={result['skipped_dup']} tier2={result['skipped_tier2']} minor={result['skipped_minor']}")
+              f"dup={result['skipped_dup']} tier2={result['skipped_tier2']} minor={result['skipped_minor']} "
+              f"healthy={result.get('skipped_healthy', 0)}")
         return result
     except Exception as exc:  # delivery must never crash the sweep
         print(f"[sweep] delivery failed: {type(exc).__name__}: {exc}")
