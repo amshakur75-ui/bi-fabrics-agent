@@ -561,7 +561,7 @@ chatRouter.patch(
 // provider's formatUrl routes EVERY request (including the utility 'title-model') to the Python
 // agent, so title generation returned garbage/errored and titles fell back to the full first
 // sentence. A deterministic short label is reliable and reads well as a sidebar title.
-function deriveShortTitle(raw: string): string {
+export function deriveShortTitle(raw: string): string {
   let s = (raw || '').replace(/\s+/g, ' ').trim();
   if (!s) return 'New chat';
   // strip leading markdown / emoji / quoting noise
@@ -570,16 +570,24 @@ function deriveShortTitle(raw: string): string {
   // an em/en/hyphen dash surrounded by spaces, a colon, a newline, a sentence period, or ", then"
   const cut = s.search(/\s[—–-]\s|[:\n]|(?<=\w)\.\s|(?<=\w),\s+then\b/i);
   if (cut > 12) s = s.slice(0, cut).trim();
-  // word-bounded length cap
-  if (s.length > 52) {
-    s = s.slice(0, 52);
-    const sp = s.lastIndexOf(' ');
-    if (sp > 24) s = s.slice(0, sp);
-    s = `${s}…`;
+  // Cap to a genuinely SHORT label: at most ~6 words AND ~48 chars (a glanceable name, not a
+  // sentence). Whichever limit hits first wins; an ellipsis marks a truncation.
+  let truncated = false;
+  const words = s.split(' ').filter(Boolean);
+  if (words.length > 6) {
+    s = words.slice(0, 6).join(' ');
+    truncated = true;
   }
-  s = s.replace(/[\s,;:.—–-]+$/, '').trim();
+  if (s.length > 48) {
+    s = s.slice(0, 48);
+    const sp = s.lastIndexOf(' ');
+    if (sp > 20) s = s.slice(0, sp);
+    truncated = true;
+  }
+  s = s.replace(/[\s,;:.\-–—]+$/, '').trim();
   if (!s) return 'New chat';
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  s = s.charAt(0).toUpperCase() + s.slice(1);
+  return truncated ? `${s}…` : s;
 }
 
 // Kept async + same signature so callers (the new-chat title promise and POST /api/chat/title)

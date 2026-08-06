@@ -9,8 +9,37 @@ ONCE — never repeated across sweeps, and never on top of a Tier-2 alert for th
 Pure orchestration over injected ports (``alerts_store`` / ``delivery_sinks`` / ``chat_writer``);
 every send routes through ``outbound.dispatch_outbound`` (the egress chokepoint).
 """
+import re
 import urllib.parse
 from datetime import datetime, timezone
+
+# Cut points that separate the "ask" from trailing detail (mirrors the app's deriveShortTitle).
+_TITLE_CUT = re.compile(r"\s[—–-]\s|[:\n]|(?<=\w)\.\s", re.I)
+
+
+def short_title(text, max_words=8, max_chars=60):
+    """A glanceable short chat title from a long finding sentence — strip markdown, cut at the first
+    clause boundary, cap to ~max_words / max_chars. Keeps alert/sweep chat names readable in the
+    sidebar instead of dumping the whole finding text."""
+    s = re.sub(r"\s+", " ", str(text or "")).strip()
+    s = re.sub(r"^[#>*_`\s\"'\-–—]+", "", s).strip()
+    if not s:
+        return "Finding"
+    m = _TITLE_CUT.search(s)
+    if m and m.start() > 12:
+        s = s[:m.start()].strip()
+    truncated = False
+    words = s.split(" ")
+    if len(words) > max_words:
+        s = " ".join(words[:max_words])
+        truncated = True
+    if len(s) > max_chars:
+        s = s[:max_chars].rsplit(" ", 1)[0]
+        truncated = True
+    s = re.sub(r"[\s,;:.\-–—]+$", "", s).strip()
+    if not s:
+        return "Finding"
+    return (s[0].upper() + s[1:]) + ("…" if truncated else "")
 
 _LEVEL_RANK = {"Info": 0, "Warning": 1, "Critical": 2}
 # Finding families Tier-2 already alerts on in real time — the sweep must not repeat them.
@@ -68,7 +97,7 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
             continue
 
         what = f.get("what") or key
-        title = what if len(what) <= 80 else what[:77] + "..."
+        title = short_title(what)   # short, glanceable chat name (not the whole finding sentence)
         markdown = f.get("narrative") or f.get("recommendation") or what
 
         chat_id = None

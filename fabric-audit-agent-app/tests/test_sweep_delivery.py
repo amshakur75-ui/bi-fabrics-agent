@@ -2,8 +2,18 @@
 and never repeats a family Tier-2 already owns."""
 import json
 
-from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings, short_title
 from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+
+def test_short_title_shortens_a_long_finding_sentence():
+    long = ("Ana.Gonzales@newellco.com is driving ~35.4% of capacity CU (est.) — "
+            "mostly via \"Ent-Reporting-SCM\".")
+    t = short_title(long)
+    assert t.endswith("…") and len(t) <= 62
+    assert "—" not in t and t.startswith("Ana.Gonzales")   # cut before the em-dash detail
+    assert short_title("**Capacity is healthy today").startswith("Capacity")   # leading ** stripped
+    assert short_title("") == "Finding"
 
 
 def _f(key, level, what="something happened", where="Fin"):
