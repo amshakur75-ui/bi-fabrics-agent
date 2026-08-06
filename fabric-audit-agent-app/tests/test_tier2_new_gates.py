@@ -64,14 +64,16 @@ def _sink():
     return posts, {"deliver": lambda b: (posts.append(b), {"delivered": True, "status": 202})[1]}
 
 
-def test_cross_user_alert_carries_proxy_disclosure_end_to_end():
+def test_cross_user_becomes_a_ticket_but_never_posts_to_teams():
+    # Attribution issues live in the app's notification center, NOT Teams (Teams is reserved for
+    # capacity emergencies). A fired cross-user gate must create the active ticket but post NO card.
     store = create_alerts_store_memory()
     posts, sink = _sink()
     trig = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
             "users": ["a", "b", "c", "d"], "sharePct": 30.0}
-    cfg = load_cfg(); cfg["hysteresis_ticks"] = 1  # isolate disclosure check from the persistence gate
+    cfg = load_cfg(); cfg["hysteresis_ticks"] = 1  # isolate from the persistence gate
     a = process_alerts([trig], now_dt=T0, alerts_store=store, delivery_sinks={"webhook": sink},
                        reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True},
                        app_url="https://app", cfg=cfg)
-    assert a["new"] == ["cross_user::Fin/Sales"]
-    assert PROXY_RANKING_DISCLOSURE in __import__("json").dumps(posts[-1])
+    assert a["new"] == ["cross_user::Fin/Sales"]        # ticket created (shows in notification center)
+    assert posts == []                                  # but NO Teams card for attribution

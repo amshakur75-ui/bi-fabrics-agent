@@ -8,7 +8,6 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   streamText,
-  generateText,
   type LanguageModelUsage,
   pipeUIMessageStreamToResponse,
 } from 'ai';
@@ -557,38 +556,45 @@ chatRouter.patch(
   },
 );
 
-// Helper function to generate title from user message
+// Derive a short chat title DETERMINISTICALLY from the first user message — no model call.
+// The LLM title path was unreliable in this deployment: with API_PROXY set, the Databricks
+// provider's formatUrl routes EVERY request (including the utility 'title-model') to the Python
+// agent, so title generation returned garbage/errored and titles fell back to the full first
+// sentence. A deterministic short label is reliable and reads well as a sidebar title.
+function deriveShortTitle(raw: string): string {
+  let s = (raw || '').replace(/\s+/g, ' ').trim();
+  if (!s) return 'New chat';
+  // strip leading markdown / emoji / quoting noise
+  s = s.replace(/^[#>*_`\s"'\-–—]+/, '').trim();
+  // cut at the first boundary that separates the ask from trailing instructions:
+  // an em/en/hyphen dash surrounded by spaces, a colon, a newline, a sentence period, or ", then"
+  const cut = s.search(/\s[—–-]\s|[:\n]|(?<=\w)\.\s|(?<=\w),\s+then\b/i);
+  if (cut > 12) s = s.slice(0, cut).trim();
+  // word-bounded length cap
+  if (s.length > 52) {
+    s = s.slice(0, 52);
+    const sp = s.lastIndexOf(' ');
+    if (sp > 24) s = s.slice(0, sp);
+    s = `${s}…`;
+  }
+  s = s.replace(/[\s,;:.—–-]+$/, '').trim();
+  if (!s) return 'New chat';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Kept async + same signature so callers (the new-chat title promise and POST /api/chat/title)
+// are unchanged. `maxMessageLength` is accepted for compatibility but no longer needed.
 async function generateTitleFromUserMessage({
   message,
-  maxMessageLength = 256,
 }: {
   message: ChatMessage;
   maxMessageLength?: number;
 }) {
-  const model = await myProvider.languageModel('title-model');
-
-  // Truncate each text part to the maxMessageLength
-  const truncatedMessage = {
-    ...message,
-    parts: message.parts.map((part) =>
-      part.type === 'text'
-        ? { ...part, text: part.text.slice(0, maxMessageLength) }
-        : part,
-    ),
-  };
-
-  const { text: title } = await generateText({
-    model,
-    system: `\n
-    - you will generate a very short title from the first message of a capacity/BI conversation
-    - keep it to 3-6 words, at most 48 characters (a quick glanceable label, not a sentence)
-    - name the concrete subject: the item, user, metric, or question (e.g. "Sales model refresh spike",
-      "Who drove Ecomm today", "F1024 sizing check") — not a generic "capacity question"
-    - do not use quotes or colons. do not include other expository content ("I'll help...")`,
-    prompt: JSON.stringify(truncatedMessage),
-  });
-
-  return title;
+  const text = (message?.parts ?? [])
+    .filter((part) => part.type === 'text')
+    .map((part) => (part.type === 'text' ? part.text : ''))
+    .join(' ');
+  return deriveShortTitle(text);
 }
 
 function truncatePreserveWords(input: string, maxLength: number): string {

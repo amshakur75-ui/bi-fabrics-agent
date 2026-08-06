@@ -470,6 +470,9 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     active = alerts_store["query_active"]()
     # Hysteresis (Step 2.3): attribution signals must persist N consecutive checks before alerting.
     _ATTR_CHECKS = ("concentration", "cross_user")
+    # Only these hard capacity incidents are pushed to Teams. Attribution / coverage findings are
+    # notification-center-only (see _send) — Teams stays reserved for genuine capacity emergencies.
+    _TEAMS_CHECKS = ("throttle", "pressure", "overage")
     hysteresis_ticks = int(cfg.get("hysteresis_ticks", 3))
     pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
     pending_seen = set()
@@ -478,6 +481,13 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                "inactive": [], "reopened": [], "pending": []}
 
     def _send(kind, trigger, row, summary, *, investigate_prefix=None):
+        # Teams is reserved for CAPACITY EMERGENCIES only. Attribution issues (concentration /
+        # cross-user / coverage gaps) are surfaced in the app's notification center — pushing every
+        # one to the Teams channel is the repetitive noise the user asked us to stop. The ticket is
+        # still fully created (chat + audit_alerts row + alert_ticket) so it shows in the center;
+        # we just don't post a card here.
+        if trigger.get("check") not in _TEAMS_CHECKS:
+            return False
         cid = row.get("chatId")
         chat_url = None
         if app_url and kind != "resolved":

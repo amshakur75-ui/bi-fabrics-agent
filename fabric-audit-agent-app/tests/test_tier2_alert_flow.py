@@ -185,12 +185,12 @@ def test_resolved_incident_reopens_on_recurrence():
     a = process_alerts([xu], now_dt=T0 + timedelta(minutes=10), ack_store=ack, **kw)  # recurs
     assert a["reopened"] == [key]
     assert reopened["n"] == 1                                    # the resolve was cleared
-    assert store["query_active"]()[key]["currentlyActive"] is True
-    assert "Recurred" in json.dumps(posts[-1])                  # re-alert notes the recurrence
-    # ticket memory (Step 7): the deep-link's auto-investigate query carries the prior note so the
-    # investigation opens knowing this is a recurrence of a human-resolved ticket.
-    _deeplink = _card(posts)["actions"][0]["url"]
-    assert "RECURRED" in _deeplink and "fixed%20the%20query" in _deeplink
+    row = store["query_active"]()[key]
+    assert row["currentlyActive"] is True
+    # attribution never posts to Teams (notification-center only) — the recurrence is recorded on
+    # the ticket itself (shown in the center + carried into the chat), not blasted to the channel.
+    assert posts == []
+    assert "Recurred" in json.dumps(row) and "fixed the query" in row["investigationSummary"]
 
 
 def test_ticket_writer_gets_detail_metadata_on_new_and_inactive():
@@ -267,7 +267,7 @@ def test_hysteresis_holds_attribution_pending_until_it_persists():
           "users": ["a", "b", "c", "d"], "sharePct": 30}
     key = "cross_user::Fin/Sales"
 
-    # tick 1 & 2: pending — nothing delivered, nothing active, no LLM/chat spend
+    # tick 1 & 2: pending — nothing active, no LLM/chat spend
     a = process_alerts([xu], now_dt=T0, **kw)
     assert a["pending"] == [key] and a["new"] == [] and posts == []
     assert store["query_active"]() == {} and rc["n"] == 0 and wc["n"] == 0
@@ -277,9 +277,10 @@ def test_hysteresis_holds_attribution_pending_until_it_persists():
     assert a["pending"] == [key] and posts == []
     assert store["query_pending"]()[key]["presenceCount"] == 2
 
-    # tick 3: sustained across the full window -> promoted to a real, delivered incident
+    # tick 3: sustained across the full window -> promoted to a real ticket (notification center),
+    # but attribution posts NO Teams card.
     a = process_alerts([xu], now_dt=T0 + timedelta(minutes=10), **kw)
-    assert a["new"] == [key] and len(posts) == 1
+    assert a["new"] == [key] and posts == []
     assert set(store["query_active"]()) == {key}
     assert store["query_pending"]() == {}  # the pending row was consumed on promotion
 
@@ -304,7 +305,7 @@ def test_info_level_concentration_still_alerts_once_it_persists():
     a = process_alerts([con], now_dt=T0 + timedelta(minutes=5), **kw)
     assert a["pending"] == [key] and posts == []
     a = process_alerts([con], now_dt=T0 + timedelta(minutes=10), **kw)   # 3rd consecutive -> promote
-    assert a["new"] == [key] and len(posts) == 1
+    assert a["new"] == [key] and posts == []            # ticket created (center), no Teams card
     assert set(store["query_active"]()) == {key}
 
 
