@@ -308,6 +308,23 @@ def build_collector_from_env(env, window=None):
             "capacity": env.get("FABRIC_CAPACITY"),
         }, usages_http=usages_http))
 
+    # Refresh-history (B3) — feeds detectors/refresh.py (failing / retry-storm / slow-phase /
+    # chronic). OFF unless FABRIC_REFRESH_DATASETS_JSON is set (a JSON list of
+    # {group,dataset,workspace,datasetName}); the per-dataset endpoint needs SP workspace
+    # membership, so estate-wide enumeration is a documented follow-up, not silently-empty here.
+    if env.get("FABRIC_REFRESH_DATASETS_JSON") and env.get("FABRIC_CLIENT_ID"):
+        try:
+            from .adapters.clients import EntraHttp, build_entra_token_provider
+            from .adapters.collector_refresh import create_refresh_collector
+            datasets = json.loads(env["FABRIC_REFRESH_DATASETS_JSON"])
+            http = EntraHttp(build_entra_token_provider(
+                _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
+                _require(env, "FABRIC_CLIENT_SECRET")))
+            collectors.append(create_refresh_collector(http, {
+                "datasets": datasets, "top": int(env.get("FABRIC_REFRESH_TOP", "20"))}))
+        except Exception as exc:
+            print(f"[sweep] refresh collector skipped ({type(exc).__name__}: {exc})")
+
     if not collectors:
         raise RuntimeError("build_collector_from_env: no sources configured — set FABRIC_CSV_PATHS "
                            "and/or the live-source env (FABRIC_*_URL / FABRIC_KUSTO_*).")

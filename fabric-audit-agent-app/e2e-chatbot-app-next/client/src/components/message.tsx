@@ -18,7 +18,14 @@ import {
   McpApprovalActions,
 } from './elements/mcp-tool';
 import { Chart, type RenderChartOutput } from './elements/chart';
+import { ConfidenceBadge } from './elements/confidence-badge';
+import { ScopeIndicator } from './elements/scope-indicator';
 import { splitChartSegments } from '@/lib/chart-segments';
+import {
+  confidenceLevel,
+  mentionsProxy,
+  stripConfidenceLine,
+} from '@/lib/response-meta';
 import { MessageActions } from './message-actions';
 import { PreviewAttachment } from './preview-attachment';
 import equal from 'fast-deep-equal';
@@ -274,19 +281,35 @@ const PurePreviewMessage = ({
                             .every(
                               (l) => !l.trim() || l.trim().startsWith('🔎'),
                             );
+                        // U2/U3: on a real answer segment, surface confidence as a badge and a
+                        // single proxy/true-CU scope chip, and drop the now-redundant standalone
+                        // "Confidence: X" line. Progress segments never match these.
+                        const conf = isProgress
+                          ? null
+                          : confidenceLevel(seg.text);
+                        const proxy = !isProgress && mentionsProxy(seg.text);
+                        const shownText = conf
+                          ? stripConfidenceLine(seg.text)
+                          : seg.text;
                         return (
-                          <div
-                            key={`${key}-text-${i}`}
-                            className={cn({
-                              'text-sm text-muted-foreground [&_p]:my-0.5':
-                                isProgress,
-                              // Gloss/shimmer sweep across the live status lines while the
-                              // investigation is still streaming, so a long run reads as active
-                              // (not stuck). Only while streaming — historical progress stays dim.
-                              'fabric-shimmer': isProgress && isLoading,
-                            })}
-                          >
-                            <Response>{sanitizeText(seg.text)}</Response>
+                          <div key={`${key}-text-${i}`}>
+                            {(conf || proxy) && (
+                              <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                                {conf && <ConfidenceBadge level={conf} />}
+                                {proxy && <ScopeIndicator isProxy />}
+                              </div>
+                            )}
+                            <div
+                              className={cn({
+                                'text-sm text-muted-foreground [&_p]:my-0.5':
+                                  isProgress,
+                                // Gloss/shimmer across the live status lines while streaming, so a
+                                // long run reads as active (not stuck). Only while streaming.
+                                'fabric-shimmer': isProgress && isLoading,
+                              })}
+                            >
+                              <Response>{sanitizeText(shownText)}</Response>
+                            </div>
                           </div>
                         );
                       })}

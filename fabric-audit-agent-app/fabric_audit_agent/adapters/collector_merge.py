@@ -26,7 +26,9 @@ def _item_key(it):
 
 def merge_facts_list(facts_list):
     capacity, items = {}, {}
-    extra = {"models": [], "reports": [], "pipelines": [], "users": []}
+    # "refreshes" (B3) was previously missing — a standalone refresh collector's facts would be
+    # silently dropped on merge. Included so refresh flags survive a multi-source collect.
+    extra = {"models": [], "reports": [], "pipelines": [], "users": [], "refreshes": []}
     # Track the earliest collectedAt across sources — the merged result is only
     # as fresh as the OLDEST contributing source.
     collected_at = None
