@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
     "security": {"unusualRatio": 5, "unusualCritRatio": 10},
     "cost": {"idleCuPct": 5},
     "refresh": {"retryStormAttempts": 3, "slowDataPhaseMin": 60, "chronicFailureCount": 3},
+    "crossWorkspace": {"minWorkspaces": 3},   # B4: an anti-pattern in >= N workspaces is systemic
 }
 
 

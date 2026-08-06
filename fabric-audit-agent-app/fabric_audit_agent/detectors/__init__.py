@@ -35,4 +35,11 @@ def detect_all(facts, config=None, detectors=None):
                 "evidence": {"detector": name, "message": str(err)},
                 "what": f"Detector \"{name}\" failed and was skipped: {err}",
             })
+    # B4: after per-item detection, surface systemic anti-patterns spanning multiple workspaces.
+    try:
+        from .cross_workspace import cross_workspace_patterns
+        min_ws = int((config.get("crossWorkspace") or {}).get("minWorkspaces", 3))
+        flags.extend(cross_workspace_patterns(flags, min_workspaces=min_ws))
+    except Exception:
+        pass
     return flags
