@@ -6,12 +6,16 @@ from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings, s
 from fabric_audit_agent.context_alerts import create_alerts_store_memory
 
 
-def test_short_title_shortens_a_long_finding_sentence():
+def test_short_title_compresses_the_concentration_pattern():
+    # the dominant alert phrasing collapses to a glanceable "<user> — <pct> of capacity"
     long = ("Ana.Gonzales@newellco.com is driving ~35.4% of capacity CU (est.) — "
             "mostly via \"Ent-Reporting-SCM\".")
-    t = short_title(long)
-    assert t.endswith("…") and len(t) <= 62
-    assert "—" not in t and t.startswith("Ana.Gonzales")   # cut before the em-dash detail
+    assert short_title(long) == "Ana.Gonzales — 35.4% of capacity"
+
+
+def test_short_title_shortens_a_generic_long_sentence():
+    t = short_title("The Finance workspace refresh has failed 9 times in a row since Tuesday morning")
+    assert t.endswith("…") and len(t) <= 62 and t.startswith("The Finance")
     assert short_title("**Capacity is healthy today").startswith("Capacity")   # leading ** stripped
     assert short_title("") == "Finding"
 

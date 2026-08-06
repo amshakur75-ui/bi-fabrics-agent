@@ -15,6 +15,9 @@ from datetime import datetime, timezone
 
 # Cut points that separate the "ask" from trailing detail (mirrors the app's deriveShortTitle).
 _TITLE_CUT = re.compile(r"\s[—–-]\s|[:\n]|(?<=\w)\.\s", re.I)
+# The dominant concentration-alert phrasing — compress "<user>@dom is driving ~35.4% of capacity …"
+# to a glanceable "<user> — 35.4% of capacity" instead of re-truncating the whole long sentence.
+_CONCENTRATION = re.compile(r"^\s*(?P<who>\S+?)(?:@[\w.]+)?\s+is driving\s+~?(?P<pct>[\d.]+%)", re.I)
 
 
 def short_title(text, max_words=8, max_chars=60):
@@ -25,6 +28,9 @@ def short_title(text, max_words=8, max_chars=60):
     s = re.sub(r"^[#>*_`\s\"'\-–—]+", "", s).strip()
     if not s:
         return "Finding"
+    conc = _CONCENTRATION.match(s)
+    if conc:
+        return f"{conc.group('who')} — {conc.group('pct')} of capacity"
     m = _TITLE_CUT.search(s)
     if m and m.start() > 12:
         s = s[:m.start()].strip()
