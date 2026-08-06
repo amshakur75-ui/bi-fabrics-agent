@@ -32,12 +32,18 @@ def merge_facts_list(facts_list):
     # Track the earliest collectedAt across sources — the merged result is only
     # as fresh as the OLDEST contributing source.
     collected_at = None
+    # facts["access"] (security, FIX C) is a DICT of sub-lists, not a top-level list — merge its
+    # sub-lists across sources so a standalone security collector survives the multi-source merge.
+    access = {"adminGrants": [], "externalShares": [], "accessEvents": []}
     for f in facts_list or []:
         _merge_into(capacity, f.get("capacity") or {})
         for it in f.get("items") or []:
             _merge_into(items.setdefault(_item_key(it), {}), it)
         for key in extra:
             extra[key].extend(f.get(key) or [])
+        a = f.get("access") or {}
+        for key in access:
+            access[key].extend(a.get(key) or [])
         ca = f.get("collectedAt")
         if ca is not None:
             if collected_at is None or ca < collected_at:
@@ -51,6 +57,8 @@ def merge_facts_list(facts_list):
     for key, rows in extra.items():
         if rows:
             merged[key] = rows
+    if any(access.values()):
+        merged["access"] = access
     if collected_at is not None:
         merged["collectedAt"] = collected_at
     return merged

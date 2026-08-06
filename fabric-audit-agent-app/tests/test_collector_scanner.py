@@ -26,14 +26,19 @@ class _FakeScannerHttp:
 
 def _result():
     return {"workspaces": [{"id": "w1", "name": "Finance", "datasets": [
-        {"name": "Sales Model", "relationships": [
+        {"id": "ds-sales", "name": "Sales Model", "targetStorageMode": "DirectQuery",
+         "relationships": [
             {"crossFilteringBehavior": "BothDirections"},
             {"crossFilteringBehavior": "BothDirections"},
             {"crossFilteringBehavior": "BothDirections"},
             {"crossFilteringBehavior": "BothDirections"},
             {"crossFilteringBehavior": "OneDirection"},
         ]},
-        {"name": "Tiny Model", "relationships": [{"crossFilteringBehavior": "OneDirection"}]},
+        {"id": "ds-tiny", "name": "Tiny Model", "targetStorageMode": "Import",
+         "relationships": [{"crossFilteringBehavior": "OneDirection"}]},
+    ], "reports": [
+        {"name": "Sales DQ Report", "datasetId": "ds-sales"},
+        {"name": "Tiny Import Report", "datasetId": "ds-tiny"},
     ]}]}
 
 
@@ -46,6 +51,17 @@ def test_scanner_maps_bidirectional_relationships():
     assert models["Tiny Model"]["bidirectionalRels"] == 0
     assert models["Sales Model"]["workspace"] == "Finance"
     assert http.posts == [{"workspaces": ["w1"]}]     # batched workspace ids
+
+
+def test_scanner_emits_reports_with_directquery():
+    http = _FakeScannerHttp(_result())
+    facts = create_scanner_models_collector(http, {"workspaceIds": ["w1"], "sleep": lambda s: None})["collect"]()
+    reports = {r["name"]: r for r in facts["reports"]}
+    assert reports["Sales DQ Report"]["mode"] == "DirectQuery"      # dataset targetStorageMode=DirectQuery
+    assert reports["Tiny Import Report"]["mode"] != "DirectQuery"
+    # end to end: DirectQuery report -> a report.directquery flag from detect_all
+    types = {f["type"] for f in detect_all(facts)}
+    assert "report.directquery" in types
 
 
 def test_scanner_feeds_model_detector():

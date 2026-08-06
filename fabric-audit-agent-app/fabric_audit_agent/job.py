@@ -341,6 +341,29 @@ def build_collector_from_env(env, window=None):
         except Exception as exc:
             print(f"[sweep] scanner models collector skipped ({type(exc).__name__}: {exc})")
 
+    # Security / access via Activity Events (FIX C) — feeds detectors/security.py (external shares,
+    # admin grants). OFF unless FABRIC_SECURITY_ENABLED is truthy. Window = today (UTC) so far
+    # (activity events must be a same-UTC-day, <=24h range).
+    if str(env.get("FABRIC_SECURITY_ENABLED", "")).strip().lower() in ("1", "true", "yes") \
+            and env.get("FABRIC_CLIENT_ID"):
+        try:
+            from datetime import datetime, timezone
+            from .adapters.clients import EntraHttp, build_entra_token_provider
+            from .adapters.collector_security import create_security_collector
+            now = datetime.now(timezone.utc)
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            http = EntraHttp(build_entra_token_provider(
+                _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
+                _require(env, "FABRIC_CLIENT_SECRET")))
+            collectors.append(create_security_collector(http, {
+                "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "orgDomains": [d.strip() for d in (env.get("FABRIC_ORG_DOMAINS") or "").split(",") if d.strip()],
+                "sensitiveWorkspaces": [w.strip() for w in (env.get("FABRIC_SENSITIVE_WORKSPACES") or "").split(",") if w.strip()],
+            }))
+        except Exception as exc:
+            print(f"[sweep] security collector skipped ({type(exc).__name__}: {exc})")
+
     if not collectors:
         raise RuntimeError("build_collector_from_env: no sources configured — set FABRIC_CSV_PATHS "
                            "and/or the live-source env (FABRIC_*_URL / FABRIC_KUSTO_*).")

@@ -60,26 +60,42 @@ def create_scanner_models_collector(http, config):
         else:
             return []  # never completed within the poll budget
         result = http.get_json(f"{base}/workspaces/scanResult/{scan_id}") or {}
-        out = []
+        models, reports = [], []
         for ws in (result.get("workspaces") or []):
+            ds_mode = {}   # datasetId -> targetStorageMode, for the report DirectQuery signal
             for ds in (ws.get("datasets") or []):
                 rels = ds.get("relationships") or []
                 bidi = sum(1 for r in rels
                            if (r or {}).get("crossFilteringBehavior") == "BothDirections")
-                out.append({
+                models.append({
                     "workspace": ws.get("name"), "name": ds.get("name"),
                     "observedAt": _now_iso(), "bidirectionalRels": bidi,
                     "autoDateTime": None, "refreshFailRatePct": None,
                 })
-        return out
+                ds_mode[ds.get("id")] = ds.get("targetStorageMode")
+            for rep in (ws.get("reports") or []):
+                # visuals per page needs the detailed-metadata tenant setting (see docstring); 0 without.
+                pages = rep.get("pages") or []
+                visuals = max((len((p.get("visualObjects") or p.get("visuals")) or [])
+                               for p in pages), default=0)
+                mode = ds_mode.get(rep.get("datasetId"))
+                reports.append({
+                    "workspace": ws.get("name"), "name": rep.get("name"),
+                    "visuals": visuals,
+                    "mode": "DirectQuery" if mode == "DirectQuery" else rep.get("dataSourceType"),
+                    "source": None, "slowestVisualMs": None,   # slow-visual has no reachable source
+                })
+        return models, reports
 
     def collect():
-        models = []
+        models, reports = [], []
         try:
             for batch in _chunks(workspace_ids, 100):
-                models.extend(_scan_batch(batch))
+                m, r = _scan_batch(batch)
+                models.extend(m)
+                reports.extend(r)
         except Exception as exc:
-            print(f"[scanner] models collect failed ({type(exc).__name__}: {exc})")
-        return {"models": models, "collectedAt": _now_iso()}
+            print(f"[scanner] scan collect failed ({type(exc).__name__}: {exc})")
+        return {"models": models, "reports": reports, "collectedAt": _now_iso()}
 
     return {"collect": collect}
