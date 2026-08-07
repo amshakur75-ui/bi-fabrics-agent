@@ -85,7 +85,9 @@ class _FakeJsonResp:
         pass
 
     def json(self):
-        return {"ok": True}
+        # A well-formed EMPTY Log Analytics response always carries tables=[] (never a missing key)
+        # — build_log_analytics_query now validates the shape, so the fake must be realistic.
+        return {"tables": []}
 
 
 class _FakeSession:
@@ -128,14 +130,83 @@ def test_build_log_analytics_query_sends_prefer_wait_header(monkeypatch):
     assert sess.post_args["headers"]["Prefer"] == "wait=120"
 
 
-def test_build_log_analytics_query_defaults_timeout_to_240(monkeypatch):
+def test_build_log_analytics_query_defaults_timeout_to_55(monkeypatch):
+    # 26e: default LA wait is 55s (a clean server timeout before the socket), not the 4-min default.
     import fabric_audit_agent.adapters.clients as clients_mod
 
     monkeypatch.setattr(clients_mod, "build_entra_token_provider", lambda *a, **k: (lambda: "TOKEN"))
     sess = _FakeSession()
     query = clients_mod.build_log_analytics_query("wsid", "t", "cid", "sec", session=sess)
     query("T | take 1")
-    assert sess.post_args["headers"]["Prefer"] == "wait=240"
+    assert sess.post_args["headers"]["Prefer"] == "wait=55"
+    # socket timeout sits a margin above the server wait so LA's own timeout error wins
+    assert sess.post_args["timeout"] == 65
+
+
+# ---------- 1.1-1.3: LA timeout / retry / response-validation helpers ----------
+def test_la_parse_response_valid_and_empty():
+    from fabric_audit_agent.adapters.clients import _parse_la_response
+    assert _parse_la_response({"tables": []}) == []
+    rows = _parse_la_response({"tables": [{"columns": [{"name": "A"}, {"name": "B"}],
+                                           "rows": [[1, 2], [3, 4]]}]})
+    assert rows == [{"A": 1, "B": 2}, {"A": 3, "B": 4}]
+
+
+def test_la_parse_response_raises_on_bad_shape():
+    from fabric_audit_agent.adapters.clients import _parse_la_response, LogAnalyticsResponseError
+    import pytest
+    for bad in (None, [], {"noTables": 1}, {"tables": "x"}, {"tables": [{"columns": []}]}):
+        with pytest.raises(LogAnalyticsResponseError):
+            _parse_la_response(bad)
+
+
+def test_la_retry_retries_transient_then_succeeds():
+    from fabric_audit_agent.adapters.clients import _la_with_retry
+    calls = {"n": 0}
+    slept = []
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("HTTP 503 service unavailable")
+        return "ok"
+
+    assert _la_with_retry(flaky, sleep=slept.append) == "ok"
+    assert calls["n"] == 3 and slept == [1, 2]   # 2 retries, 1s then 2s backoff
+
+
+def test_la_retry_does_not_retry_non_transient():
+    from fabric_audit_agent.adapters.clients import _la_with_retry
+    calls = {"n": 0}
+
+    def auth_fail():
+        calls["n"] += 1
+        raise RuntimeError("401 Unauthorized")
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        _la_with_retry(auth_fail, sleep=lambda s: None)
+    assert calls["n"] == 1   # non-transient -> no retry
+
+
+def test_la_timeout_maps_to_specific_error(monkeypatch):
+    import fabric_audit_agent.adapters.clients as clients_mod
+    from fabric_audit_agent.adapters.clients import LogAnalyticsTimeoutError
+    import pytest
+
+    monkeypatch.setattr(clients_mod, "build_entra_token_provider", lambda *a, **k: (lambda: "TOKEN"))
+
+    class _TimeoutError(Exception):
+        pass
+
+    class _TimingOutSession:
+        def post(self, *a, **k):
+            raise _TimeoutError("the read operation timed out")
+
+    query = clients_mod.build_log_analytics_query("wsid", "t", "cid", "sec",
+                                                  session=_TimingOutSession())
+    with pytest.raises(LogAnalyticsTimeoutError):
+        query("T | take 1")
 
 
 # ---------- query_with_stats: QueryCompletionInformation is a SECONDARY table ----------

@@ -13,6 +13,8 @@ principal** in an allowed security group can call the Power BI / Fabric Admin AP
 Managed Identity cannot. ``build_entra_token_provider`` uses the client-credentials flow.
 """
 import json
+import re
+import time
 
 POWERBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default"
 ARM_SCOPE = "https://management.azure.com/.default"   # Azure Resource Manager (Fabric capacity List Usages)
@@ -299,31 +301,120 @@ def build_kusto_query(cluster_uri, database, tenant_id, client_id, client_secret
 
 LOGANALYTICS_SCOPE = "https://api.loganalytics.io/.default"   # Logs query API — NOT the ARM scope
 
+# Default LA server-side wait cap. 55s (not the 4-min LA default) so the client gets a CLEAN
+# timeout error before the socket drops — mirrors the plugin's workspace-client.ts PT55S choice
+# (tightening.md 26e). The socket timeout is set a margin above this so LA's own error wins.
+LA_QUERY_TIMEOUT_SECONDS = 55
+# Transient LA failures worth a bounded retry (tightening.md 26g): HTTP 429/503/504 or a throttled
+# message. Everything else (401/400/semantic/timeout) propagates immediately.
+_LA_TRANSIENT_RE = re.compile(r"\b(429|503|504)\b|throttl", re.IGNORECASE)
+
+
+class LogAnalyticsError(RuntimeError):
+    """A Log Analytics query failure surfaced with an actionable message (base class)."""
+
+
+class LogAnalyticsTimeoutError(LogAnalyticsError):
+    """The LA query exceeded its wait/socket budget — a specific, actionable timeout (26e)."""
+
+
+class LogAnalyticsResponseError(LogAnalyticsError):
+    """The LA API returned an unexpected response shape — raised instead of a bare
+    KeyError/IndexError so the failure is diagnosable (tightening.md 26h)."""
+
+
+def _la_is_transient(exc):
+    """True iff ``exc`` is a retryable LA failure: HTTP 429/503/504 or a throttled message."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in (429, 503, 504):
+        return True
+    return bool(_LA_TRANSIENT_RE.search(str(exc)))
+
+
+def _la_is_timeout(exc):
+    """True iff ``exc`` looks like a client/server timeout (requests.Timeout & friends) — matched
+    by class name + message so ``requests`` need not be imported in this offline-safe module."""
+    return "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower()
+
+
+def _la_with_retry(call, *, retries=2, backoff=(1, 2), sleep=None):
+    """Call ``call()``; on a TRANSIENT failure retry up to ``retries`` times with ``backoff``
+    seconds between attempts. Non-transient failures propagate immediately (no retry) (26g)."""
+    _sleep = sleep or time.sleep
+    attempt = 0
+    while True:
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 — classified immediately below; non-transient re-raises
+            if attempt >= retries or not _la_is_transient(exc):
+                raise
+            _sleep(backoff[min(attempt, len(backoff) - 1)])
+            attempt += 1
+
+
+def _parse_la_response(resp):
+    """Validate the Azure Monitor Logs query response shape and return ``list[dict]`` rows.
+
+    The real API ALWAYS returns a ``tables`` key (an empty list when there's no data), so a missing
+    key or a non-list ``tables``/``columns``/``rows`` is a genuine shape error — raised as
+    ``LogAnalyticsResponseError`` rather than silently coerced to "no data" (26h)."""
+    if not isinstance(resp, dict):
+        raise LogAnalyticsResponseError(
+            f"unexpected Log Analytics response shape: expected an object, got {type(resp).__name__}")
+    tables = resp.get("tables")
+    if tables is None:
+        raise LogAnalyticsResponseError("unexpected Log Analytics response shape: no 'tables' key")
+    if not isinstance(tables, list):
+        raise LogAnalyticsResponseError(
+            f"unexpected Log Analytics response shape: 'tables' is {type(tables).__name__}, not a list")
+    if not tables:
+        return []
+    t0 = tables[0]
+    if not (isinstance(t0, dict) and isinstance(t0.get("columns"), list)
+            and isinstance(t0.get("rows"), list)):
+        raise LogAnalyticsResponseError(
+            "unexpected Log Analytics response shape: tables[0] missing 'columns'/'rows' lists")
+    cols = [c.get("name") for c in t0["columns"]]
+    return [dict(zip(cols, row)) for row in t0["rows"]]
+
 
 def build_log_analytics_query(workspace_id, tenant_id, client_id, client_secret, session=None,
-                               *, timeout_seconds=240):
+                               *, timeout_seconds=LA_QUERY_TIMEOUT_SECONDS):
     """Return a ``query(kql) -> list[dict]`` callable against the Azure Monitor Logs query API
     (``api.loganalytics.io``), for the Log Analytics attribution collector. Service-principal
     client-credentials with the ``LOGANALYTICS_SCOPE`` audience (the SP needs the Azure RBAC
     ``Log Analytics Reader`` role on the workspace). Mirrors ``build_kusto_query``; inject a fake
     ``query`` in tests — this builder is only used at deploy.
 
-    Sends ``Prefer: wait=<timeout_seconds>`` (LA server-side wait cap) on every request. The Logs
-    query API is read-only by design, so there's no CRP-equivalent to set here."""
+    Hardening (tightening.md 26e/g/h): sends ``Prefer: wait=<timeout_seconds>`` (default 55s so a
+    clean server timeout beats the socket), sets the socket timeout a margin ABOVE the server wait,
+    retries transient 429/503/504/throttled failures (2 retries, 1s/2s backoff), validates the
+    response shape, and maps a timeout to a specific ``LogAnalyticsTimeoutError`` with an actionable
+    message instead of a raw socket error."""
     token = build_entra_token_provider(tenant_id, client_id, client_secret, scope=LOGANALYTICS_SCOPE)
-    http = EntraHttp(token, session=session)
+    # Socket timeout > server wait so Log Analytics returns its own clean timeout error first.
+    http = EntraHttp(token, session=session, timeout=timeout_seconds + 10)
     url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
 
     def query(kql, timespan=None):
         body = {"query": kql}
         if timespan:
             body["timespan"] = timespan
-        resp = http.post_json(url, body, headers={"Prefer": f"wait={timeout_seconds}"})
-        tables = (resp or {}).get("tables") or []
-        if not tables:
-            return []
-        cols = [c.get("name") for c in (tables[0].get("columns") or [])]
-        return [dict(zip(cols, row)) for row in (tables[0].get("rows") or [])]
+
+        def _post():
+            return http.post_json(url, body, headers={"Prefer": f"wait={timeout_seconds}"})
+
+        try:
+            resp = _la_with_retry(_post)
+        except Exception as exc:  # noqa: BLE001 — re-raised (possibly reframed) below
+            if _la_is_timeout(exc):
+                raise LogAnalyticsTimeoutError(
+                    f"Log Analytics query exceeded the {timeout_seconds}s timeout. Narrow the time "
+                    "window (a shorter ago(...)), add a row cap (| take N), or filter earlier in the "
+                    "pipeline (put the time filter first)."
+                ) from exc
+            raise
+        return _parse_la_response(resp)
 
     return query
 

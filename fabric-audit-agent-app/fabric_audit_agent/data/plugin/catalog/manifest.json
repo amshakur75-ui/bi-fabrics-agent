@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "1.0.0",
+  "builtFrom": "enriched-field-catalog.json",
+  "models": [
+    {
+      "name": "CMMS",
+      "file": "models/CMMS.json",
+      "records": 872,
+      "withDescription": 787
+    },
+    {
+      "name": "Ent-Reporting-DTC",
+      "file": "models/Ent-Reporting-DTC.json",
+      "records": 400,
+      "withDescription": 389
+    },
+    {
+      "name": "Ent-Reporting-Ecomm",
+      "file": "models/Ent-Reporting-Ecomm.json",
+      "records": 1698,
+      "withDescription": 397
+    },
+    {
+      "name": "Ent-Reporting-Finance",
+      "file": "models/Ent-Reporting-Finance.json",
+      "records": 212,
+      "withDescription": 86
+    },
+    {
+      "name": "Ent-Reporting-Marketing",
+      "file": "models/Ent-Reporting-Marketing.json",
+      "records": 1105,
+      "withDescription": 278
+    },
+    {
+      "name": "Ent-Reporting-Ops-Finance",
+      "file": "models/Ent-Reporting-Ops-Finance.json",
+      "records": 1723,
+      "withDescription": 1001
+    },
+    {
+      "name": "Ent-Reporting-Profitability",
+      "file": "models/Ent-Reporting-Profitability.json",
+      "records": 157,
+      "withDescription": 44
+    },
+    {
+      "name": "Ent-Reporting-Purchasing-Finance",
+      "file": "models/Ent-Reporting-Purchasing-Finance.json",
+      "records": 170,
+      "withDescription": 116
+    },
+    {
+      "name": "Ent-Reporting-Quality",
+      "file": "models/Ent-Reporting-Quality.json",
+      "records": 649,
+      "withDescription": 119
+    },
+    {
+      "name": "Ent-Reporting-SCM",
+      "file": "models/Ent-Reporting-SCM.json",
+      "records": 5495,
+      "withDescription": 655
+    },
+    {
+      "name": "Ent-Reporting-SLM",
+      "file": "models/Ent-Reporting-SLM.json",
+      "records": 1628,
+      "withDescription": 413
+    },
+    {
+      "name": "Ent-Reporting-Sales",
+      "file": "models/Ent-Reporting-Sales.json",
+      "records": 3110,
+      "withDescription": 1063
+    },
+    {
+      "name": "Ent-Reporting-Walmart",
+      "file": "models/Ent-Reporting-Walmart.json",
+      "records": 2525,
+      "withDescription": 920
+    },
+    {
+      "name": "OEE Monthly Reports",
+      "file": "models/OEE_Monthly_Reports.json",
+      "records": 939,
+      "withDescription": 793
+    }
+  ],
+  "totalRecords": 20683,
+  "distinctTokens": 2506
+}
