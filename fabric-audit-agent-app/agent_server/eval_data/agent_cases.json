@@ -15,7 +15,7 @@
    },
    {
     "type": "text",
-    "text": "No live capacity signal is configured, so I can't confirm a spike — enable monitoring."
+    "text": "No live capacity signal is configured, so I can't confirm a spike \u2014 enable monitoring."
    }
   ],
   "expectTool": "investigate_capacity_spike",
@@ -133,7 +133,7 @@
    },
    {
     "type": "text",
-    "text": "I can't inventory the workspaces — no live telemetry source is configured; enable monitoring (Log Analytics or Workspace Monitoring) to see the real estate."
+    "text": "I can't inventory the workspaces \u2014 no live telemetry source is configured; enable monitoring (Log Analytics or Workspace Monitoring) to see the real estate."
    }
   ],
   "expectTool": "list_workspaces",
@@ -155,7 +155,7 @@
    },
    {
     "type": "text",
-    "text": "I can't rank top users right now — the offline activity feed has zero attributed users; enable monitoring to get real coverage."
+    "text": "I can't rank top users right now \u2014 the offline activity feed has zero attributed users; enable monitoring to get real coverage."
    }
   ],
   "expectTool": "user_activity",
@@ -180,7 +180,7 @@
    },
    {
     "type": "text",
-    "text": "Analysis of alice@co is insufficient — the evidence doesn't support a defensible conclusion; enable monitoring on additional workspaces to get real coverage."
+    "text": "Analysis of alice@co is insufficient \u2014 the evidence doesn't support a defensible conclusion; enable monitoring on additional workspaces to get real coverage."
    }
   ],
   "expectTool": "investigate_user",
@@ -286,7 +286,7 @@
   "messages": [
    {
     "role": "user",
-    "content": "Give me live capacity diagnostics — resource, consumed, remaining."
+    "content": "Give me live capacity diagnostics \u2014 resource, consumed, remaining."
    }
   ],
   "script": [
@@ -297,7 +297,7 @@
    },
    {
     "type": "text",
-    "text": "I can't provide capacity diagnostics — the Capacity Events cluster isn't configured; enable monitoring (set FABRIC_CAPACITY_EVENTS_CLUSTER) to get live diagnostics."
+    "text": "I can't provide capacity diagnostics \u2014 the Capacity Events cluster isn't configured; enable monitoring (set FABRIC_CAPACITY_EVENTS_CLUSTER) to get live diagnostics."
    }
   ],
   "expectTool": "capacity_diagnostics",
@@ -321,7 +321,7 @@
    },
    {
     "type": "text",
-    "text": "Static analysis flags 1 anti-pattern: filter-whole-table — FILTER() over an entire table is slow; filter a single column instead."
+    "text": "Static analysis flags 1 anti-pattern: filter-whole-table \u2014 FILTER() over an entire table is slow; filter a single column instead."
    }
   ],
   "expectTool": "analyze_dax",
@@ -367,7 +367,7 @@
    },
    {
     "type": "text",
-    "text": "I can't show what changed — no run history is available yet; enable monitoring/scheduling so the Job can build history over time."
+    "text": "I can't show what changed \u2014 no run history is available yet; enable monitoring/scheduling so the Job can build history over time."
    }
   ],
   "expectTool": "whats_changed",
@@ -416,7 +416,7 @@
    },
    {
     "type": "text",
-    "text": "I can't run that — no live query engine is configured yet; enable monitoring to run ad-hoc KQL."
+    "text": "I can't run that \u2014 no live query engine is configured yet; enable monitoring to run ad-hoc KQL."
    }
   ],
   "expectTool": "run_kql",
@@ -841,7 +841,7 @@
    },
    {
     "type": "text",
-    "text": "I can't run that SQL query — no Fabric SQL endpoint is configured; set FABRIC_SQL_CONNECTION_STRING or FABRIC_SQL_ENDPOINT to run ad-hoc SQL against a Lakehouse or Warehouse."
+    "text": "I can't run that SQL query \u2014 no Fabric SQL endpoint is configured; set FABRIC_SQL_CONNECTION_STRING or FABRIC_SQL_ENDPOINT to run ad-hoc SQL against a Lakehouse or Warehouse."
    }
   ],
   "expectTool": "run_sql",
@@ -865,7 +865,7 @@
    },
    {
     "type": "text",
-    "text": "I can't run that DAX query — no XMLA endpoint is configured; set FABRIC_XMLA_ENDPOINT to run ad-hoc DAX against a semantic model."
+    "text": "I can't run that DAX query \u2014 no XMLA endpoint is configured; set FABRIC_XMLA_ENDPOINT to run ad-hoc DAX against a semantic model."
    }
   ],
   "expectTool": "run_dax",
@@ -889,7 +889,7 @@
    },
    {
     "type": "text",
-    "text": "I can't describe the Sales table — no Fabric SQL endpoint is configured."
+    "text": "I can't describe the Sales table \u2014 no Fabric SQL endpoint is configured."
    }
   ],
   "expectTool": "describe_sql_table",
@@ -911,7 +911,7 @@
    },
    {
     "type": "text",
-    "text": "I can't describe the semantic model — no XMLA endpoint is configured."
+    "text": "I can't describe the semantic model \u2014 no XMLA endpoint is configured."
    }
   ],
   "expectTool": "describe_semantic_model",
@@ -935,7 +935,7 @@
    },
    {
     "type": "text",
-    "text": "This is a strong DAX-targeted question (confidence 1.0, score 4.5 vs runner-up 0.0) — best answered with run_dax against the semantic model, after grounding with describe_semantic_model."
+    "text": "This is a strong DAX-targeted question (confidence 1.0, score 4.5 vs runner-up 0.0) \u2014 best answered with run_dax against the semantic model, after grounding with describe_semantic_model."
    }
   ],
   "expectTool": "classify_query_target",
@@ -946,7 +946,7 @@
   "messages": [
    {
     "role": "user",
-    "content": "Render a bar chart of CU% at 09:00, 09:10, and 09:15 — 55, 85, and 72."
+    "content": "Render a bar chart of CU% at 09:00, 09:10, and 09:15 \u2014 55, 85, and 72."
    }
   ],
   "script": [
@@ -984,6 +984,176 @@
    }
   ],
   "expectTool": "render_chart",
+  "expectAbstain": false
+ },
+ {
+  "name": "resolve-term-informal-name",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What is the canonical name for the Sales model?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "resolve_term",
+    "input": {
+     "term": "Sales"
+    }
+   },
+   {
+    "type": "text",
+    "text": "The Sales model resolves to the canonical Ent-Reporting-Sales dataset in the Enterprise Sales workspace."
+   }
+  ],
+  "expectTool": "resolve_term",
+  "expectAbstain": false
+ },
+ {
+  "name": "resolve-field-measure-name",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Resolve the Invoice Quantity measure to its search patterns."
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "resolve_field",
+    "input": {
+     "field": "Invoice Quantity"
+    }
+   },
+   {
+    "type": "text",
+    "text": "Invoice Quantity matches several fields; I surfaced the candidates so you can pick the right model."
+   }
+  ],
+  "expectTool": "resolve_field",
+  "expectAbstain": false
+ },
+ {
+  "name": "field-usage-query-built",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Build a usage query for the Invoice Quantity measure."
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "field_usage_query",
+    "input": {
+     "field": "Invoice Quantity"
+    }
+   },
+   {
+    "type": "text",
+    "text": "I built an authoritative, provenance-tracked usage query for the Invoice measure ready to run."
+   }
+  ],
+  "expectTool": "field_usage_query",
+  "expectAbstain": false
+ },
+ {
+  "name": "workspace-usage-query-built",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Show adoption for the Ent-Reporting-Sales workspace."
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "workspace_usage_query",
+    "input": {
+     "scopeColumn": "PowerBIWorkspaceName",
+     "scopeValue": "Ent-Reporting-Sales"
+    }
+   },
+   {
+    "type": "text",
+    "text": "I built an adoption query scoped to the Ent-Reporting-Sales workspace ready to run."
+   }
+  ],
+  "expectTool": "workspace_usage_query",
+  "expectAbstain": false
+ },
+ {
+  "name": "field-search-discovery",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Find fields related to invoice."
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "field_search",
+    "input": {
+     "query": "invoice"
+    }
+   },
+   {
+    "type": "text",
+    "text": "Found several matching Invoice fields across the catalog."
+   }
+  ],
+  "expectTool": "field_search",
+  "expectAbstain": false
+ },
+ {
+  "name": "field-detail-drilldown",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Show the metadata for Invoice Quantity in Ent-Reporting-Sales."
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "field_detail",
+    "input": {
+     "model": "Ent-Reporting-Sales",
+     "field": "Invoice Quantity"
+    }
+   },
+   {
+    "type": "text",
+    "text": "Here is the metadata for the Invoice Quantity measure in that model."
+   }
+  ],
+  "expectTool": "field_detail",
+  "expectAbstain": false
+ },
+ {
+  "name": "artifact-lookup-by-name",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Which workspace holds Ent-Reporting-Sales?"
+   }
+  ],
+  "script": [
+   {
+    "type": "tool_use",
+    "name": "artifact_lookup",
+    "input": {
+     "artifactName": "Ent-Reporting-Sales"
+    }
+   },
+   {
+    "type": "text",
+    "text": "That artifact lives in the Enterprise Sales workspace."
+   }
+  ],
+  "expectTool": "artifact_lookup",
   "expectAbstain": false
  }
 ]

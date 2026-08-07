@@ -58,9 +58,11 @@ class TestToolDefinitions:
         assert "question" in schema.get("required", [])
 
     def test_total_tool_count_increased(self):
-        """Phase 7 added 5 tools + Phase 8 added 1 (render_chart) to the original 20."""
+        """Phase 7 added 5 tools + Phase 8 added 1 (render_chart) to the original 20; Phase 3.8
+        added 7 Newell resolution tools (resolve_term/resolve_field/field_usage_query/
+        workspace_usage_query/field_search/field_detail/artifact_lookup)."""
         tools = create_tool_definitions()
-        assert len(tools) == 26
+        assert len(tools) == 33
 
 
 # ---------------------------------------------------------------------------

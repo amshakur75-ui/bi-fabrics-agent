@@ -71,6 +71,7 @@ _HEARTBEAT_S = _int_env("FABRIC_HEARTBEAT_S", 12)
 
 from .system_prompt import build_system_prompt, wrap_untrusted as _wrap_untrusted
 from .chart_stream import append_chart_fences
+from .loop_hooks import pretool_pbi_usage_redirect, post_tool_result
 
 
 
@@ -147,12 +148,21 @@ async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, ma
                 continue
             if on_tool is not None:
                 await on_tool(b.name, b.input)
+            # Hook (c) PRE-tool-execution (plan 3.10 / 24b): redirect a hand-authored Power-BI
+            # field/measure usage query to the authoritative resolver instead of executing it.
+            # Shared with the sync twin via loop_hooks so the two loops cannot drift.
+            redirect = pretool_pbi_usage_redirect(b.name, b.input)
             key = (b.name, json.dumps(b.input, sort_keys=True, ensure_ascii=False))
-            if key in cache:
+            if redirect is not None:
+                result = redirect
+            elif key in cache:
                 result = {"note": "duplicate read-only tool call skipped", "cached": cache[key]}
             else:
                 handler = dispatch.get(b.name)
                 result = await handler(b.input) if handler else {"error": f"unknown tool {b.name}"}
+                # Hooks (a)+(b) POST-tool-execution: auto-analysis nudge on row results +
+                # ExecutingUser identity-display normalization at the structured-row layer.
+                result = post_tool_result(b.name, b.input, result)
                 cache[key] = result
                 tool_results.append({"tool": b.name, "callId": b.id, "input": b.input,
                                      "result": result})
@@ -511,6 +521,13 @@ async def _run(request, on_tool=None):
     ticket_tools, ticket_dispatch = create_ticket_tool_and_dispatch()
     tools = tools + ticket_tools
     dispatch = {**dispatch, **ticket_dispatch}
+    # Export tools (plan 5.4): turn a prior tool result's columns+rows into a server-generated
+    # downloadable HTML / Excel artifact. Same direct-tool registration pattern as render_chart;
+    # the tools REUSE data already in context (never re-execute a query).
+    from .export_tool import export_tool_and_dispatch
+    export_tools, export_dispatch = export_tool_and_dispatch()
+    tools = tools + export_tools
+    dispatch = {**dispatch, **export_dispatch}
     messages = _messages_from_request(request)
     question = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     budget = _step_budget(question)

@@ -48,8 +48,18 @@ bypass class in full."""
 import re
 
 from .kql_guard import assert_read_only_kql, first_statement, _strip_string_literals
+# Audit-rule layer (24c/26r) — the NAMED KQL rules + service-limit pre-flight + Kusto error
+# mapper. kql_guard's signatures stay frozen; this is a separate, additive gate layered on top of
+# the static firewall for the agent-authored-KQL EXECUTION path (run_kql_handler). parse_kusto_error
+# is re-exported here so the execution path routes raw Kusto errors through the firewall module.
+from .kql_audit_rules import audit_kql, preflight_limits, parse_kusto_error
 
 _MAX_ADHOC_LEN = 10_000
+
+# Machine stage tag for an audit-rule (error-severity) rejection. Additive to the existing stage
+# vocabulary (length | verbatim-string | multiline-string | comment | multi-statement |
+# control-command | denied-operator); callers that read `.stage` keep working unchanged.
+_AUDIT_STAGE = "audit-rule"
 
 # KQL verbatim-string marker: '@' immediately before a quote, e.g. @"..." / @'...'. In a verbatim
 # string '\' is a LITERAL character (not an escape) and the string closes at the very next quote.
@@ -160,3 +170,29 @@ def validate_adhoc_kql(kql):
             "or evaluate) — not allowed in ad-hoc read-only queries", "denied-operator")
 
     return s
+
+
+def audit_adhoc_kql(kql):
+    """Audit-rule gate (24c / 26r) for the agent-authored-KQL EXECUTION path, layered ON TOP of
+    ``validate_adhoc_kql``. Runs the named KQL audit rules (``audit_kql``) plus the service-limit
+    pre-flight (``preflight_limits``).
+
+    Severity contract: ERROR-severity findings BLOCK execution — this raises ``FirewallRejection``
+    with stage ``"audit-rule"`` (e.g. a hand-authored EventText filter on PowerBIDatasetsWorkspace
+    (CORRECT007), ``col == null`` (CORRECT001), or a PowerBIDatasetsWorkspace query with no time
+    filter (PERF003_POWER_BI)). WARNINGS + pre-flight risks NEVER block — they are returned as
+    surfaced advisories. Pure; no engine calls; ``kql_guard`` untouched.
+
+    Returns an advisories dict on pass:
+        ``{"warnings": [...findings...], "risks": [...preflight risks...], "score": int, "grade": str}``
+    """
+    s = str(kql)
+    audit = audit_kql(s)
+    if audit["blocking"]:
+        errors = [f for f in audit["findings"] if f["severity"] == "error"]
+        reason = " ".join(f"[{f['ruleId']}] {f['message']} {f['suggestion']}".strip()
+                          for f in errors) or "query failed a blocking KQL audit rule"
+        raise FirewallRejection(reason, _AUDIT_STAGE)
+    warnings = [f for f in audit["findings"] if f["severity"] != "error"]
+    return {"warnings": warnings, "risks": preflight_limits(s),
+            "score": audit["score"], "grade": audit["grade"]}

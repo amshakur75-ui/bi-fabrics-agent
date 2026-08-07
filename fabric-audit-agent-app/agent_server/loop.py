@@ -10,6 +10,7 @@ and ``wrap_untrusted`` on every tool result.
 Pure: the Anthropic client is injected."""
 import json
 from .system_prompt import wrap_untrusted
+from .loop_hooks import pretool_pbi_usage_redirect, post_tool_result
 
 
 def _blocks_to_dicts(content):
@@ -64,13 +65,22 @@ def run_tool_loop(client, *, model, system, messages, tools, dispatch, max_steps
         for b in resp.content:
             if getattr(b, "type", None) != "tool_use":
                 continue
+            # Hook (c) PRE-tool-execution (plan 3.10 / 24b): redirect a hand-authored Power-BI
+            # field/measure usage query to the authoritative resolver instead of executing it.
+            # Shared with the async twin via loop_hooks so the two loops cannot drift.
+            redirect = pretool_pbi_usage_redirect(b.name, b.input)
             key = (b.name, json.dumps(b.input, sort_keys=True, ensure_ascii=False))
-            if key in cache:
+            if redirect is not None:
+                result = redirect
+            elif key in cache:
                 result = {"note": "duplicate read-only tool call skipped; see earlier result",
                           "cached": cache[key]}
             else:
                 handler = dispatch.get(b.name)
                 result = handler(b.input) if handler else {"error": f"unknown tool {b.name}"}
+                # Hooks (a)+(b) POST-tool-execution: auto-analysis nudge on row results +
+                # ExecutingUser identity-display normalization at the structured-row layer.
+                result = post_tool_result(b.name, b.input, result)
                 cache[key] = result
                 tool_results.append({"tool": b.name, "result": result})
             trajectory.append({"tool": b.name, "input": b.input})
