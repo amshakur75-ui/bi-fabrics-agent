@@ -13,8 +13,9 @@ actions are delivering findings and sending notifications.
 
 ## Status & rollout (new session: start here)
 
-Build is **complete & verified** (`python -m pytest -q` → **1766 passed / 55 subtests** as of the
-Phase-2/3/5 port + integration pass; the Node reference app is retired). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** (read-only App + MCP deployed & verified end-to-end — see `docs/DEPLOY-STATUS.md`; scheduled Job/Teams pending):
+Build is **complete & verified** (`python -m pytest -q` → **1775 passed / 55 subtests** as of the
+Phase-2/3/5 port + integration pass and the Phase-7 close-out (4.11 SKU cross-check); the Node
+reference app is retired). Deployment runs in phases — **Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** (read-only App + MCP deployed & verified end-to-end — see `docs/DEPLOY-STATUS.md`; scheduled Job/Teams pending):
 
 1. **Phase 1 — local CSV test** (done): `python run.py import data.csv [Items.csv]`.
 2. **Phase 2 — single-workspace connectivity test** (built): `python -m fabric_audit_agent.connectivity <wsId> [--auth user|sp]` → **PHASE2-SP-TEST.md**.

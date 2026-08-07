@@ -48,6 +48,7 @@ from .key_utils import user_matches as _user_matches
 from .investigation.timepoint_peaks import (
     timepoint_peaks as _timepoint_peaks, base_cu_from_sku as _base_cu_from_sku,
 )
+from .investigation.sku import check_sku_base_consistency as _check_sku_base_consistency
 from .investigation.overloads import overload_windows as _overload_windows
 # Phase 3.8 — Newell resolution layer (consumed, never modified). Pure functions imported at
 # module load; the file-backed resolvers (field schema, catalog, artifact inventory) are reached
@@ -227,6 +228,19 @@ def _live_base_cu(env):
         return capacity_base_cu(_capacity_kusto_query(env), cfg)
     except Exception:
         return None
+
+
+def _sku_mismatch_flag(base_cu, base_src, sku):
+    """4.11 (highest-risk item): when the base we compute every %-of-base figure against came
+    from the LIVE capacity-events stream, cross-check it against the base the reported SKU name
+    implies. Returns the loud ``skuMismatch`` dict ONLY on a real disagreement (both sides known
+    and different) so a clean output is byte-unchanged; returns None otherwise. Only the live
+    path is cross-checkable — when the base itself was derived from the SKU/env (no live source),
+    there is no independent second number to compare (see ``sku.check_sku_base_consistency``)."""
+    if base_src != "live-capacity-events":
+        return None
+    flag = _check_sku_base_consistency(_base_cu_from_sku(sku), base_cu)
+    return flag if (flag and flag.get("skuMismatch")) else None
 
 
 def _queryplan_estimate(kql, *, query=None):
@@ -1324,6 +1338,7 @@ def create_tool_definitions(base_dir=None):
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
             sku = cap_facts.get("sku")
             base_cu, base_src = _resolve_base_cu(inp.get("baseCu"), sku)
+            sku_mismatch = _sku_mismatch_flag(base_cu, base_src, sku)  # 4.11
 
             events, _series, meta = _resolve_event_sources(
                 start=start, end=end,
@@ -1343,6 +1358,7 @@ def create_tool_definitions(base_dir=None):
                     "peaks": [], "rowCount": 0, "noData": True,
                     "date": date_label, "windowUtc": f"{start} .. {end}",
                     "sku": sku, "baseCu": base_cu, "baseCuSource": base_src, "source": source,
+                    **({"skuMismatch": sku_mismatch} if sku_mismatch else {}),
                     "queryKql": meta.get("eventKql"),
                     "noDataMessage": (
                         f"ZERO operations returned for {date_label} UTC ({start} .. {end}). There "
@@ -1419,6 +1435,8 @@ def create_tool_definitions(base_dir=None):
                 "cuUnit": "cuSeconds (CPU-time proxy; not authoritative billed capacity CU)",
             }, rows_key="peaks", kql=meta["eventKql"], extra={"windowLabel": meta["windowLabel"]})
             out["tier"] = meta["tier"]
+            if sku_mismatch:
+                out["skuMismatch"] = sku_mismatch   # 4.11: loud base-CU disagreement
             if _used_metric_names:
                 # I4 fix: full formula/notes/source provenance attached ONCE per response instead
                 # of once per row (see _mv_dict_light docstring). Keyed by the same metricName
@@ -1455,6 +1473,7 @@ def create_tool_definitions(base_dir=None):
             cap_facts = _collector_or_mock()["collect"]().get("capacity") or {}
             sku = cap_facts.get("sku")
             base_cu, base_src = _resolve_base_cu(inp.get("baseCu"), sku)
+            sku_mismatch = _sku_mismatch_flag(base_cu, base_src, sku)  # 4.11
 
             series_raw, series_meta = _capacity_series_only(None, None, start, end)
             events, _s, meta = _resolve_event_sources(start=start, end=end, cap=_EVENT_CAP,
@@ -1505,6 +1524,7 @@ def create_tool_definitions(base_dir=None):
                 "sku": sku,
                 "baseCu": base_cu,
                 "baseCuSource": base_src,   # live-capacity-events / sku-name / env-default / explicit-arg
+                **({"skuMismatch": sku_mismatch} if sku_mismatch else {}),   # 4.11
                 "thresholdCuPct": min_cu_pct,
                 "rowCount": len(windows),
                 "source": source,
@@ -1813,11 +1833,15 @@ def create_tool_definitions(base_dir=None):
             # cuPct/overageAddMs mismatch as a sourceInconsistencies evidence entry (does not
             # crash the diagnosis -- see diagnose_throttle for the try/except contract).
             cap_facts_for_base = _collector_or_mock()["collect"]().get("capacity") or {}
-            base_cu_for_diag, _bcs = _resolve_base_cu(None, cap_facts_for_base.get("sku"))
+            _diag_sku = cap_facts_for_base.get("sku")
+            base_cu_for_diag, _bcs = _resolve_base_cu(None, _diag_sku)
+            _diag_mismatch = _sku_mismatch_flag(base_cu_for_diag, _bcs, _diag_sku)  # 4.11
             chain = _run_diagnosis(symptom, series=series, events=events, refreshes=refreshes,
                                     has_real_cost=(meta["tier"] != "operationLevel"),
                                     base_cu=base_cu_for_diag)
             out = {**chain, "tier": meta["tier"], "source": source, "windowLabel": meta["windowLabel"]}
+            if _diag_mismatch:
+                out["skuMismatch"] = _diag_mismatch
             if meta.get("coverageNote") is not None:
                 out["coverageNote"] = meta["coverageNote"]
             return out

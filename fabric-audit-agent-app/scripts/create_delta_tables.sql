@@ -2,7 +2,10 @@
 -- Run once in a Databricks notebook or SQL warehouse against Unity Catalog.
 -- Replace ${catalog} and ${schema} with actual values (default: shakur-main.bi-fabrics-audit).
 --
--- All four tables: liquid clustering (no partition columns), 90-day retention.
+-- All tables: liquid clustering via CLUSTER BY (NO partition columns), 90-day retention.
+-- NOTE: CREATE TABLE IF NOT EXISTS will NOT add CLUSTER BY to a table that already exists.
+-- For tables created before this clustering was added, run the one-time ALTER statements at the
+-- bottom of this file to enable liquid clustering on the existing table.
 
 -- 1. run_history — one row per sweep/audit run (replaces the local JSON store)
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.run_history (
@@ -17,6 +20,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.run_history (
   findings_json   STRING       COMMENT 'JSON array of {key, level, where, what, suppressed}'
 )
 USING DELTA
+CLUSTER BY (tenant, run_at)
 COMMENT 'Audit sweep run history — one row per run_audit() invocation'
 TBLPROPERTIES (
   'delta.deletedFileRetentionDuration' = 'interval 90 days',
@@ -36,6 +40,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.audit_findings (
   suppressed      BOOLEAN      COMMENT 'Whether the finding was suppressed/snoozed'
 )
 USING DELTA
+CLUSTER BY (tenant, run_at)
 COMMENT 'Individual audit findings — one row per finding per run, queryable for Phase 6 context'
 TBLPROPERTIES (
   'delta.deletedFileRetentionDuration' = 'interval 90 days',
@@ -54,6 +59,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.capacity_reporting (
   background_pct  DOUBLE       COMMENT 'Background workload percentage (nullable)'
 )
 USING DELTA
+CLUSTER BY (tenant, window_ts)
 COMMENT 'Capacity CU% time-series snapshots — one row per 30-second window per run'
 TBLPROPERTIES (
   'delta.deletedFileRetentionDuration' = 'interval 90 days',
@@ -72,6 +78,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.concentration_alerts (
   delivery_channel STRING     COMMENT 'Channel used: none until Phase 10 (Entra bot identity)'
 )
 USING DELTA
+CLUSTER BY (tenant, alert_at)
 COMMENT 'Concentration and threshold alerts — one row per alert event'
 TBLPROPERTIES (
   'delta.deletedFileRetentionDuration' = 'interval 90 days',
@@ -100,8 +107,19 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.audit_alerts (
   presence_count        INT      COMMENT 'Hysteresis streak: consecutive checks a pending signal has persisted'
 )
 USING DELTA
+CLUSTER BY (incident_key)
 COMMENT 'Tier-2 alert state machine — one row per incident (dedup / 48h reminders / escalation / resolution)'
 TBLPROPERTIES (
   'delta.deletedFileRetentionDuration' = 'interval 90 days',
   'delta.logRetentionDuration' = 'interval 90 days'
 );
+
+-- One-time ALTER statements for tables that were CREATEd before liquid clustering was added
+-- above (CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so it will not add the
+-- CLUSTER BY). Run these once per pre-existing table; they are safe no-ops if the table is
+-- already clustered on the same columns. Retention is idempotent to (re)set the same way.
+-- ALTER TABLE ${catalog}.${schema}.run_history          CLUSTER BY (tenant, run_at);
+-- ALTER TABLE ${catalog}.${schema}.audit_findings       CLUSTER BY (tenant, run_at);
+-- ALTER TABLE ${catalog}.${schema}.capacity_reporting   CLUSTER BY (tenant, window_ts);
+-- ALTER TABLE ${catalog}.${schema}.concentration_alerts CLUSTER BY (tenant, alert_at);
+-- ALTER TABLE ${catalog}.${schema}.audit_alerts         CLUSTER BY (incident_key);

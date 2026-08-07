@@ -2684,3 +2684,44 @@ stress-testing rounds.
 4. Any "nothing found / quiet period" answer to a time range that should first trigger a
    "data may not cover this window" check (C5/null-data-gate territory)
 
+---
+
+# PHASE 7.3 CLOSURE LEDGER (2026-08-07 — master-integration-plan.md close-out)
+
+Source of truth: `tasks/GAPS-RECONCILIATION.md` (93 ids reconciled). This ledger records which
+items the master-integration-plan.md run (Machine A phases 0–6 + Machine B Phase 7) actually LANDED,
+with the owning phase id, and — critically — which OPEN items it did NOT close, so nothing is
+silently marked done.
+
+## Closed by this plan (with phase id)
+- **A1 / A2 / A3** throttle-threshold + burndown-chain + WM eventDepth signal → **Phase 1.8** (verified live).
+- **N12 (`queryKql` provenance) / N23 (date-filter)** → **Phase 1** + existing wiring.
+- **kql_audit_rules 4-rule + 8-preflight engine + `parse_kusto_error`** → **Phase 2** (new `query/kql_audit_rules.py`, wired into `query/firewall.py`, new firewall stage `"audit-rule"`).
+- **Resolve layer (10 modules) + 7 resolve tools + 3 loop hooks** → **Phase 3** (`fabric_audit_agent/resolve/`, `agent_server/loop_hooks.py`).
+- **N7 (attributionMode cpu/duration), N8/N9 (unified threshold), 4.6–4.10 statistical rigor + `stats.py`** → **Phase 4**.
+- **N5 / N6 (system-item exclusion, both concentration detectors) + threshold unification** → **Phase 4.5** (verified this pass — both detectors use `system_item_kinds`; threshold single-sourced from `config.capacity.concentrationPct`).
+- **N26 — SKU / base-CU mismatch (HIGHEST-RISK)** → **Phase 4.11** — `investigation/sku.py::check_sku_base_consistency` + `tools.py::_sku_mismatch_flag` surfacing `skuMismatch` on the 3 %-of-base tools (live-fire verification in 7.2).
+- **Export layer (html/xlsx) + 2 export tools** → **Phase 5.1–5.4**.
+- **N27 — chart render path + KQL display** → **Phase 5.5** (`kql-viewer.tsx` read-only highlighter + copy) and **Phase 5.6** (`chart.tsx` Newell brand tokens `#288FC2/#01405C/#696158`). Deployed-render live-verify → 7.2.
+- **Memory tables (four Delta tables)** → **Phase 6.2** — `scripts/create_delta_tables.sql` verified: no partitioning, 90-day retention; **liquid clustering GAP fixed** (added `CLUSTER BY` to all five tables + one-time `ALTER TABLE` guidance).
+- **N15 (tool-loop dedup) → Phase 6.6; D4 (dead Node app + stale README) → Phase 6.7** (Node app already deleted; docs corrected).
+- **7.1 full suite green** → **1775 passed / 55 subtests** (baseline 1547).
+
+## NOT closed by this plan — carried forward OPEN with reason (completeness backstop, §3 of GAPS-RECONCILIATION.md)
+None of these are marked done; each has an explicit deferral:
+- **SP2 / SP3 / SP5 / SP6** — prompt behavioral-precision rules ("validated" gating, cadence-vs-causation, timepoint-vs-lifetime always-label-both, inline `[inferred]`/`(derived)`). No plan phase implements them (SP5 has a 7.2 verification backstop only). DEFERRED — future system-prompt pass.
+- **UX1 / UX2 / UX3 / UX4** — side-by-side check cards, animated loading, audience/coaching wiring, audience detection. Phase 5 is export/chart/kql-viewer only. DEFERRED — future UI pass.
+- **EV2 (run `mine_evals`)** — blocked on real traffic + persistent log surface. **EV3 4th case** — needs a multi-turn eval-harness change. DEFERRED.
+- **V1** — automated 3-level `validate.py` cross-check harness (4.8/4.9 are adjacent, not it). DEFERRED.
+- **E3** — multi-workspace loop orchestration; plan states the stance but schedules no task. DEFERRED — NEEDS DESIGN.
+- **N13** — startup health probes for the 3 semi-verified connections (4.11 SKU probe overlaps in spirit only). DEFERRED.
+- **N16** — UI-export fraction-scale guard in `importers/capacity_metrics.py` (1.8 fixed the streaming path only). DORMANT guard — DEFERRED.
+- **N22** — step-budget classifier post-migration verification + robustness. DEFERRED → 7.2 live check #12.
+- **N24C** — ±30-second cross-source time-window alignment tolerance (rest of N24 done). DEFERRED.
+- **6.1 Teams delivery** — Phase-10-owned by design. **6.3 HR enrichment** — optional, not this round. **6.4 EXTERNALMEASURE / basecore** — pending stakeholders; do not guess.
+
+## Documentation reconciliation flagged (not a build gap)
+- **C2** — GAPS Section 1 / Priority #1 still list system-prompt duplication as REOPENED/urgent, but
+  the plan cross-check + ADR-001 treat it as FIXED (single-sourced `system_prompt.py`). Treated FIXED;
+  the ledger's own Priority table is the stale copy to reconcile.
+

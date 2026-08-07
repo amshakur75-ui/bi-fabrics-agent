@@ -47,8 +47,15 @@ export type RenderChartOutput =
 
 // ---------- Color palette ----------
 
+// Plan 5.6 — Newell brand-token parity: lead the series palette with the three Newell brand
+// colors (Information Delivery / Newell Brands), matching the export report + KQL viewer, then
+// fall back to distinct accents for charts with more series than brand colors. This changes
+// ONLY the series colors; the render_chart chart-type contract (line/bar/grouped/stacked/
+// pie/donut) is untouched (26o: the in-chat chart and the export classifier stay separate).
 const COLORS = [
-  '#2563eb', // blue-600
+  '#288FC2', // Newell primary blue
+  '#01405C', // Newell navy
+  '#696158', // Newell warm gray
   '#16a34a', // green-600
   '#ea580c', // orange-600
   '#9333ea', // purple-600

@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import type { ToolUIPart } from 'ai';
 import { useContext, useState, type ComponentProps, type ReactNode } from 'react';
 import { CodeBlock } from './code-block';
+import { KqlViewer } from './kql-viewer';
 import { createContext } from 'react';
 import { ChevronUpIcon, ShieldCheckIcon, ShieldOffIcon as ShieldXIcon, XCircleIcon, CircleOutlineIcon as CircleIcon, ClockIcon, ChevronDownIcon, WrenchIcon, CheckCircleIcon } from '../icons';
 
@@ -112,16 +113,43 @@ type ToolInputProps = ComponentProps<'div'> & {
   input: ToolUIPart['input'];
 };
 
-export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
-  <div className={cn('space-y-2 overflow-hidden p-3', className)} {...props}>
-    <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-      Parameters
-    </h4>
-    <div className="rounded-md bg-muted/50">
-      <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+// Plan 5.5 — when a tool's parameters carry a KQL or DAX string (run_kql / query_library / a
+// DAX analysis tool), surface it in the read-only highlighted KqlViewer ABOVE the raw JSON.
+// Additive: the JSON block always still renders, so a missed detection never hides the params.
+function extractQuery(
+  input: ToolUIPart['input'],
+): { code: string; language: 'kql' | 'dax' } | null {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const rec = input as Record<string, unknown>;
+  const dax = rec.dax ?? rec.measure ?? rec.expression;
+  if (typeof dax === 'string' && dax.trim().length > 0) {
+    return { code: dax, language: 'dax' };
+  }
+  const kql = rec.kql ?? rec.query ?? rec.queryKql;
+  if (typeof kql === 'string' && kql.trim().length > 0) {
+    return { code: kql, language: 'kql' };
+  }
+  return null;
+}
+
+export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
+  const query = extractQuery(input);
+  return (
+    <div className={cn('space-y-2 overflow-hidden p-3', className)} {...props}>
+      <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+        Parameters
+      </h4>
+      {query ? (
+        <KqlViewer code={query.code} language={query.language} />
+      ) : null}
+      <div className="rounded-md bg-muted/50">
+        <CodeBlock code={JSON.stringify(input, null, 2)} language="json" />
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 // Shared output component
 type ToolOutputProps = ComponentProps<'div'> & {

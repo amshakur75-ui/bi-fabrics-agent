@@ -1,6 +1,11 @@
-"""TDD tests for Task 6: honesty hardening — round_pct + sku_note."""
+"""TDD tests for Task 6: honesty hardening — round_pct + sku_note.
+
+Also covers plan item 4.11: ``check_sku_base_consistency`` — the SKU-vs-live base-CU cross-check.
+"""
 import pytest
-from fabric_audit_agent.investigation.sku import round_pct, sku_note
+from fabric_audit_agent.investigation.sku import (
+    round_pct, sku_note, check_sku_base_consistency,
+)
 from fabric_audit_agent.detectors.concentration import detect_concentration
 from fabric_audit_agent.verdict import build_capacity_verdict
 
@@ -117,3 +122,37 @@ def test_healthy_verdict_no_sku_note_required():
     verdict = build_capacity_verdict(facts, [])
     assert verdict["decision"] == "healthy"
     # No sku_note requirement on healthy path (no size-up advice given)
+
+
+# ── 4.11: SKU vs LIVE base-CU cross-check ────────────────────────────────────
+
+def test_base_consistency_match_no_mismatch():
+    r = check_sku_base_consistency(1024, 1024)
+    assert r == {"skuMismatch": False, "configuredBaseCu": 1024, "liveBaseCu": 1024}
+
+
+def test_base_consistency_mismatch_flags_loudly():
+    r = check_sku_base_consistency(64, 1024)   # SKU says F64, live capacity is 1024
+    assert r["skuMismatch"] is True
+    assert r["configuredBaseCu"] == 64
+    assert r["liveBaseCu"] == 1024
+    assert "MISMATCH" in r["note"]
+    assert "1024" in r["note"]        # names the LIVE value the % was computed against
+
+
+def test_base_consistency_none_side_returns_none():
+    # Cannot cross-check without BOTH values -> silent no-op (None), never a false alarm.
+    assert check_sku_base_consistency(None, 1024) is None
+    assert check_sku_base_consistency(512, None) is None
+    assert check_sku_base_consistency(None, None) is None
+
+
+def test_base_consistency_rejects_nonpositive_and_bool():
+    assert check_sku_base_consistency(0, 1024) is None
+    assert check_sku_base_consistency(1024, -5) is None
+    assert check_sku_base_consistency(True, 1024) is None   # bool is not a base CU
+
+
+def test_base_consistency_coerces_numeric_strings_and_floats():
+    r = check_sku_base_consistency("64", 1024.0)
+    assert r["skuMismatch"] is True and r["configuredBaseCu"] == 64 and r["liveBaseCu"] == 1024

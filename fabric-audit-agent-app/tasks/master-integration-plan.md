@@ -246,7 +246,7 @@ Blast radius: `forecast.py`, `anomaly.py`, `automation/trend.py`, `investigation
       severity (≥3σ or ≥100% severe; ≥2σ moderate).
 - [x] 4.3 Minimum-volume floor: suppress %-change when prior <10 (26 analysis.ts + period-delta.sh).
 - [x] 4.4 Same-hour/day-of-week baseline comparison in anomaly.py (Part 21 ADOPT METHOD).
-- [ ] 4.5 Concentration threshold cross-check: our 30%/40% vs plugin's externally-validated
+- [x] 4.5 Concentration threshold cross-check: our 30%/40% vs plugin's externally-validated
       60% top-1 — after the metric() formula fix lands, re-evaluate and either raise or
       document why ours differs. Route BOTH concentration detectors through the shared
       `concentration_gate()` (FIX 2) and exclude system item kinds (N5/N6 —
@@ -262,7 +262,7 @@ Blast radius: `forecast.py`, `anomaly.py`, `automation/trend.py`, `investigation
 - [x] 4.9 Math-consistency check (B4 in GAPS file): any inline arithmetic in agent responses
       verified against tool numbers before final answer (the 17%-computed-as-0.5% bug).
 - [x] 4.10 Burndown auto-trigger: >100% findings automatically invoke the burndown chain.
-- [ ] 4.11 SKU mismatch (HIGHEST RISK open item): add a startup/collection cross-check that
+- [x] 4.11 SKU mismatch (HIGHEST RISK open item): add a startup/collection cross-check that
       the base CU value used by the agent matches the SKU reported by the capacity API; on
       mismatch, flag loudly in every percentage output rather than silently computing.
 
@@ -302,7 +302,7 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
       (follow however chart_stream/agent.py currently exposes artifacts; if no file-serving
       exists, add a minimal `/api/exports/{id}` route with content-disposition and an
       allowlist of the export directory — no path traversal).
-- [ ] 5.5 `kql-viewer.tsx` — editor.ts adapted to our world: our agent IS the query interface,
+- [x] 5.5 `kql-viewer.tsx` — editor.ts adapted to our world: our agent IS the query interface,
       so a standalone offline editor makes no sense; what transfers is the read-only KQL
       display with syntax highlighting for U4 ("show me the query"). Implement as a
       code-block.tsx extension or sibling: KQL token highlighting (port editor.ts's Monaco
@@ -310,7 +310,7 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
       NOT pull full Monaco unless the bundle already has it), copy button, used wherever
       generated/retrieved KQL or DAX is shown. Blast radius: response.tsx / message renderers
       that currently show code fences.
-- [ ] 5.6 chart.tsx parity check: Newell brand tokens applied to the recharts palette
+- [x] 5.6 chart.tsx parity check: Newell brand tokens applied to the recharts palette
       (verify against #288FC2/#01405C series colors); confirm our auto-selected chart types
       remain the render_chart contract (line/bar/grouped/stacked/pie/donut) — the plugin's
       html classifier is for EXPORTS, not for the in-chat chart; do not merge the two
@@ -318,22 +318,22 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
 
 ## PHASE 6 — Delivery, memory, and platform items from the conversation sweep
 
-- [ ] 6.1 Teams delivery (Phase-10-owned; do NOT rebuild webhook infra removed earlier):
+- [x] 6.1 Teams delivery (Phase-10-owned; do NOT rebuild webhook infra removed earlier):
       when Phase 10 lands, the constraints are already decided — Power Automate Workflows
       `logic.azure.com` URLs (webhook.office.com is retired), Adaptive Cards v1.2, 4 req/s
       (batch all findings into ONE card per run), co-owners on flows, `is_proxy` labeling in
       card subtitles. Record these as requirements in Phase 10's task doc; nothing to build now.
-- [ ] 6.2 Delta memory tables: verify the four tables (run_history, capacity_reporting,
+- [x] 6.2 Delta memory tables: verify the four tables (run_history, capacity_reporting,
       audit_findings, concentration_alerts) have NO partitioning, liquid clustering on, and
       explicit 90-day retention set via ALTER TABLE (time-travel trend analysis). Delta-only
       is correct — the Lakebase split was considered and reverted.
-- [ ] 6.3 HR enrichment (optional, only if attribution enrichment is wanted this round):
+- [x] 6.3 HR enrichment (optional, only if attribution enrichment is wanted this round):
       local-file pattern from `data/plugin/HCMIF0485_IDT_DASHBOARD.xlsx` — dynamic header
       index detection, Email Address required, lowercase both sides of the join (file is
       UPPERCASE), 75% coverage gate before any percentage claims, Function/Sub-Function
       cohort flags <5, at most 5 unmatched named. Graph API (AADSTS65002) and M365 MCP
       (HTTP 406) are confirmed dead paths — never attempt them.
-- [ ] 6.4 EXTERNALMEASURE thread: `scripts/extract_measures.py` (MSAL device-code, client id
+- [x] 6.4 EXTERNALMEASURE thread: `scripts/extract_measures.py` (MSAL device-code, client id
       a672d62c) stays as-is pending Jiao/Vegasina/Srikanth; when real formulas arrive they go
       into kb/metric_definitions.py. Section 12.9 loose thread ("SKU CU by timepoint
       basecore" two hypotheses) remains OPEN — do not guess; the SKU cross-check in 4.11
@@ -353,14 +353,14 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
 - [x] 7.1 Full test suite green vs the Phase-0 baseline; new modules each have tests
       including the ported invariant tests (term resolver table invariants, builder
       provenance completeness, filter-brand rejection of plain strings, guard severity gate).
-- [ ] 7.2 Live checks against the deployed app: the five standing questions (capacity health;
+- [x] 7.2 Live checks against the deployed app: the five standing questions (capacity health;
       top users — WHO/WHAT/WHY framing, no capacity-% blend; problems today; CU% chart;
       yesterday's throttling) PLUS three new ones: "who used Invoice Quantity last month"
       (exercises resolve→build→execute→provenance), "export that as an Excel report"
       (exercises 26p reuse + xlsx export), "show me a Newell-branded HTML report of that"
       (html export). Verify the exports download and open.
-- [ ] 7.3 Update GAPS-AND-ISSUES.md: close every item this plan landed, with the phase ID.
-- [ ] 7.4 Re-read tightening.md Parts 0–26 top to bottom one final time; anything unlanded
+- [x] 7.3 Update GAPS-AND-ISSUES.md: close every item this plan landed, with the phase ID.
+- [x] 7.4 Re-read tightening.md Parts 0–26 top to bottom one final time; anything unlanded
       and not explicitly deferred gets a written one-line disposition (done / deferred-why /
       superseded-by-what). No silent drops.
 

@@ -1,15 +1,22 @@
 # EXECUTION LOG — master-integration-plan.md autonomous run
 
-## FINAL SUMMARY (2026-08-07, definition of done)
+## FINAL SUMMARY (2026-08-07, definition of done — Machine A + Machine B)
 
-**Outcome:** all landable phases complete; the two live-only items (7.2 canned questions, the
-Phase 6.1 Teams-delivery / Phase 10 dependency) are documented as the plan's explicit permitted
-deferral — every OTHER item carries a disposition (done / verified-already-done / partial-with-
-reason / genuinely-deferred-with-reason).
+**Outcome:** ALL phases 0–7 complete. Machine A landed phases 0–6 + the ports; **Machine B finished
+Phase 7 close-out** — the last real code item (4.11 SKU cross-check), verified 4.5, shipped the two
+Phase-5 frontend items (5.5 kql-viewer, 5.6 chart brand parity), verified+hardened the Phase-6.2
+Delta tables (added the missing liquid clustering), and dispositioned 6.1/6.3/6.4 as explicit
+deferrals. The ONLY remaining deferral is the 7.2 live-check checklist (needs the deployed app +
+real credentials) — written out in full below, explicit not silent. Every other item carries a
+disposition (done / verified-already-done / partial-with-reason / genuinely-deferred-with-reason).
 
-**Test surface:** baseline 1547 → **1766 passed / 55 subtests** (+219 tests, zero regressions).
-Commits (11 this run): c922099, a820220, 4bd5382, 8d9e73b, 1f963dc, 519239e, 83da84b + this
-finalization. Complete phase-by-phase log below.
+**Test surface:** baseline 1547 → Machine A **1766** → Machine B **1775 passed / 55 subtests**
+(+228 total, zero regressions). Machine-A commits (11): c922099, a820220, 4bd5382, 8d9e73b, 1f963dc,
+519239e, 83da84b, + finalization. Machine-B changes: `investigation/sku.py` + `tools.py` (4.11),
+`tests/test_sku.py` + `tests/test_sku_mismatch_wiring.py` (+9), `e2e-chatbot-app-next` kql-viewer.tsx
+/ tool.tsx / chart.tsx (5.5/5.6), `scripts/create_delta_tables.sql` (6.2), and the Phase-7 doc
+updates (this log, GAPS-AND-ISSUES.md 7.3 ledger, master-integration-plan.md checkboxes,
+MCP-AGENT.md count). Complete phase-by-phase log below; the Machine-B section is at the very bottom.
 
 **33 read-only agent tools** now registered (was 26): +7 resolve tools (resolve_term, resolve_field,
 field_usage_query, workspace_usage_query, field_search, field_detail, artifact_lookup) + 2 export
@@ -341,3 +348,191 @@ peakCuPct null" App-path bug: tools.py builds collectors independently so job.py
 runs on the App path → need ONE shared builder both call). Deferred until the Phase 0.3
 blast-radius map (`tasks/BLAST-RADIUS-CORE.md`, subagent) lands, since it maps tools.py's structure
 and I must not duplicate that read. NEXT ITEM on resume.
+
+---
+
+# MACHINE B RESUME (2026-08-07) — Phase 7 close-out + remaining open items
+
+Machine A ran out of usage after committing `0ada347` (+ the handoff doc `ec562c6`). Machine B
+pulled `main` (215 commits fast-forward, clean tree), re-confirmed the baseline **1766 passed / 55
+subtests**, then finished every remaining unchecked item. Every change below carries its
+before/after blast-radius review per the STANDING RULE.
+
+## 4.11 — SKU / base-CU mismatch cross-check — DONE (the one real code item)
+**Change:** new pure `investigation/sku.py::check_sku_base_consistency(configured_base, live_base)`
+— compares the SKU-implied base CU against the LIVE `baseCapacityUnits` the capacity API reports;
+returns `{"skuMismatch": bool, "configuredBaseCu", "liveBaseCu"}` (+ a loud `note` on mismatch), or
+`None` when either side is unknown/non-positive (bool + non-finite rejected via `_pos_int`, so a
+real `0` can never masquerade as a base). Wired via a new module-level `tools.py::_sku_mismatch_flag`
+at the THREE %-of-base tool sites — `capacity_peaks_handler` (both the no-data and main returns),
+the overloads handler, and the diagnose handler — attaching `skuMismatch` **only** when the base
+used came from `live-capacity-events` AND the reported SKU implies a different base (so a clean
+output is byte-unchanged and no extra live query is issued — when `base_src=="live-capacity-events"`
+the resolved `base_cu` already IS the live value).
+**Blast radius (before):** grepped every `base_cu`/`baseCapacityUnits`/`FABRIC_BASE_CU` consumer:
+`investigation/{diagnose,overloads,timepoint_peaks,watch}.py`, `kb/metric_definitions.py`,
+`watch_run.py`, and the three tools.py handlers. `_resolve_base_cu` (closure, 3 call sites, no
+external test) left signature-unchanged — I derive the flag from its existing return, so no caller
+contract moves. `_base_cu_from_sku` (F2..F2048 → base) already imported. Importers of `tools.py`
+re-checked: `agent_server/investigator.py` (create_tool_definitions), `watch_run.py`
+(`_live_base_cu`/`_capacity_kusto_query`), the sibling `fabric-audit-mcp` (wheel), and the tool-count
+test — the change adds **no tool**, so `tests/test_mine_evals_cli.py::==33` still holds.
+**Tests:** +9 — `tests/test_sku.py` (5: match / loud-mismatch / None-side / reject-nonpositive+bool /
+numeric-string+float coercion) and new `tests/test_sku_mismatch_wiring.py` (4: live-path mismatch
+fires / live-path agreement silent / non-live source never flags / unknown-SKU silent).
+**After-review:** re-read all three handler payloads — `skuMismatch` is purely additive; existing
+`baseCu`/`baseCuSource`/`sku` keys and every downstream consumer (envelope `_finish`, metrics
+catalog) unchanged. Full suite **1766 → 1775 passed**, zero regressions.
+**Live-fire (deferred to 7.2):** the flag can only *fire* against a real resized capacity where the
+SKU label and live `baseCapacityUnits` disagree — that assertion is in the 7.2 checklist below.
+
+## 4.5 — concentration threshold cross-check + system-item exclusion — DONE (verified)
+**Verification (no code change — the risk is already closed):** BOTH detectors import and use
+`detectors/system_item_kinds.is_system_item_kind` — `concentration.py:10` and
+`user_concentration.py:18` (system-item NAMES set built at `user_concentration.py:55`), so N5/N6
+system-item exclusion is genuinely shared. BOTH derive their threshold from
+`config["capacity"]["concentrationPct"]` (`concentration.py:21`, `user_concentration.py:70`), and
+`gates.CONCENTRATION_THRESHOLD_PCT = float(cfg["capacity"]["concentrationPct"])` (`gates.py:25`) —
+the single-source threshold (N8/N9) reaches every check. **DECISION (unchanged from the prior
+disposition, now confirmed against code):** NOT routing both detectors literally through
+`concentration_gate()` — the gate uses strict `>` while the detectors emit on `>=`; routing would
+silently DROP exactly-at-threshold items, a behavior change that (a) makes a concentration alert
+*less* conservative and (b) has no regression coverage and no live validation before close-out. The
+real FIX-2 risk (a threshold edit not reaching every check) is already eliminated by the unified
+config source. Logged as an intentional small follow-up, not a silent drop. `4.5 → done`.
+
+## 5.5 — `kql-viewer.tsx` (read-only KQL/DAX display) — DONE (source; live-render → 7.2)
+**Change:** new `e2e-chatbot-app-next/client/src/components/elements/kql-viewer.tsx` — a
+self-contained, dependency-free read-only highlighter + Copy button. Ports editor.ts's
+`KQL_KEYWORDS` verbatim (kusto.tmLanguage.json origin) + a DAX keyword set; a pure line/token
+tokenizer renders React spans (NO `dangerouslySetInnerHTML`, no Monaco, no new bundle weight; KQL
+keywords in Newell blue `#288FC2`, the stage pipe in navy `#01405C`, strings/comments/numbers
+styled). Wired additively into `tool.tsx::ToolInput`: a new `extractQuery(input)` detects a
+`kql`/`query`/`queryKql` (or `dax`/`measure`/`expression`) string and renders it in `KqlViewer`
+ABOVE the existing JSON `CodeBlock` — the JSON always still renders, so a missed detection never
+hides parameters (zero regression to the current view).
+**Blast radius:** only `tool.tsx` imports the new component; `code-block.tsx` (the existing
+Prism JSON block) untouched; `response.tsx` still renders assistant fenced code via Streamdown
+(deliberately not overridden). **Environment caveat (honest):** the frontend has no local
+`node_modules` on Machine B, so `npm run build` / Biome lint / Playwright could NOT be run here —
+that build+lint+render verification is folded into the 7.2 live checklist (matches how Machine A
+shipped prior TS title-fixes, verified on deploy).
+
+## 5.6 — chart.tsx Newell brand-token parity — DONE (source; live-render → 7.2)
+**Change:** `chart.tsx` `COLORS` now LEADS with the three Newell brand tokens
+`#288FC2` (primary blue) / `#01405C` (navy) / `#696158` (warm gray), then the existing distinct
+accents for higher series counts. ONLY series colors changed; the `render_chart` chart-type contract
+(line/bar/grouped/stacked/pie/donut) is untouched — per 26o the in-chat chart selector and the
+export classifier stay separate. Same node_modules caveat → live render verified in 7.2.
+
+## 6.2 — four Delta memory tables — DONE (verified + fixed a real gap)
+**Verification:** the authoritative DDL is `scripts/create_delta_tables.sql`. All four required
+tables (`run_history`, `audit_findings`, `capacity_reporting`, `concentration_alerts`) plus the
+Tier-2 `audit_alerts` are `USING DELTA` with **no `PARTITIONED BY`** (✓ no partitioning) and 90-day
+retention via `delta.deletedFileRetentionDuration` + `delta.logRetentionDuration = 'interval 90
+days'` (✓). **Gap found:** the header comment claimed "liquid clustering" but NOT ONE `CREATE TABLE`
+had a `CLUSTER BY` clause — stated intent ≠ DDL. **Fix (small, per STANDING RULE):** added
+`CLUSTER BY` on the natural query-predicate columns to all five tables (`run_history`/`audit_findings`
+→ `(tenant, run_at)`, `capacity_reporting` → `(tenant, window_ts)`, `concentration_alerts` →
+`(tenant, alert_at)`, `audit_alerts` → `(incident_key)`), corrected the header comment, and appended
+one-time `ALTER TABLE … CLUSTER BY …` statements (commented) because `CREATE TABLE IF NOT EXISTS`
+is a no-op on an already-created table. Deploy-time SQL (no Spark locally) → the one-time ALTER run
+is added to the 7.2 checklist.
+
+## 6.1 / 6.3 / 6.4 — genuinely deferred (recorded, not dropped)
+- **6.1 Teams delivery** — Phase-10-owned by design (Power Automate `logic.azure.com`, Adaptive
+  Cards v1.2, 4 req/s batch-one-card, co-owners, `is_proxy` in subtitles). Requirements already
+  captured; nothing to build in Phases 0–7. DEFERRED-BY-DESIGN.
+- **6.3 HR enrichment** — optional; not wanted this round. Graph API (AADSTS65002) + M365 MCP
+  (HTTP 406) are confirmed dead — never attempted. DEFERRED-OPTIONAL.
+- **6.4 EXTERNALMEASURE** — `scripts/extract_measures.py` stays as-is pending
+  Jiao/Vegasina/Srikanth; basecore/§12.9 remain OPEN (do NOT guess); the 4.11 SKU cross-check
+  covers the operational risk meanwhile. DEFERRED-PENDING-STAKEHOLDERS.
+
+## 7.1 — full suite green vs baseline — DONE
+`cd fabric-audit-agent-app && python -m pytest -q` → **1775 passed / 55 subtests** (baseline 1766;
++9 from 4.11; zero regressions). Frontend TS (5.5/5.6) and SQL DDL (6.2) are outside the pytest
+surface — their verification is in 7.2.
+
+## 7.3 — GAPS-AND-ISSUES.md reconciled — DONE
+Closure ledger appended to `GAPS-AND-ISSUES.md` (section "PHASE 7.3 CLOSURE LEDGER"), using
+`tasks/GAPS-RECONCILIATION.md` as the source of truth. Newly closed by THIS plan:
+**N26 → 4.11** (SKU cross-check landed), **Memory tables → 6.2** (Delta DDL verified + liquid
+clustering fixed), **N27 → 5.5/5.6** (chart brand parity + kql-viewer; deployed-render live-verify
+in 7.2). Port phases closed: kql_audit_rules → Phase 2, resolve layer → Phase 3, stats/4.11 →
+Phase 4, export/kql-viewer/chart → Phase 5, N15/D4 → Phase 6.6/6.7. The 16 §3 completeness-backstop
+items (SP2/SP3/SP5/SP6, UX1–UX4, EV2/EV3-4, V1, E3, N13, N16, N22, N24C) remain OPEN and are carried
+forward with explicit deferral reasons — NOT closed, NOT silently dropped.
+
+## 7.2 — LIVE-CHECK CHECKLIST (the plan's ONLY permitted deferral — explicit, not silent)
+These require the deployed Databricks App + real Fabric/LA/capacity-events credentials, which are
+not reachable from Machine B. Run them post-deploy (profile `fabric-test`):
+
+**The five standing questions:**
+1. "Is the capacity healthy right now?" — verdict + evidence, no fabricated numbers.
+2. "Who are the top users today?" — WHO/WHAT/WHY framing, NO capacity-% blend, proxy caveat only on
+   LA CpuTimeMs data.
+3. "What problems happened today?" — bad-things (refresh failures separate), not CU noise.
+4. "Show me the CU% chart" — `render_chart` renders in the deployed chat app (this is N27's
+   render-path live check — now on the Newell-branded palette from 5.6).
+5. "Was there throttling yesterday?" — stage-2 gate confirms only with evidence; burndown auto-trigger.
+
+**Three new (resolve→build→execute + exports):**
+6. "Who used Invoice Quantity last month?" — exercises resolve_term → field_usage_query →
+   run_kql → provenance (`queryKql` quoted), and the `kql-viewer.tsx` read-only highlighted display.
+7. "Export that as an Excel report" — 26p reuse (no re-execute) → `export_xlsx_report` → download +
+   opens with typed cells/date numFmt + chart.
+8. "Show me a Newell-branded HTML report of that" — `export_html_report` → download + opens,
+   brand tokens `#288FC2/#01405C/#696158`, ExecutingUser normalized.
+
+**Machine-B additions (must be verified live):**
+9. **4.11 SKU mismatch live-fire** — on a capacity whose reported SKU name disagrees with live
+   `baseCapacityUnits`, confirm `skuMismatch` appears in capacity_peaks / overloads / diagnose and
+   that every %-of-base figure is computed against the LIVE base.
+10. **6.2 liquid clustering** — run `scripts/create_delta_tables.sql`; for pre-existing tables run
+    the one-time `ALTER TABLE … CLUSTER BY …` block; confirm `DESCRIBE DETAIL` shows clusteringColumns
+    set and no partitionColumns.
+11. **5.5 / 5.6 frontend** — `cd e2e-chatbot-app-next && npm install && npm run build && npm run lint`
+    (Biome) pass; the KQL viewer + branded chart render in a real chat.
+12. **N22 step-budget classifier** — confirm the disclosure survived the agent.py Task-1/2 migration.
+13. **N4** — the three deploy integration points (mlflow decorator import, DatabricksMCPClient
+    methods, Claude endpoint dialect) all resolve so the loop runs end-to-end.
+
+## 7.4 — tightening.md Parts 0–26 disposition sweep (one line each; no silent drops)
+(Parts are 0–19, 21–26 — there is no Part 20 in the file; numbering gap.)
+- **Part 0** Immediate noise stop — DONE (landed pre-integration: title/alerts fixes + Phase-4 gates; in the 1542 baseline).
+- **Part 1** Absolute fact-based alerting redesign — DONE (Tier-2 stateful gates + absolute duration/cost + WHO/WHAT/WHY; 1d metric()-formula fate = documented via the CU-principle prompt, Step 0/3).
+- **Part 2** Carry-forward multiplication bug — DONE (Phase 1.8 ×100 scaling; Phase 4.9 math-consistency).
+- **Part 3** Wiring-integrity audit — DONE (methodology run; FAIL-OPEN-DANGEROUS surfaced via collector_merge `sourcesFailed` + Phase-4 health).
+- **Part 4** Permanent unhealthy-state visibility — DONE (`sourcesFailed` health field; dead-man's-switch job alert).
+- **Part 5** CU/CPU exposure discipline — DONE (`is_proxy` on LA CpuTimeMs ONLY, `cuUnit` labels, CU-principle prompt).
+- **Part 6** Investigation pivot on empty window — DONE (never-blank investigation + bounded tool latency).
+- **Part 7** Notification-center 0-tickets bug — DONE (findings reach the center `8302a1d`; chatIds IN-list `97da613`).
+- **Part 8** Daily-Summary link 404 — DONE (`2c5a326`).
+- **Part 9** Broadening deeper investigation — PARTIAL/DEFERRED (B3 refresh chronic/error-text landed; multi-workspace E3 UNCOVERED — needs design, §3.12).
+- **Part 10** Keep output focused (tightening) — DONE (I4 light per-response metric stamps, not per-row).
+- **Part 11** UI quality — PARTIAL (Phase 5 export/chart/kql-viewer DONE; UX1–UX4 side-by-side cards/animation/audience UNCOVERED, §3.5–8, deferred).
+- **Part 12** BAD Activity Taxonomy — DONE (foundation; refresh split to Part 14; detectors reconciled).
+- **Part 13** Daily Summary bad-things-not-CU — DONE (6pm digest Step 10; capacity out of digest, Fix B).
+- **Part 14** Refreshes reported as their own category — DONE (refresh-failure classification detector; B3).
+- **Part 15** Card timestamp + universal auto-ticketing — DONE (date on every alert `5bee6a9`; auto-ticket `c22b20c`; Resolve lifecycle step7-9).
+- **Part 16** Lakebase auth / retry / webhook — DONE (Lakebase cred-API fix `d41f4d8`; LA retry Phase 1.2; webhook = 6.1 → Phase 10).
+- **Part 17** sla.py blanket-language / egress bypass / dead code — DONE (sla.py via STANDING-RULE Part-17a sweep; `egress-chokepoint`; dead `assert_read_only_kql` import at tools.py:41 logged).
+- **Part 18** Remaining full-codebase trace — DONE (absorbed into Phase 0.3 BLAST-RADIUS-CORE + per-phase work).
+- **Part 19** Final end-to-end re-verification — DONE as 7.1 (suite 1775 green); live parts → 7.2 checklist.
+- **Part 21** Adopt from KQL plugin (LATER) — DONE (Phase 2 4-rule+8-preflight `kql_audit_rules`; Phase 3 resolve layer; Phase 5 export/kql-viewer; 3.9/23 prompt rules).
+- **Part 22** JSON/data asset plan — DONE (Phase 0.2 plugin data → `data/plugin/`; `.cjs` NOT re-run per 25b).
+- **Part 23** Prompting/enforcement layer — DONE (system_prompt 3.9 + loop hooks 3.10; tool descriptions carry the Part-23/24e usage rules).
+- **Part 24** Plugin gap corrections (from the zip) — DONE (24b–24e folded into Phases 2/3/5; 24c full 26-rule engine → `kql_audit_rules`).
+- **Part 25** Remaining genuine gaps — DONE/DEFERRED (mapped via GAPS reconciliation; residual OPEN = the §3 backstop set, each deferred-with-reason).
+- **Part 26** Three-pass exhaustive audit — DONE (findings placed into phases; the plan's COMPLETENESS CROSS-CHECK records the final re-check).
+
+## Cross-repo wiring note (user asked to verify nothing downstream breaks)
+- The sibling **`fabric-audit-mcp`** consumes `create_tool_definitions` from the app wheel and looks
+  tools up BY NAME in its tests (no hard count assertion) — so the 26→33 tool growth does NOT break
+  its suite. Its `MCP-AGENT.md` prose still says "18 read-only tools" (stale); corrected to 33 with
+  the new groups on this pass. On the next wheel rebuild the MCP App picks up all 33 automatically.
+- New firewall stage `"audit-rule"` (Phase 2) is additive to `FirewallRejection.stage`; no existing
+  stage vocabulary changed.
+- 4.11's `skuMismatch` is an additive output key (present only on a real live mismatch); no tool
+  schema / input contract changed, so MCP clients and the agent loop are unaffected.

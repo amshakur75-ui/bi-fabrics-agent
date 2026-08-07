@@ -13,20 +13,28 @@ so it always responds). Read-only throughout.
 
 ## Tools
 
-The MCP server exposes **18 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`),
-not just `run_audit`:
+The MCP server exposes **33 read-only tools** (`fabric_audit_agent/tools.py::create_tool_definitions`
+is authoritative — this table is grouped for readability), not just `run_audit`:
 
 | Purpose | Tools |
 |---|---|
 | Audit / verdict | `run_audit`, `list_workspaces` |
 | User attribution | `user_activity`, `investigate_user`, `investigate_capacity_spike`, `user_spike_history` |
 | Event depth + time windows | `spike_events`, `raw_events`, `capacity_patterns` |
+| Capacity cost peaks / overloads | `capacity_peaks`, `capacity_overloads` |
 | Grounding (schema/sample before querying) | `describe_source`, `sample_events` |
 | Capacity diagnostics | `capacity_diagnostics` |
 | Deduction | `diagnose`, `analyze_dax` |
 | Memory | `whats_changed` |
 | Per-user | `user_timeline` |
 | Ad-hoc + library | `run_kql`, `query_library` |
+| SQL / semantic-model | `run_sql`, `run_dax`, `describe_sql_table`, `describe_semantic_model` |
+| Query routing + charts | `classify_query_target`, `render_chart` |
+| Newell resolution (Phase 3.8) | `resolve_term`, `resolve_field`, `field_usage_query`, `workspace_usage_query`, `field_search`, `field_detail`, `artifact_lookup` |
+
+(The agent brain additionally registers two agent-side export tools — `export_html_report` /
+`export_xlsx_report` — via `agent_server/export_tool.py`, following `render_chart`'s dual-registration
+pattern; those are not part of the MCP `create_tool_definitions` surface counted above.)
 
 **Ad-hoc KQL + the query firewall.** `run_kql` lets the agent compose and run a single read-only
 KQL query (`engine`: `"capacity"` for the Capacity Eventhouse, or `"la"` for Log Analytics
