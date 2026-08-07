@@ -572,7 +572,10 @@ export async function getAlertAckMap(
   const rows = await db.execute(sql`
     SELECT chat_id, status, snooze_until, resolution_note, updated_by, updated_at
     FROM ai_chatbot.alert_ack
-    WHERE chat_id = ANY(${chatIds})
+    WHERE chat_id IN (${sql.join(
+      chatIds.map((id) => sql`${id}`),
+      sql`, `,
+    )})
   `);
   for (const r of rows as unknown as Array<{
     chat_id: string;
@@ -622,7 +625,10 @@ export async function getAlertTicketMap(
       SELECT chat_id, check_type, severity, resource, workspace, detail,
              first_detected, currently_active
       FROM ai_chatbot.alert_ticket
-      WHERE chat_id = ANY(${chatIds})
+      WHERE chat_id IN (${sql.join(
+        chatIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})
     `);
   } catch {
     // Table may not exist yet on an older deployment — degrade to no detail, never break the list.
