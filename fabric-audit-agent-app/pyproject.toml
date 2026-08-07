@@ -22,6 +22,7 @@ dependencies = [
     "mcp>=1.13,<2",
     "requests>=2",
     "python-dotenv>=1.2.1",
+    "openpyxl>=3.1",   # export/xlsx_report — native xlsx + charts for the export tool (Phase 5)
 ]
 
 [project.optional-dependencies]
