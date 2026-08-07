@@ -48,11 +48,14 @@ def _tokenize(value: str) -> List[str]:
 class SchemaLinkIndex:
     """token -> set of distinct field NAME STRINGS, with the 4 Pass-1c guardrails.
 
-    Prefers the built catalog's token index; falls back to parsing the raw
-    ``enriched-field-catalog.json``. On any failure the index stays ``None`` and
-    ``find_linked_field_names`` returns ``[]`` — Pass 1c becomes a no-op and the resolver
-    falls through to containment exactly as before. Failure here can never break existing
-    behaviour.
+    Prefers the built catalog's token index; optionally falls back to parsing the raw
+    ``enriched-field-catalog.json``. The raw catalog is a 14 MB build-input file that lives
+    OUTSIDE the deployed app source path (see ``plugin-source/`` at the repo root — moved
+    there because Databricks Apps caps individual source files at 10 MB); no runtime caller
+    currently passes ``legacy_catalog_path``, so the fallback is defensive only. On any
+    failure the index stays ``None`` and ``find_linked_field_names`` returns ``[]`` —
+    Pass 1c becomes a no-op and the resolver falls through to containment exactly as
+    before. Failure here can never break existing behaviour.
     """
 
     def __init__(
