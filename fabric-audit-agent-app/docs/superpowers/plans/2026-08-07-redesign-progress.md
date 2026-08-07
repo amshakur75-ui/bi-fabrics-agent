@@ -22,8 +22,11 @@ Durable resume point for the 6-sub-plan program. Spec: `docs/superpowers/specs/2
 - [x] **3b** daily-summary rebuilt around taxonomy: refresh isolated, recurring-shape vs slow-ops, top-users from `facts["events"]` (no %), CU one-liner, no-issues fallback. suite 1862.
 - [x] **3c/3d** cards carry separate `Capacity this window` fact + `When`/first-noticed; investigation PIVOT in both `_investigate_query` builders + system_prompt. `013b967`.
 
-## Sub-plan 4 — Infra, health & wiring integrity (NOT STARTED)
-health report + FAIL-OPEN classification + WIRING-MAP.md; Lakebase auth identity + retry; webhook URLError; error-conflation (25e); egress on ticketing/conversation; wire assert_model_map_invariant at startup.
+## Sub-plan 4 — Infra, health & wiring integrity (DONE — suite 1907)
+- [x] **4c** Lakebase auth uses execution identity (`_resolve_pg_user`, databricks.yml cleaned) + write reconnect/retry + webhook URLError. suite 1876.
+- [x] **4d** error-conflation: `classify_live_query_error` distinguishes not-found/auth/throttled/timeout/network in describe_source + sample_events. `6cceea1`.
+- [x] **4a/4b** `automation/health.py` HealthReport + digest banner + startup invariant wired + `docs/WIRING-MAP.md`. `b307201`. (Future work noted in WIRING-MAP: per-detector isolation, sweep-path health threading, full 107-except census.)
+- [x] **4e** egress: ticketing + conversation route through `apply_egress_controls`. `e55a9d3`.
 
 ## Sub-plan 5 — Plugin query-audit depth + safety rails (NOT STARTED)
 domain-subset audit rules (BEST/HINT/relevant PERF+CORRECT, skip App-Insights TELEMETRY); perf-tuner patterns; large-result display gate (>50 rows); kql_format; SessionStart preflight; audit-before-execute prompt rule.
