@@ -114,6 +114,47 @@ def test_ticketing_warning_floor_includes_warnings():
     assert tk["open"](findings)["created"] == ["a"]
 
 
+def test_ticketing_routes_findings_through_egress_before_create_issue():
+    # Part 17b: create_ticketing_delivery must gate the findings list through
+    # egress.apply_egress_controls(findings, sink="ticketing") before any ticket is built/sent —
+    # a secret-shaped value in a finding must never reach client.create_issue unredacted.
+    client = _FakeIssueClient()
+    tk = create_ticketing_delivery(client, min_level="Critical")
+    findings = [{
+        "key": "a", "score": {"level": "Critical"},
+        "what": "w", "where": "x",
+        "fix": ["rotate connectionString AccountKey=abcdEFGH1234567890abcdEFGH1234567890=="],
+    }]
+    result = tk["open"](findings)
+    assert result == {"created": ["a"]}
+    assert len(client.tickets) == 1
+    assert "AccountKey=abcdEFGH1234567890abcdEFGH1234567890==" not in client.tickets[0]["body"]
+    assert "***" in client.tickets[0]["body"]
+
+
+def test_ticketing_invokes_the_egress_chokepoint_with_sink_ticketing(monkeypatch):
+    # Directly verify create_ticketing_delivery routes through the sanctioned chokepoint
+    # (egress.apply_egress_controls) rather than handing findings straight to the client.
+    import fabric_audit_agent.adapters.ticketing as ticketing_mod
+
+    calls = []
+    real_apply = ticketing_mod.apply_egress_controls
+
+    def spy(payload, *, sink, **kwargs):
+        calls.append(sink)
+        return real_apply(payload, sink=sink, **kwargs)
+
+    monkeypatch.setattr(ticketing_mod, "apply_egress_controls", spy)
+
+    client = _FakeIssueClient()
+    tk = create_ticketing_delivery(client, min_level="Critical")
+    findings = [{"key": "a", "score": {"level": "Critical"}, "what": "w", "where": "x", "fix": ["f"]}]
+    tk["open"](findings)
+
+    assert calls == ["ticketing"]
+    assert len(client.tickets) == 1
+
+
 # ---------- shared fake HTTP ----------
 class _FakeHttp:
     def __init__(self, pages=None):

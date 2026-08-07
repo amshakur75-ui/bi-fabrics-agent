@@ -173,6 +173,42 @@ def test_concentration_alert_degrades_on_bare_finding():
     assert not any("Contact" in a["title"] for a in alert["actions"])
 
 
+def test_build_concentration_alert_routes_the_card_through_egress(monkeypatch):
+    # Part 17b: build_concentration_alert must gate the card it builds through the egress
+    # chokepoint (egress.apply_egress_controls(card, sink="concentration_alert")) before
+    # returning it, per egress.py's module contract.
+    import fabric_audit_agent.conversation as conversation_mod
+
+    calls = []
+    real_apply = conversation_mod.apply_egress_controls
+
+    def spy(payload, *, sink, **kwargs):
+        calls.append(sink)
+        return real_apply(payload, sink=sink, **kwargs)
+
+    monkeypatch.setattr(conversation_mod, "apply_egress_controls", spy)
+
+    finding = {"key": "k", "what": "background-driven", "evidence": {"sharePct": 50, "topUsers": None, "owner": "svc@x"}}
+    build_concentration_alert(finding)
+
+    assert calls == ["concentration_alert"]
+
+
+def test_build_concentration_alert_redacts_secret_shaped_text_in_the_card():
+    # A secret-shaped value embedded in the finding's free text must not survive into the card
+    # that would eventually be posted to Teams.
+    finding = {
+        "key": "k",
+        "what": "rotate connectionString AccountKey=abcdEFGH1234567890abcdEFGH1234567890==",
+        "evidence": {"sharePct": 50, "topUsers": [{"user": "alice@x"}]},
+    }
+    card = build_concentration_alert(finding)
+    import json as _json
+    blob = _json.dumps(card)
+    assert "AccountKey=abcdEFGH1234567890abcdEFGH1234567890==" not in blob
+    assert "***" in blob
+
+
 def _env():
     return {"summary": "Audit complete: 3 findings.", "data": {
         "verdict": {"decision": "optimize", "reason": "fix these first"},

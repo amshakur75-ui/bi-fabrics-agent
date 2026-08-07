@@ -601,20 +601,33 @@ gap. If a finding's `what` text or evidence ever contained something secret-shap
 string embedding a credential, for instance), either path would emit it completely unredacted
 to an external system (Jira/ADO/ServiceNow, or a Teams channel).
 
-- [ ] Confirm via grep whether `create_ticketing_delivery` or `build_concentration_alert` are
+- [x] Confirm via grep whether `create_ticketing_delivery` or `build_concentration_alert` are
       imported/called ANYWHERE in the live pipeline (`job.py`, `tier2_check.py`,
-      `sweep_delivery.py`, `daily_summary.py`, or anywhere in `agent_server/`). Not found in any
-      of the files read this session so far — confirm this holds across the full codebase.
-- [ ] If genuinely dead/unwired: either delete both files, or — if there's a reason to keep
+      `sweep_delivery.py`, `daily_summary.py`, or anywhere in `agent_server/`). **Confirmed
+      (Part 17b fix, whole-repo grep): neither is called from any production wiring site —
+      both remain dead/unwired outside their own module and tests.**
+- [x] If genuinely dead/unwired: either delete both files, or — if there's a reason to keep
       them for future use — fix the egress gap now, before either is ever wired in, so a future
-      session doesn't revive this code without noticing the missing safety gate.
-- [ ] `conversation.py`'s docstring describes a two-way Bot Framework Teams conversation
+      session doesn't revive this code without noticing the missing safety gate. **Fixed egress
+      gap rather than deleting (both are real intended capabilities per `conversation.py`'s own
+      deploy note and the `ado_create_ticket` Phase-10 placeholder already reserved in
+      `outbound._ALLOWLIST`)** — `adapters/ticketing.py`'s `open_()` now routes the findings
+      list through `egress.apply_egress_controls(findings, sink="ticketing")` before any ticket
+      is built/sent, and `conversation.py::build_concentration_alert` now routes the card
+      through `egress.apply_egress_controls(card, sink="concentration_alert")` before returning
+      it. Neither is wired to a caller yet, so activation remains a separate future step, but
+      the safety gate is now present at the source and cannot be silently bypassed when wired.
+- [x] `conversation.py`'s docstring describes a two-way Bot Framework Teams conversation
       requiring infrastructure that was never built (an Azure Bot Service/Function fronting a
       Databricks App, since a Databricks App cannot itself be a Bot Framework messaging
       endpoint). This looks like an abandoned earlier design, superseded by the one-way webhook
       approach actually deployed today (`delivery_webhook.py` + Power Automate). Confirm this
       reading is correct and document the decision (keep as future-phase design reference, or
-      remove) rather than leaving it ambiguous.
+      remove) rather than leaving it ambiguous. **Decision: keep, not remove.** The design is
+      unimplemented infrastructure, not incorrect/superseded logic — `build_concentration_alert`
+      and `answer_question` are pure, tested, and now egress-gated; deleting them would destroy
+      a working capability over a documentation/infra gap. Left as a future-phase design
+      reference per this task's own guidance to prefer routing over deletion when in doubt.
 
 ### 17c. Confirmed clean this pass (no issues found)
 

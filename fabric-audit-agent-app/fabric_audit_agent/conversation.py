@@ -15,10 +15,16 @@ Deploy note (from the research): a **Databricks App cannot be the Bot Framework 
 endpoint** — inbound Teams posts require the Bot Service OAuth handshake on the inbound call.
 Front the bot with an Azure Bot Service / Function (or a Copilot Studio topic) that forwards
 the user's text to ``answer_question()`` and posts the reply + alerts to the channel.
+
+Egress: ``build_concentration_alert`` routes the card it builds through the egress chokepoint
+(``egress.apply_egress_controls(card, sink="concentration_alert")``) before returning it, so the
+card is already safe to post by the time any future Teams-posting caller receives it — see
+``egress.py``'s module contract.
 """
 import re
 
 from .adapters.delivery_webhook import PROXY_RANKING_DISCLOSURE
+from .egress import apply_egress_controls
 
 _CONCENTRATION = "capacity.concentration"
 _PERCENT_RE = re.compile(r"\d+\s*%")
@@ -65,13 +71,15 @@ def build_concentration_alert(item):
     if contact:
         actions.append({"title": f"Contact {contact}", "value": f"contact {contact}"})
 
-    return {
+    card = {
         "type": "message",
         "summary": "Capacity concentration alert",
         "sections": [{"heading": "⚠️ Capacity concentration", "text": text, "facts": facts},
                      {"text": PROXY_RANKING_DISCLOSURE}],
         "actions": actions,
     }
+    safe_card, _meta = apply_egress_controls(card, sink="concentration_alert")
+    return safe_card
 
 
 def _help():

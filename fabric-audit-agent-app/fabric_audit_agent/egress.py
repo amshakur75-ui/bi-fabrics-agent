@@ -12,12 +12,15 @@ anything outward — it is the ONLY sanctioned way to emit outward. Gate the del
 payload only; never the returned envelope or the earlier-persisted run-history store.
 
 Currently wired (Phase 5.2 Task 2): ``pipeline.run_audit`` (sink="delivery"),
-``job._alert_failure`` (sink="failure"), ``job._write_outputs`` (sink="file").
+``job._alert_failure`` (sink="failure"), ``job._write_outputs`` (sink="file"), and
+``outbound.dispatch_outbound`` (sink="alert" — the tier2/daily-summary webhook chokepoint).
 
-NOT yet wired — MUST gate when activated: ``adapters/ticketing.py``'s ``{"open": open_}`` port
-(gate the findings LIST it takes: ``apply_egress_controls(findings, sink="ticketing")``) and
-``conversation.py``'s ``build_concentration_alert`` (gate the card it builds before it is
-posted). Neither may bypass this chokepoint.
+Also wired (Part 17b): ``adapters/ticketing.py``'s ``{"open": open_}`` port gates the findings
+LIST it takes (``apply_egress_controls(findings, sink="ticketing")``) before any ticket is built
+or sent, and ``conversation.py``'s ``build_concentration_alert`` gates the card it builds
+(``apply_egress_controls(card, sink="concentration_alert")``) before returning it. Both are
+currently unwired to any production caller (no job/tier2/sweep/agent_server site invokes them
+yet), but the outbound path itself no longer bypasses this chokepoint when they are activated.
 """
 import copy
 import re
