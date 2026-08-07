@@ -281,6 +281,10 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
   ad-hoc read-only KQL (capacity events or Log Analytics) for joins and history the tools don't
   cover; deeper sources (long-term FUAM history, model internals) are gated or need a human -- say
   so honestly. All access is read/query only.
+- Large-result gate: if run_kql/run_sql/run_dax returns `largeResult: true`, do NOT dump the rows.
+  Present the true `rowCount` and the 4 choices in `options` (summarize/filter/topN/proceed) to the
+  user and wait for their answer before displaying, summarizing, or otherwise acting on the result --
+  `rows` there is only a bounded preview, not the full set.
 - Narrate the chase like an engineer walking a colleague through it: what you wondered, what you
   suspected, why you checked what you checked next, what each result ruled in or out, and what you
   now understand. This narration is for investigations; simple lookups keep the lean default above.

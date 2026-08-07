@@ -403,3 +403,116 @@ class TestRunKqlValidation:
         result = handler({"kql": ".drop table X", "engine": "capacity"})
         # Without engine configured, returns mock note (not an error, not execution)
         assert result.get("source") == "mock" or "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Task 5b: run_kql large-result display gate (>50 rows -> preview + options;
+# <=50 rows unaffected). Ported from kql-mcp-server's formatQueryResult() 50-row
+# stop + kql-ask.md's 4-option gate. Uses the "_executor" DI seam (same pattern as
+# run_sql/run_dax) so the gate can be exercised offline without any live engine env.
+# ---------------------------------------------------------------------------
+
+_CLEAN_KQL = "CapacityEvents | where TimeGenerated > ago(1d) | take 5000"
+
+
+class TestRunKqlLargeResultGate:
+    def test_over_threshold_sets_large_result_flag_with_true_row_count(self):
+        handler = _handler("run_kql")
+        rows = [{"id": i} for i in range(75)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert "error" not in result
+        assert result.get("largeResult") is True
+        assert result.get("rowCount") == 75   # true count, not the preview length
+
+    def test_over_threshold_preview_capped_at_max_display_rows(self):
+        handler = _handler("run_kql")
+        rows = [{"id": i} for i in range(250)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert result.get("largeResult") is True
+        assert len(result.get("rows", [])) <= 100
+        assert result.get("rowCount") == 250
+
+    def test_over_threshold_options_has_four_choices(self):
+        handler = _handler("run_kql")
+        rows = [{"id": i} for i in range(60)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        options = result.get("options")
+        assert isinstance(options, list) and len(options) == 4
+        ids = {o["id"] for o in options}
+        assert ids == {"summarize", "filter", "topN", "proceed"}
+        assert "note" in result
+
+    def test_over_threshold_note_instructs_agent_to_present_options(self):
+        handler = _handler("run_kql")
+        rows = [{"id": i} for i in range(51)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert result.get("largeResult") is True
+        assert "51" in result["note"]
+
+    def test_at_or_under_threshold_no_gate_full_rows_returned(self):
+        handler = _handler("run_kql")
+        rows = [{"id": i} for i in range(50)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert "largeResult" not in result
+        assert "options" not in result
+        assert result.get("rowCount") == 50
+        assert len(result.get("rows", [])) == 50
+
+    def test_small_result_unaffected_no_flag(self):
+        handler = _handler("run_kql")
+        rows = [{"id": 1}, {"id": 2}]
+        result = handler({
+            "engine": "la",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert "largeResult" not in result
+        assert result.get("rows") == rows
+        assert result.get("rowCount") == 2
+
+    def test_char_budget_cap_still_applies_within_the_preview(self):
+        # A gated preview (<=100 rows) that STILL blows the char budget must still get
+        # truncated by cap_rows -- the row gate is an ADDITIONAL, earlier guard, not a
+        # replacement for the existing char-budget cap.
+        handler = _handler("run_kql")
+        rows = [{"id": i, "blob": "x" * 500} for i in range(200)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert result.get("largeResult") is True
+        assert result.get("rowCount") == 200        # true count survives the char-budget cap too
+        assert result.get("truncated") is True       # cap_rows meta merged in via _finish's extra
+        assert len(result.get("rows", [])) < 100      # char budget bit further than the 100-row preview
+
+    def test_ungated_flag_still_present_when_gated(self):
+        handler = _handler("run_kql")
+        rows = [{"id": i} for i in range(80)]
+        result = handler({
+            "engine": "capacity",
+            "kql": _CLEAN_KQL,
+            "_executor": lambda kql: rows,
+        })
+        assert result.get("ungated") is True
+        assert "ungatedNote" in result

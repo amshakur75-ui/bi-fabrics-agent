@@ -2121,6 +2121,28 @@ def create_tool_definitions(base_dir=None):
 
     _RUN_KQL_HARD_CAP = 1000
 
+    # Large-result display gate (Sub-plan 5 / Task 5b) -- ported from the kql-mcp-server plugin's
+    # formatQueryResult()/kql-ask.md gate: a row-COUNT guard that fires BEFORE the char-budget cap
+    # in envelope.cap_rows. cap_rows bounds serialized size (token-cost proxy); this bounds row
+    # count so the agent is nudged to ask the user how to handle a big result instead of silently
+    # dumping hundreds of rows. Module-level constants (not config-threaded): create_tool_definitions
+    # takes no config arg today, matching how _RUN_KQL_HARD_CAP/_RUN_SQL_HARD_CAP/_RUN_DAX_HARD_CAP
+    # are already declared as local constants rather than pulled from fabric_audit_agent.config.
+    _LARGE_RESULT_ROWS = 50    # more rows than this -> gate kicks in (plugin's MAX_DISPLAY_ROWS-adjacent threshold)
+    _MAX_DISPLAY_ROWS = 100    # preview cap once gated (matches plugin's MAX_DISPLAY_ROWS)
+
+    def _large_result_options():
+        """The 4 machine-readable choices, mirrored from kql-ask.md step 5's exact wording."""
+        return [
+            {"id": "summarize", "label": "Aggregate only -- top N, max, min, distributions, or "
+                                          "other summaries instead of the full table."},
+            {"id": "filter", "label": "Narrow the query with more specific filters and re-run."},
+            {"id": "topN", "label": "Truncate to the first N rows (tell me a number)."},
+            {"id": "proceed", "label": "Display up to the first 100 rows -- the display table is "
+                                        "capped for token safety; the full row count is still "
+                                        "reported honestly."},
+        ]
+
     def _adhoc_engine(env, engine):
         """Return (query_callable, deeplink_args|None) for the requested engine, or (None, None)
         when that engine isn't configured. deeplink_args = (cluster_uri, db) for capacity, None for la."""
@@ -2164,7 +2186,12 @@ def create_tool_definitions(base_dir=None):
         if not kql or not str(kql).strip():
             return {"error": "kql is required", "engine": engine, "source": "live"}
 
-        query_callable, deeplink_args = _adhoc_engine(env, engine)
+        # DI seam for tests (same pattern as run_sql/run_dax's "_executor"): bypasses env-based
+        # engine resolution entirely so the gate below can be exercised offline/deterministically.
+        query_callable = inp.get("_executor")
+        deeplink_args = None
+        if query_callable is None:
+            query_callable, deeplink_args = _adhoc_engine(env, engine)
         if query_callable is None:
             configured = _configured_engines(env)
             if not configured:
@@ -2220,9 +2247,26 @@ def create_tool_definitions(base_dir=None):
                 out["errorCode"], out["suggestions"] = kerr["code"], kerr["suggestions"]
             return out
 
-        capped, cap_meta = _cap_rows(rows)
+        # Large-result gate (count-based, fires BEFORE the char-budget cap): when the query
+        # returns more than _LARGE_RESULT_ROWS rows, bound the returned rows to a _MAX_DISPLAY_ROWS
+        # preview and flag it explicitly -- never silently truncate and pretend it's complete.
+        true_row_count = len(rows)
+        large_result = true_row_count > _LARGE_RESULT_ROWS
+        display_rows = rows[:_MAX_DISPLAY_ROWS] if large_result else rows
+
+        capped, cap_meta = _cap_rows(display_rows)
         _adhoc_audit_log(engine, "allowed", kql=bounded, row_count=len(capped))
         result = {"rows": capped, "engine": engine, "source": "live"}
+        if large_result:
+            result["largeResult"] = True
+            result["options"] = _large_result_options()
+            result["note"] = (
+                f"This query returned {true_row_count} rows, over the {_LARGE_RESULT_ROWS}-row "
+                f"large-result threshold. Only a preview (the first {len(capped)} of "
+                f"{true_row_count} rows) is included in `rows` below. Present the 4 choices in "
+                "`options` to the user and wait for their answer before summarizing or otherwise "
+                "acting on the full result -- do not dump all rows into the conversation."
+            )
         if plan.get("available"):
             result["planEstimate"] = plan["plan"]
         if deeplink_args is not None:
@@ -2247,6 +2291,10 @@ def create_tool_definitions(base_dir=None):
         if advisories.get("warnings") or advisories.get("risks"):
             result["advisories"] = advisories
         out = _finish(result, rows_key="rows", kql=bounded, extra=cap_meta)
+        if large_result:
+            # _finish() sets rowCount = len(payload["rows"]) (the preview) -- override with the
+            # TRUE row count so callers can never mistake the preview length for the real total.
+            out["rowCount"] = true_row_count
         if inp.get("format") == "columnar":
             out["rows"] = _to_columnar(capped)
         return out
