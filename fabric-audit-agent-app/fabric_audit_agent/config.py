@@ -18,8 +18,13 @@ DEFAULT_CONFIG = {
     "refresh": {"retryStormAttempts": 3, "slowDataPhaseMin": 60, "chronicFailureCount": 3},
     "crossWorkspace": {"minWorkspaces": 3},   # B4: an anti-pattern in >= N workspaces is systemic
     # tightening.md Part 1a: absolute-cost thresholds for a single operation — pure Log Analytics
-    # fact, independent of any share-of-capacity.
-    "activity": {"slowOperationSeconds": 300, "highCuSeconds": 100},
+    # fact, independent of any share-of-capacity. Part 1b: recurring-shape thresholds — a query
+    # SHAPE recurring across >= minCount events from >= minUsers distinct users points at a
+    # model/report design problem, not a person problem.
+    "activity": {
+        "slowOperationSeconds": 300, "highCuSeconds": 100,
+        "recurringShapeMinCount": 3, "recurringShapeMinUsers": 2,
+    },
 }
 
 
