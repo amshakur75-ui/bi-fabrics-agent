@@ -87,11 +87,13 @@ def test_ticket_still_written_when_chat_creation_fails():
     def ticket_writer(chat_id, meta):
         tickets[meta["incidentKey"]] = (chat_id, dict(meta))
 
+    from fabric_audit_agent.automation.health import HealthReport
+    health = HealthReport()
     out = deliver_new_findings([_f("model.bidirectional::Sales Model", "Warning",
                                    what="Model has 6 bidirectional relationships", where="Finance / Sales")],
                                alerts_store=store, delivery_sinks={"webhook": sink},
                                app_url="https://app", chat_writer=failing_chat_writer,
-                               ticket_writer=ticket_writer)
+                               ticket_writer=ticket_writer, health=health)
     # the finding is still delivered (not dropped) even though the chat write blew up
     assert out["delivered"] == ["model.bidirectional::Sales Model"]
     # the ticket landed, keyed by the stable incidentKey, with chat_id=None
@@ -103,6 +105,11 @@ def test_ticket_still_written_when_chat_creation_fails():
     # the deep-link degrades to the root ?query= auto-investigation link, never dropped
     blob = json.dumps(posts[0])
     assert "/?query=" in blob and "/chat/" not in blob
+    # Part 4: the swallowed chat-write failure is now also recorded on the HealthReport.
+    assert health.degraded is True
+    assert "lakebase unavailable" in health.summary
+    assert any(d["channel"] == "chat" and not d["ok"] for d in health.deliveries)
+    assert any(d["channel"] == "ticket" and d["ok"] for d in health.deliveries)
 
 
 def test_ticket_still_written_when_chat_writer_returns_none():

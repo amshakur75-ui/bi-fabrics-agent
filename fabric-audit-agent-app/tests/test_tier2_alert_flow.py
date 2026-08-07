@@ -249,9 +249,11 @@ def test_ticket_still_written_when_chat_creation_fails():
 
     xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
           "users": ["a", "b", "c", "d"], "sharePct": 30}
+    from fabric_audit_agent.automation.health import HealthReport
+    health = HealthReport()
     a = process_alerts([xu], now_dt=T0, alerts_store=store, delivery_sinks={"webhook": sink},
                        reasoner=r, chat_writer=failing_writer, app_url="https://app",
-                       ticket_writer=ticket_writer, cfg=_cfg_no_hysteresis())
+                       ticket_writer=ticket_writer, cfg=_cfg_no_hysteresis(), health=health)
 
     assert a["new"] == ["cross_user::Fin/Sales"]
     row = store["query_active"]()["cross_user::Fin/Sales"]
@@ -261,6 +263,12 @@ def test_ticket_still_written_when_chat_creation_fails():
     cid, m = tickets["cross_user::Fin/Sales"]
     assert cid is None
     assert m["checkType"] == "cross_user" and m["resource"] == "Sales"
+    # Part 4: the swallowed chat-write failure (already a WARN print) is ALSO recorded — a degraded
+    # delivery path is now visible via HealthReport, not just job logs. Ticket write succeeded.
+    assert health.degraded is True
+    assert "lakebase unavailable" in health.summary
+    assert any(d["channel"] == "chat" and not d["ok"] for d in health.deliveries)
+    assert any(d["channel"] == "ticket" and d["ok"] for d in health.deliveries)
 
 
 def _recurring(t):

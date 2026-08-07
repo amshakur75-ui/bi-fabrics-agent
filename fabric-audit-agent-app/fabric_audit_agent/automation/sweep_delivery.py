@@ -94,7 +94,8 @@ def _family(key):
 
 
 def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
-                         chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None):
+                         chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None,
+                         health=None):
     """Deliver NEW material sweep findings; dedup via the shared ``audit_alerts`` store.
 
     Returns ``{"delivered":[keys], "skipped_dup", "skipped_tier2", "skipped_minor"}``.
@@ -102,6 +103,10 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
     already an active incident. On delivery it's upserted active (so the next sweep / Tier-2 dedups)
     AND — via ``ticket_writer`` — an ``alert_ticket`` row is written so the estate-wide finding SHOWS
     IN THE APP NOTIFICATION CENTER, not just Teams (checkType = the finding family, e.g. ``model``).
+
+    ``health``: optional ``automation.health.HealthReport`` — the chat-write / ticket-write
+    failures below are already logged (WARN prints); this additionally records them so a degraded
+    delivery path surfaces in the digest banner instead of only in job logs.
     """
     from ..outbound import dispatch_outbound
     from ..adapters.delivery_webhook import build_card
@@ -134,10 +139,14 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
         if chat_writer:
             try:
                 chat_id = chat_writer(markdown, title)
+                if health is not None:
+                    health.record_delivery("chat", True)
             except Exception as exc:  # a chat-write failure must not drop the alert or the link
                 print(f"[sweep] WARN: alert chat write failed ({type(exc).__name__}: {exc}) — "
                       f"continuing with chat_id=None (ticket is still written, deep-link degrades "
                       f"to a root ?query= auto-investigation link)")
+                if health is not None:
+                    health.record_delivery("chat", False, f"{type(exc).__name__}: {exc}")
 
         chat_url = None
         if app_url:
@@ -174,8 +183,12 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                     "resource": f.get("where") or key, "workspace": None,
                     "detail": (f.get("recommendation") or what)[:500],
                     "firstDetected": now_iso, "currentlyActive": True})
+                if health is not None:
+                    health.record_delivery("ticket", True)
             except Exception as exc:
                 print(f"[sweep] ticket metadata write failed ({type(exc).__name__}: {exc})")
+                if health is not None:
+                    health.record_delivery("ticket", False, f"{type(exc).__name__}: {exc}")
         out["delivered"].append(key)
 
     return out

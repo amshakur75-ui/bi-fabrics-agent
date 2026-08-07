@@ -21,6 +21,27 @@ from .config import DEFAULT_CONFIG, merge_config
 from .reasoner_stub import create_stub_reasoner
 from .identity import resolve_identity, emit_identity_audit
 
+
+def _check_startup_invariant(health=None, *, catalog=None, known_names=None):
+    """Sub-plan 4 Part 4: the MODEL_MAP invariant (``resolve/catalog.py::assert_model_map_invariant``)
+    used to be tests-only — call it once at job startup so a drifted catalog (a catalog model with no
+    matching routing entry) is caught immediately instead of surfacing later as a silently wrong/
+    missing model resolution. Never crashes the run: a mismatch degrades to a recorded health issue
+    (and a WARN print), not a failed job. ``catalog``/``known_names`` are injection points for tests
+    only — production always uses the real default catalog + the real routing table.
+    """
+    try:
+        from .resolve.catalog import assert_model_map_invariant
+        from .resolve.routing_table import ROUTING_TABLE
+        names = known_names if known_names is not None else {e["canonicalName"] for e in ROUTING_TABLE}
+        assert_model_map_invariant(names, catalog=catalog)
+    except Exception as exc:
+        msg = f"startup MODEL_MAP invariant failed: {type(exc).__name__}: {exc}"
+        print(f"[startup] WARN: {msg}")
+        if health is not None:
+            health.record_issue(msg)
+
+
 def _append_error_record(store, t0):
     """Append a minimal observability record on sweep failure. Failure-isolated — never raises."""
     from datetime import datetime, timezone
@@ -585,12 +606,18 @@ def _resolve_secret_refs():
 def job_main():
     """The deployed Databricks wheel-task entry (pyproject: fabric-audit-job)."""
     _merge_named_params_into_env()
+    from .automation.health import HealthReport, render_health_line
+    health = HealthReport()
+    _check_startup_invariant(health)
     try:
         envelope = run_unified_job()
     except Exception as exc:
         _alert_failure(exc, os.environ)
         raise
     print(envelope["summary"])
+    line = render_health_line(health)
+    if line:
+        print(f"[job] {line}")
     return envelope
 
 
@@ -720,15 +747,22 @@ def _build_tier2_reasoner(env, config):
 
 
 def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=None,
-                  heartbeat_store=None, config=None, tenant=None, scope=None):
+                  heartbeat_store=None, config=None, tenant=None, scope=None, health=None):
     """Tier 2 entry point: cheap deterministic check; LLM-free unless a gate fires and alerting is on.
 
     Builds real adapters from environment when ports are not injected. Same DI pattern as
     ``run_job`` / ``run_unified_job`` — pass any port to override for tests. When
     ``TIER2_WEBHOOK_ENABLED`` + ``POWER_AUTOMATE_ALERT_URL`` are set, wires the Tier-2 -> Teams alert
     path (sub-project #2): materiality gate -> investigation -> Adaptive Card + pre-created chat.
+
+    ``health``: optional ``automation.health.HealthReport``; a fresh one is created when omitted so
+    ``run_tier2_check`` always has somewhere to record collector/delivery outcomes. The result dict
+    carries it back as ``"health"`` (``.to_dict()``) for callers that want to log/query it.
     """
     env = env if env is not None else os.environ
+    if health is None:
+        from .automation.health import HealthReport
+        health = HealthReport()
     if collector is None:
         collector = _build_tier2_collector(env, window="5m")
     if heartbeat_store is None:
@@ -775,7 +809,7 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         delivery_sinks = {}
 
     from .automation.tier2_check import run_tier2_check
-    return run_tier2_check(
+    result = run_tier2_check(
         collector,
         delivery_sinks=delivery_sinks,
         findings_store=findings_store,
@@ -790,21 +824,30 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         app_url=app_url,
         ack_store=ack_store,
         ticket_writer=ticket_writer,
+        health=health,
     )
+    result["health"] = health.to_dict()
+    return result
 
 
 def tier2_main():
     """The deployed Databricks wheel-task entry for Tier 2 (pyproject: fabric-audit-tier2)."""
     _merge_named_params_into_env()
+    from .automation.health import HealthReport, render_health_line
+    health = HealthReport()
+    _check_startup_invariant(health)
     env = os.environ
     try:
-        result = run_tier2_job(env=env)
+        result = run_tier2_job(env=env, health=health)
     except Exception as exc:
         _alert_failure(exc, env)
         raise
     triggered = result.get("triggered", False)
     n = len(result.get("triggers", []))
     print(f"[tier2] triggered={triggered} triggers={n} delivered={result.get('delivered', {})}")
+    line = render_health_line(health)
+    if line:
+        print(f"[tier2] {line}")
     return result
 
 
@@ -819,6 +862,13 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     app_url = env.get("APP_URL", "")
     catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
 
+    from .automation.health import HealthReport
+    health = HealthReport()
+    # Startup invariant (Sub-plan 4 Part 4): run once here rather than only in tests — a drifted
+    # catalog degrades to a recorded health issue (surfaced in the digest banner below), never a
+    # crashed job.
+    _check_startup_invariant(health)
+
     # Day high-water CU% / throttle from a fresh 1d collect (degrade to {} on any error). The same
     # collect also carries facts["events"] (normalize_event-shaped, the same source the Part 12
     # taxonomy detectors read) — reused for the Top-N users ranking so the digest doesn't need a
@@ -828,6 +878,10 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
         if collector is None:
             collector = _build_tier2_collector(env, window="1d")
         facts = collector["collect"]() or {}
+        # Merged collectors (adapters/collector_merge.py) surface per-source failures here — feed
+        # them straight into the health report so a partially-blind digest is visible, not silent.
+        if facts.get("sourcesFailed"):
+            health.record_collector_failures(facts["sourcesFailed"])
         cap = facts.get("capacity") or {}
         capacity = {"peakCuPct": cap.get("peakCuPct"), "throttleMinutes": cap.get("throttleMinutes")}
         items = facts.get("items") or []
@@ -839,6 +893,7 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
                 f"true CU% reached {cap['peakCuPct']:.0f}% with zero monitored activity")
     except Exception as exc:
         print(f"[daily] capacity collect skipped ({type(exc).__name__}: {exc})")
+        health.record_collector("daily-1d", False, f"{type(exc).__name__}: {exc}")
 
     if alerts_store is None and catalog and schema:
         try:
@@ -870,7 +925,8 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     from .automation.daily_summary import run_daily_summary
     return run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
                              coverage_gaps=coverage_gaps, delivery_sinks=delivery_sinks,
-                             chat_writer=chat_writer, app_url=app_url, now_dt=now, events=events)
+                             chat_writer=chat_writer, app_url=app_url, now_dt=now, events=events,
+                             health=health)
 
 
 def daily_summary_main():

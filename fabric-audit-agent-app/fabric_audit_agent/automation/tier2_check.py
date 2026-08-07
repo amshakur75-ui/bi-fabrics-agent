@@ -488,13 +488,17 @@ def _investigate_query(t, *, prefix=None, when=None):
 
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                    chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48,
-                   ack_store=None, ticket_writer=None):
+                   ack_store=None, ticket_writer=None, health=None):
     """Run the alert state machine over the current triggers. Returns an action summary.
 
     Ordering is cost-critical: the deterministic dedup + materiality checks decide silence WITHOUT
     calling the LLM; ``reasoner`` (the investigation) runs only for a new report/ambiguous incident
     or an escalation. Reminders reuse the stored investigation summary (no LLM). All sends route
     through ``outbound.dispatch_outbound`` (egress chokepoint).
+
+    ``health``: optional ``automation.health.HealthReport`` — the chat-write / ticket-write / reopen
+    failures below are already logged (WARN prints); this additionally records them so a degraded
+    delivery path surfaces in the digest banner instead of only in job logs.
     """
     from ..outbound import dispatch_outbound
     from ..adapters.delivery_webhook import build_card, PROXY_RANKING_DISCLOSURE
@@ -578,8 +582,12 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 "firstDetected": row.get("firstAlertedAt"),
                 "currentlyActive": row.get("currentlyActive"),
             })
+            if health is not None:
+                health.record_delivery("ticket", True)
         except Exception as exc:
             print(f"[tier2] ticket metadata write failed ({type(exc).__name__}: {exc})")
+            if health is not None:
+                health.record_delivery("ticket", False, f"{type(exc).__name__}: {exc}")
 
     for t in triggers:
         if t.get("check") == "data_unavailable":
@@ -602,6 +610,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                         ack_store["reopen"](prior.get("chatId"))
                 except Exception as exc:
                     print(f"[tier2] reopen failed ({type(exc).__name__}: {exc})")
+                    if health is not None:
+                        health.record_issue(f"ticket reopen failed: {type(exc).__name__}: {exc}")
                 _note = _ticket.get("resolutionNote")
                 summary = ("Recurred after being marked resolved"
                            + (f" — prior note: {_note}" if _note else "") + ".")
@@ -696,10 +706,14 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         if chat_writer:
             try:
                 chat_id = chat_writer(markdown, _title_for(t))
+                if health is not None:
+                    health.record_delivery("chat", True)
             except Exception as exc:  # a chat-write failure must not drop the alert or the link
                 print(f"[tier2] WARN: alert chat write failed ({type(exc).__name__}: {exc}); "
                       "deep-link will open a fresh auto-investigating chat; the ticket is still "
                       "written (keyed by incidentKey, not chat_id)")
+                if health is not None:
+                    health.record_delivery("chat", False, f"{type(exc).__name__}: {exc}")
         # chat_id may be None (writer absent or failed) -> _send falls back to a root ?query link
         # that opens a fresh auto-investigating chat. No fake /chat/<uuid> (that 404s).
         row = {"incidentKey": key, "status": "active", "severity": sev, "checkType": t.get("check"),
@@ -747,7 +761,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     return actions
 
 
-def _record_reading(readings_store, *, run_at, facts=None, collector_ok):
+def _record_reading(readings_store, *, run_at, facts=None, collector_ok, health=None):
     """Append this run to the rolling-readings store and return the recent window (newest-first).
     Never fatal — a store error degrades to an empty history (stateful gates just won't fire)."""
     if readings_store is None:
@@ -762,13 +776,15 @@ def _record_reading(readings_store, *, run_at, facts=None, collector_ok):
         return readings_store["recent"](12)
     except Exception as exc:
         print(f"[tier2] readings store unavailable ({type(exc).__name__}: {exc})")
+        if health is not None:
+            health.record_issue(f"readings store unavailable: {type(exc).__name__}: {exc}")
         return []
 
 
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                     heartbeat_store=None, readings_store=None, config=None, tenant=None, scope=None,
                     alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None,
-                    ack_store=None, ticket_writer=None):
+                    ack_store=None, ticket_writer=None, health=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
@@ -778,6 +794,9 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     ``readings_store``: a ``{"append","recent"}`` rolling store (Step 2) powering the STATEFUL gates
     (sustained-band, rate-of-change, silent-failure). None -> those gates simply don't fire.
     ``config``: detection config (uses DEFAULT_CONFIG if None).
+    ``health``: optional ``automation.health.HealthReport`` — records the collector outcome
+    (including any per-source failures merged collectors surface as ``facts["sourcesFailed"]``,
+    adapters/collector_merge.py) plus everything ``process_alerts``/``_record_reading`` record.
 
     Returns ``{"triggered": bool, "triggers": list, "delivered": dict, "checkedAt": str}``.
     """
@@ -799,7 +818,8 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
         try:
             return process_alerts(trigs, alerts_store=alerts_store, delivery_sinks=delivery_sinks,
                                   reasoner=reasoner, chat_writer=chat_writer, app_url=app_url,
-                                  now_dt=now_dt, ack_store=ack_store, ticket_writer=ticket_writer)
+                                  now_dt=now_dt, ack_store=ack_store, ticket_writer=ticket_writer,
+                                  health=health)
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -807,8 +827,11 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
         facts = collector["collect"]()
     except Exception as exc:
         print(f"[tier2] collector FAILED: {type(exc).__name__}: {exc}")
+        if health is not None:
+            health.record_collector(None, False, f"{type(exc).__name__}: {exc}")
         # Record the failure so the silent-failure gate can fire after N consecutive blind runs.
-        recent = _record_reading(readings_store, run_at=checked_at, facts=None, collector_ok=False)
+        recent = _record_reading(readings_store, run_at=checked_at, facts=None, collector_ok=False,
+                                 health=health)
         sf = _check_silent_failure(recent, mcfg)
         return {"triggered": bool(sf), "triggers": sf, "delivered": _deliver(sf),
                 "checkedAt": checked_at, "error": "collector failed"}
@@ -821,8 +844,17 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
           f"throttleMinutes={_cap.get('throttleMinutes')} overageTotalMs={_cap.get('overageTotalMs')} "
           f"items={len(_items)}")
 
+    if health is not None:
+        # Reuse collector_merge's own per-source failure list (adapters/collector_merge.py) rather
+        # than reclassifying — a merged collector already tells us WHICH sources failed and why.
+        if (facts or {}).get("sourcesFailed"):
+            health.record_collector_failures(facts["sourcesFailed"])
+        else:
+            health.record_collector("primary", True)
+
     _ok = _cap.get("peakCuPct") is not None or len(_items) > 0
-    recent = _record_reading(readings_store, run_at=checked_at, facts=facts, collector_ok=_ok)
+    recent = _record_reading(readings_store, run_at=checked_at, facts=facts, collector_ok=_ok,
+                             health=health)
 
     triggers = []
     triggers.extend(_check_concentration(facts, config))

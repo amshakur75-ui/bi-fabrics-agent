@@ -186,7 +186,7 @@ def _top_users_lines(ranked, source):
 
 def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
                         app_url="", ack_url=None, unacked_prior=0, informational=None,
-                        events=None):
+                        events=None, health=None):
     """Build the digest as ``(markdown, card, summary)``. Pure — no I/O.
 
     ``open_tickets``: active ``audit_alerts`` rows (digest AND capacity rows already excluded —
@@ -203,7 +203,13 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     ``_top_users``); falls back to a finding-count proxy from ``open_tickets`` when omitted.
     ``ack_url``: where the Acknowledge action points (defaults to the app root ``{app_url}/`` — the
     app has no ``/alerts`` route, so callers should pass the digest chat deep-link when they have it).
+    ``health``: optional ``automation.health.HealthReport`` — when degraded, a banner is rendered
+    at the TOP of the digest (both markdown and card) so a silent outage (a failed collector, a
+    dropped chat/ticket write, a drifted startup invariant) becomes visible instead of only living
+    in job logs. Omitted or healthy -> no banner, matching today's shape exactly.
     """
+    from .health import render_health_line
+    health_line = render_health_line(health)
     open_tickets = list(open_tickets or [])
     coverage_gaps = list(coverage_gaps or [])
     informational = list(informational or [])
@@ -219,6 +225,8 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
 
     # ---- markdown (the pre-created chat body; also a plain-text fallback) ----
     md = [f"# 📋 Daily Fabric capacity summary — {date_str}", ""]
+    if health_line:
+        md.append(f"> {health_line}\n")
     if unacked_prior:
         s = "summary" if unacked_prior == 1 else "summaries"
         md.append(f"> ⚠️ {unacked_prior} earlier daily {s} still awaiting acknowledgement.\n")
@@ -285,6 +293,9 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     header = f"📋 Daily Fabric capacity summary — {date_str}"
     body = [{"type": "TextBlock", "text": header, "weight": "Bolder",
              "size": "Medium", "wrap": True}]
+    if health_line:
+        body.append({"type": "TextBlock", "wrap": True, "size": "Small", "weight": "Bolder",
+                     "color": "Attention", "text": health_line})
     if unacked_prior:
         s = "summary" if unacked_prior == 1 else "summaries"
         body.append({"type": "TextBlock", "wrap": True, "size": "Small", "weight": "Bolder",
@@ -355,13 +366,16 @@ def _is_acknowledged(ack_store, chat_id):
 
 def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_gaps=None,
                       delivery_sinks=None, chat_writer=None, app_url="", now_dt=None,
-                      events=None):
+                      events=None, health=None):
     """Compose + deliver today's digest, reconcile prior digests, and record today's.
 
     Returns ``{"delivered", "openTickets", "unackedPrior", "digestKey", "chatId"}``. All I/O ports
     are injected so this is unit-testable with fakes (no Lakebase / Delta / webhook needed).
     ``events``: optional ``facts["events"]``-shaped list (see ``_top_users``); ``job.py`` wires
     this through from the same 1d collect it already runs for the capacity high-water numbers.
+    ``health``: optional ``automation.health.HealthReport`` accumulated by the caller (collector /
+    startup-invariant / delivery outcomes) — threaded into ``build_daily_summary`` for the banner,
+    and this function also records the digest's OWN chat-write outcome into it below.
     """
     from ..outbound import dispatch_outbound
 
@@ -398,7 +412,7 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
         return build_daily_summary(
             open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
             date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
-            informational=informational, ack_url=ack_url, events=events)
+            informational=informational, ack_url=ack_url, events=events, health=health)
 
     # Pre-create the digest chat FIRST (its body is ack-independent) so the card's "Review &
     # acknowledge" action can deep-link to THAT chat — the app has no /alerts route, so the old
@@ -408,8 +422,12 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     if chat_writer:
         try:
             chat_id = chat_writer(markdown, f"Daily summary — {date_str}")
+            if health is not None:
+                health.record_delivery("chat", True)
         except Exception as exc:
             print(f"[daily] digest chat write failed ({type(exc).__name__}: {exc})")
+            if health is not None:
+                health.record_delivery("chat", False, f"{type(exc).__name__}: {exc}")
 
     ack_url = None
     if app_url:
