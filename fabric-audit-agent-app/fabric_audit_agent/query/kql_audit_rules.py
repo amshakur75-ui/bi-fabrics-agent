@@ -662,3 +662,71 @@ def parse_kusto_error(msg):
         }
 
     return {"code": "UNKNOWN", "suggestions": [raw]}
+
+
+# ─────────────────────────────────────────────────────────
+# Live-query failure classifier (alerting-redesign Sub-plan 4, Task 4d / audit finding 25e)
+# ─────────────────────────────────────────────────────────
+
+# Genuine "this table/entity/column doesn't exist" semantics -- checked FIRST and takes
+# precedence over every other family. A not-found MUST NOT be reported as a FAILURE (auth /
+# throttled / timeout / network), and a FAILURE must never be phrased as "table doesn't exist" /
+# "no data" -- that conflation is exactly what this classifier exists to prevent (25e).
+_NOT_FOUND_MARKERS = (
+    "entitynotfound", "entity not found", "could not be resolved",
+    "failed to resolve table", "failed to resolve entity",
+    "failed to resolve table or column expression named",
+    "table not found", "no such table", "unknown table",
+    "cannot find table", "invalid table name", "sem0100",
+)
+
+# HTTP 429/503/504 or a "throttled" message -- the same shape ``adapters/clients.py``
+# ``_la_is_transient`` treats as retryable.
+_THROTTLE_RE = re.compile(r"\b(429|503|504)\b|throttl", re.IGNORECASE)
+
+# Connection-level failures not already covered by ``investigation.xmla_classify``'s
+# "connection-drop" markers (kept here so plain socket/DNS errors from non-XMLA clients --
+# e.g. ``requests``/``pyodbc`` -- still classify as "network").
+_NETWORK_MARKERS = (
+    "name or service not known", "temporary failure in name resolution",
+    "getaddrinfo failed", "max retries exceeded", "connection aborted",
+    "failed to establish a new connection",
+)
+
+
+def classify_live_query_error(exc):
+    """Classify a caught live-query exception (Kusto/Log Analytics/XMLA/SQL) into one of
+    ``"not-found"`` / ``"auth"`` / ``"throttled"`` / ``"timeout"`` / ``"network"`` / ``"unknown"``.
+
+    This is the SINGLE SOURCE OF TRUTH for handler-layer error classification (tools.py grounding
+    handlers such as ``describe_source_handler``) -- it deliberately REUSES rather than reinvents:
+    ``parse_kusto_error`` above for the TIMEOUT/AUTH text families, and
+    ``investigation.xmla_classify.classify_xmla_error`` for its auth/connection-drop markers.
+    Only the "not-found" and "throttled" families (neither of which those two cover) are new here.
+
+    Distinguishing a genuine "table/entity not found" from an AUTH/throttle/network/timeout
+    FAILURE matters because collapsing them into one generic error misreports a token expiry or
+    a transient 503 as "no data" -- audit finding 25e. Text-only matching against ``str(exc)``
+    (and the exception's type name for timeouts); never raises. Accepts an ``Exception`` instance
+    or a plain string."""
+    raw = str(exc)
+    low = raw.lower()
+    type_name = type(exc).__name__.lower() if isinstance(exc, BaseException) else ""
+
+    if any(marker in low for marker in _NOT_FOUND_MARKERS):
+        return "not-found"
+
+    if _THROTTLE_RE.search(raw):
+        return "throttled"
+
+    if "timeout" in type_name or parse_kusto_error(raw)["code"] == "TIMEOUT":
+        return "timeout"
+
+    from ..investigation.xmla_classify import classify_xmla_error
+    xmla_class = classify_xmla_error(raw)
+    if xmla_class == "auth" or parse_kusto_error(raw)["code"] == "AUTH":
+        return "auth"
+    if xmla_class == "connection-drop" or any(marker in low for marker in _NETWORK_MARKERS):
+        return "network"
+
+    return "unknown"

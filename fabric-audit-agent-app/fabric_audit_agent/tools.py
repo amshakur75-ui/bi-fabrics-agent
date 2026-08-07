@@ -1574,6 +1574,49 @@ def create_tool_definitions(base_dir=None):
                 env["FABRIC_LA_WORKSPACE_ID"], tenant, env["FABRIC_CLIENT_ID"], secret),
         )
 
+    # Actionable, source-agnostic wording per failure class -- deliberately NEVER says "no data"
+    # or "empty" (audit finding 25e: an AUTH/throttle/timeout/network FAILURE must never be
+    # misreported as an empty-but-successful query).
+    _LIVE_QUERY_FAILURE_MESSAGES = {
+        "auth": ("Authentication/permission failure querying this source -- the token may be "
+                 "expired or the identity may lack access. This is a FAILURE, not missing data."),
+        "throttled": ("The query was throttled (rate-limited) by the service. Retry after a "
+                      "delay -- this is a FAILURE, not missing data."),
+        "timeout": "The query timed out before completing. This is a FAILURE, not missing data.",
+        "network": ("A network/connection failure occurred reaching the source. This is a "
+                    "FAILURE, not missing data."),
+    }
+
+    def _live_query_error_result(exc, source, table=None):
+        """Classify a caught live-query exception (``kql_audit_rules.classify_live_query_error``
+        -- the single source of truth also used by the ad-hoc KQL error path) and build either a
+        distinct not-found result or a FAILURE envelope. A genuine "table/entity doesn't exist"
+        (``errorClass`` would be "not-found") is NEVER phrased as an error/failure, and an AUTH /
+        throttled / timeout / network FAILURE is NEVER phrased as "no data" (audit finding 25e).
+        Keeps the uniform ``{"error":..., "source":...}`` contract, adding ``errorClass``."""
+        from .query.kql_audit_rules import classify_live_query_error
+        error_class = classify_live_query_error(exc)
+        if error_class == "not-found":
+            result = {
+                "source": source, "found": False, "columns": [], "sourceLabel": "live",
+                "errorClass": "not-found",
+                "note": (f"{table!r} does not exist in this source (verify the table/source "
+                         "name) -- this is NOT the same as a query that ran and returned zero "
+                         "rows." if table else
+                         "The requested table/entity does not exist in this source (verify the "
+                         "name) -- this is NOT the same as a query that ran and returned zero "
+                         "rows."),
+            }
+            if table is not None:
+                result["table"] = table
+            return result
+        prefix = _LIVE_QUERY_FAILURE_MESSAGES.get(error_class)
+        message = f"{prefix} ({exc})" if prefix else str(exc)
+        result = {"error": message, "source": source, "errorClass": error_class}
+        if table is not None:
+            result["table"] = table
+        return result
+
     def describe_source_handler(_input=None):
         """Inspect a telemetry source's schema before querying it (grounding): for 'events'
         (Log Analytics PowerBIDatasetsWorkspace) runs getschema; for 'capacity' (Kusto/Eventhouse)
@@ -1594,7 +1637,7 @@ def create_tool_definitions(base_dir=None):
                 columns = [{"name": r.get("ColumnName"), "type": r.get("ColumnType")} for r in rows]
                 return {"source": source, "table": table, "columns": columns, "sourceLabel": "live"}
             except Exception as exc:
-                return {"error": str(exc), "source": source}
+                return _live_query_error_result(exc, source, table)
 
         # source == "capacity"
         if not _has_live_capacity_kusto(env):
@@ -1620,7 +1663,7 @@ def create_tool_definitions(base_dir=None):
                 result["planEstimate"] = _queryplan_estimate(inp["estimateKql"])
             return result
         except Exception as exc:
-            return {"error": str(exc), "source": source}
+            return _live_query_error_result(exc, source, table)
 
     def sample_events_handler(_input=None):
         """Sample a few RAW rows from a telemetry source before querying it more heavily
@@ -1647,7 +1690,7 @@ def create_tool_definitions(base_dir=None):
                 rows = la_query(kql) or []
                 return {"source": source, "table": table, "n": n, "rows": rows, "sourceLabel": "live"}
             except Exception as exc:
-                return {"error": str(exc), "source": source}
+                return _live_query_error_result(exc, source, table)
 
         # source == "capacity"
         if not _has_live_capacity_kusto(env):
@@ -1665,7 +1708,7 @@ def create_tool_definitions(base_dir=None):
                 result["verifyUrl"] = deeplink
             return result
         except Exception as exc:
-            return {"error": str(exc), "source": source}
+            return _live_query_error_result(exc, source, table)
 
     # ------------------------------------------------------------------
     # Task 9: capacity_diagnostics -- read-only .show capacity/cluster suite
