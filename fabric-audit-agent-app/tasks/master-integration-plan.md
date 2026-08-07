@@ -92,20 +92,20 @@ e2e-chatbot-app-next/client/src/components/elements/
 
 ## PHASE 0 — Pre-flight (nothing changes yet)
 
-- [ ] 0.1 Locate and read `GAPS-AND-ISSUES.md` in full. Build a checklist of its open items;
+- [x] 0.1 Locate and read `GAPS-AND-ISSUES.md` in full. Build a checklist of its open items;
       cross off items this plan covers; any item it has that this plan lacks gets APPENDED to
       the relevant phase below before Phase 1 starts. (This is the completeness backstop.)
-- [ ] 0.2 Extract the plugin zip data into `fabric_audit_agent/data/plugin/`:
+- [x] 0.2 Extract the plugin zip data into `fabric_audit_agent/data/plugin/`:
       `newell-schema.json`, the full `catalog/` directory (manifest.json, search-index.json,
       models/*.json — all 14), `ArtifactsMappedtoWorkspace.xlsx`, `HCMIF0485_IDT_DASHBOARD.xlsx`.
       Source zip: `C:\Users\am08570\Downloads\kql-mcp-server-v5` (folder) or the uploaded zip.
       Do NOT rerun the .cjs build scripts — their source Excel/CSV inputs are NOT in the zip
       (tightening.md 25b). The pre-built outputs are authoritative as-is.
-- [ ] 0.3 Read these files in full before any edit (they are the blast-radius core):
+- [x] 0.3 Read these files in full before any edit (they are the blast-radius core):
       `tools.py`, `agent_server/agent.py`, `agent_server/loop.py`, `agent_server/system_prompt.py`,
       `query/kql_guard.py`, `query/firewall.py`, `adapters/collector_log_analytics.py`,
       `adapters/collector_merge.py`, `job.py`, `config.py`, `investigation/gates.py`.
-- [ ] 0.4 Run the FULL existing test suite once and record the baseline pass count. Every
+- [x] 0.4 Run the FULL existing test suite once and record the baseline pass count. Every
       later phase re-runs it; any regression against this baseline blocks progress.
 
 ---
@@ -115,23 +115,23 @@ e2e-chatbot-app-next/client/src/components/elements/
 All changes in `adapters/`. Blast radius: `collector_merge.py`, `job.py`'s
 `build_collector_from_env`, `tools.py`'s independent collector assembly, tests in `tests/`.
 
-- [ ] 1.1 `collector_log_analytics.py`: set explicit query timeout ~55s (26e) with a specific
+- [x] 1.1 `collector_log_analytics.py`: set explicit query timeout ~55s (26e) with a specific
       timeout error message; confirm LA token scope is `https://api.loganalytics.io/.default`
       NOT the ARM scope (July 22 conversation correction — check the actual code, don't assume).
-- [ ] 1.2 Add bounded retry (2 retries, 1s/2s backoff, transient-only `429|503|504|throttled`)
+- [x] 1.2 Add bounded retry (2 retries, 1s/2s backoff, transient-only `429|503|504|throttled`)
       to the LA HTTP layer (26g). Non-transient errors propagate immediately.
-- [ ] 1.3 Add response-shape validation (26h): before accessing `tables[0].rows/columns`,
+- [x] 1.3 Add response-shape validation (26h): before accessing `tables[0].rows/columns`,
       validate the structure; on mismatch raise a specific "unexpected API response shape"
       error, never a bare KeyError.
-- [ ] 1.4 Error-conflation fix (25e) in ALL THREE collectors (log_analytics, workspace_monitoring,
+- [x] 1.4 Error-conflation fix (25e) in ALL THREE collectors (log_analytics, workspace_monitoring,
       rest): only the Kusto-semantic-error regex (`sem0100|semantic error|failed to resolve
       table|entitynotfound|badargument`) may map to "no data"; everything else re-raises.
       Per the STANDING RULE, also grep collector_capacity_events.py, collector_events_la.py,
       collector_activity*.py for the same conflation pattern.
-- [ ] 1.5 If ANY code converts `ago(Xh/Xm)` to an ISO 8601 timespan: verify floor-days /
+- [x] 1.5 If ANY code converts `ago(Xh/Xm)` to an ISO 8601 timespan: verify floor-days /
       ceil-remaining-hours (26f — the ceil bug made ago(4h) scan a full day). Grep for
       `timespan`, `P1D`, `PT`, `ago(` across adapters/ and query/.
-- [ ] 1.6 `collector_merge.py`: per-collector try/except so one failing collector yields empty
+- [x] 1.6 `collector_merge.py`: per-collector try/except so one failing collector yields empty
       facts + a recorded health event instead of killing the whole run (July 22 finding). The
       failure MUST be surfaced in the run's health output (ties into tightening Part 4), never
       only printed.
@@ -140,13 +140,13 @@ All changes in `adapters/`. Blast radius: `collector_merge.py`, `job.py`'s
       collectors independently so job.py's LA branch never executed on the App path. Make ONE
       shared builder both call. Blast radius: every tool in tools.py that triggers collection,
       job.py, any env-var docs.
-- [ ] 1.8 `collector_capacity_events.py`: extract the three throttle threshold fields from the
+- [x] 1.8 `collector_capacity_events.py`: extract the three throttle threshold fields from the
       events stream so the throttle signal gate is no longer structurally dead (July 29
       finding + GAPS A-items). Remember: the raw threshold fields are constant=1 BOOLEAN flags,
       NOT the CU limit — the limit measure is base×30 (verified formulas, userMemories). Also
       apply the ×100 scaling fix where the raw API returns 0–1 fractions but `throttle.py`
       compares against `>100.0` (GAP A1).
-- [ ] 1.9 Real-Time Hub Summary events: dedup by 30-second window (best-effort delivery can
+- [x] 1.9 Real-Time Hub Summary events: dedup by 30-second window (best-effort delivery can
       duplicate). Verify whether the collector already dedups; add if absent.
 
 ## PHASE 2 — KQL guard upgrade (tightening 24a/24c/24h + 26r + 25a)

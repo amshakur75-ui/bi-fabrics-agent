@@ -41,8 +41,73 @@ authoritative) into `fabric_audit_agent/data/plugin/`:
 `HCMIF0485_IDT_DASHBOARD.xlsx`. The two `.cjs` build scripts copied to `data/plugin/scripts/` for
 future-refresh reference (Part 22/24d), NOT executed.
 
-### 0.1 GAPS reconciliation — delegated (see tasks/GAPS-RECONCILIATION.md)
-### 0.3 Core-file blast-radius map — delegated (see tasks/BLAST-RADIUS-CORE.md)
+### 0.1 GAPS reconciliation — DONE (tasks/GAPS-RECONCILIATION.md)
+Reconciled 93 ledger ids: 54 FIXED, 16 PARTIAL, 23 OPEN. Contradiction surfaced: **C2** is
+REOPENED/urgent in GAPS Section 1 but FIXED in Section 11 + the plan's cross-check (ADR-001,
+single-sourced `system_prompt.py`). DECISION: the later ADR-001 record supersedes — treat C2 as
+FIXED (canonical prompt is single-sourced; the deployed-copy divergence it described predates the
+restructure). Will re-verify in Phase 3.9 when the prompt is edited.
+
+**16 open items NOT covered by any plan phase — ABSORBED here (0.1 completeness backstop):**
+- SP2 ("validated" label precision), SP3 (cadence-vs-causation), SP5 (% base timepoint-vs-lifetime
+  labeling), SP6 (inline `[inferred]`/`(derived)` labeling) → **Phase 3.9 / Phase 4** system-prompt
+  additions (they are prompt-precision rules; fold into the prompt pass alongside 4.x labeling).
+- N13 (startup health probes for the 3 data connections) → **Phase 4.11 area** (SKU/base-CU
+  cross-check is already a startup probe; extend it to LA/capacity-events/FUAM reachability).
+- N16 (UI-export fraction-scale guard in `importers/capacity_metrics.py`) → **Phase 1.8** (same ×100
+  defect class as A1; add the guard when touching capacity-events scaling).
+- N24C (±30s cross-source time-window alignment tolerance) → **Phase 4** (statistics/anomaly pass).
+- V1 (automated 3-level validate.py cross-check harness) → **Phase 4.9** (math-consistency).
+- UX1 (side-by-side check cards), UX2 (animated loading), UX3 (audience/coaching wiring),
+  UX4 (audience detection) → **Phase 5 / tightening Part 11** (UI).
+- EV2 (run mine_evals), EV3 4th case (repeated-question multi-turn eval) → **Phase 7.1/7.2**
+  (verification/eval; EV3-4 needs a harness change — note it there).
+- E3 (multi-workspace loop orchestration) → **Phase 6 (broadening) / tightening Part 9 B4**; plan
+  states the multi-workspace stance but schedules no task — flag as deferred-with-reason at 7.4 if
+  not built.
+- N22 (step-budget classifier post-migration verification) → **Phase 7.2** live check.
+These are now tracked; none silently dropped. The `sla.py` blanket-SLA bug maps to tightening
+Part 17a (not a GAPS id) and is owned by the STANDING RULE + Phase 4 SLA work.
+
+### 0.3 Core-file blast-radius map — DONE (tasks/BLAST-RADIUS-CORE.md)
+Six core files mapped. Three facts that gate Phases 2–3, captured for the loop:
+- **tools.py tool registration:** each tool = an inner `def <name>_handler(_input=None)` closure inside
+  `create_tool_definitions(base_dir=None)` + a dict appended to its returned list:
+  `{"name","description","input_schema"(json-schema),"handler"}`. 26 tools today. Consumers:
+  `mcp_server.build_mcp_server` (FastMCP — `input_schema.properties/required` are load-bearing),
+  `data_agent.build_data_agent_manifest` (strips `handler`), eval path `to_anthropic_tools`/
+  `build_dispatch`. IMPORTANT: production async `agent.py` sources tools **over MCP** (does NOT import
+  tools.py); only the sync eval path imports `create_tool_definitions`. So new resolve/export tools
+  (Phase 3.8 / 5.4) register in tools.py AND must be reachable to the agent via MCP — mirror how
+  `render_chart` (chart_tool.py) does its dual registration.
+- **agent.py ↔ loop.py:** line-for-line parallel except 3 intentional divergences to preserve on both:
+  toolResults element shape (`{tool,result}` vs `{tool,callId,input,result}`), dedup note text, and
+  agent.py's async `on_tool` progress callback + empty-synth print. New hooks (Phase 3.10) insert at
+  TWO seams in BOTH twins: pre-tool-exec (where `on_tool` sits) and post-tool-exec (after `handler`,
+  before `wrap_untrusted`). No test enforces twin-equivalence — drift is silent.
+- **kql_guard.py public API (do NOT change signatures — Phase 2 adds new file instead):**
+  `escape_string(value)`, `escape_entity(name)`, `first_statement(text)`, `assert_read_only_kql(kql)`,
+  `assert_kusto_host(cluster_uri)`, `_strip_string_literals(text)` (underscore but imported by firewall
+  + mine — treat public). `firewall.validate_adhoc_kql` delegates to first_statement +
+  assert_read_only_kql + _strip_string_literals. `FirewallRejection.stage` vocab is a tested contract.
+Minor: tools.py:41 has a dead `assert_read_only_kql as _assert_read_only_kql` import (log; fix if
+touched in Phase 2).
+
+**PHASE 0 COMPLETE** (0.1 ✓ 0.2 ✓ 0.3 ✓ 0.4 ✓).
+
+### 1.7 — shared collector builder — SCOPED, next code item
+**Before-review (partial):** `job.py` defines `_default_collector` (L64) + `build_collector_from_env`
+(L227, the shared builder). tools.py ALREADY calls `build_collector_from_env` for the audit/verdict
+path (L313, L340) — so that path is NOT divergent. The divergence 1.7 targets is the independent
+assembly in tools.py's `_collector_or_mock` (L451) and `_events_or_mock` (L732), plus the standalone
+`build_log_analytics_query` wiring at L779/L1541/L2061 that doesn't replicate job.py's LA branch — the
+"0 findings / healthy / peakCuPct null on the App path" bug. FULL blast radius = every tool that
+triggers collection. DECISION: this is a high-blast-radius refactor of the shared collection path; per
+the STANDING RULE it needs a complete caller-by-caller verification pass, so it is the next item to
+execute with fresh context rather than rushed at the tail of this one. Scoped here so resume is
+immediate: unify `_events_or_mock`/`_collector_or_mock` onto `build_collector_from_env` (or a shared
+`_assemble_collector(env, window/…)` helper both job.py and tools.py import), preserving each tool's
+existing return shape.
 
 ---
 
@@ -96,3 +161,43 @@ Result: our code embeds `ago(Xh)/ago(Xd)` directly INSIDE the KQL string (`query
 the scan window from the query's own `ago()`), so there is **no ago()→ISO-8601 day/hour conversion
 anywhere** — the plugin's `Math.ceil`-days defect has no analogue here to fix. Nothing changed;
 logged as a verified non-issue.
+
+### 1.6 — collector_merge per-collector isolation + health surfacing — DISPOSITION: already done + tested
+**Before-review:** read `collector_merge.py` in full. `create_merged_collector.collect()` already
+wraps EACH collector in `_one` (try/except → `("failed", str(exc))`, logs a warning), runs them
+concurrently (order preserved so first-non-empty precedence holds), raises ONLY when ALL fail
+("All collectors failed — no data to audit."), and surfaces per-source failures as
+`merged["sourcesFailed"]` — a recorded health FIELD in the facts, not just a print. Tests pin it:
+`tests/test_live_collectors.py:175` (a failing collector's gap appears in `sourcesFailed`) and
+`tests/test_investigation_evidence.py` (it flows into coverage). This is the exact 1.6 behavior +
+the Part-4 tie-in at the collector level. No change needed; "verify current reality, don't force a
+redundant change." (Part-4's fuller pipeline-health report remains a Phase 4 item.)
+
+### 1.8 — capacity-events threshold fields (A1) + ×100 scaling + burndown (A2) — DISPOSITION: already done
+**Before-review:** read `collector_capacity_events.py` in full. `_windows()` DOES extract the three
+throttle threshold fields (`interactiveDelayThresholdPercentage` / `interactiveRejection...` /
+`backgroundRejection...`, lines 102–112) and scales each `× 100` (raw 0–1 fraction → percentage
+points) so `throttle.py`'s `max(vals) > 100.0` gate can fire — exactly GAPS A1's implementation
+note. A2 overage/carry-forward fields (`overageAdd/Burndown/Total`) are extracted (117–124) and
+`minutesToBurndown` derived (`cumulativePct/200`, 126–133); `capacity_series` + `capacity_base_cu` +
+`capacity_burndown_chain` + `burndown_chain_from_series` all present. GAPS marks A1 FIXED and this
+confirms it live. **Doc-conflict noted:** plan 1.8 calls the raw threshold fields "constant=1 BOOLEAN
+flags, NOT the CU limit," while GAPS A1 (and the code) treat them as 0–1 FRACTIONS needing ×100.
+DECISION: keep the ×100 fraction treatment — it matches GAPS A1's fingerprinted value (1.237113) and
+the `>100.0` gate design; the "boolean/always-1" concern is the UI-EXPORT column `CU_limit_item_history`
+(N16, a different data path — the streaming API here), and the SKU/base-CU cross-check (4.11) is the
+operational backstop either way. No change to extraction. N16 (UI-export fraction guard) stays queued
+for `importers/capacity_metrics.py` per the 0.1 backstop.
+
+### 1.9 — Real-Time Hub Summary event dedup by 30s window — DISPOSITION: already done
+**Before-review:** same file. `_windows()` dedupes best-effort-duplicated events to one row per
+`(capacityId, windowStartTime)` (lines 78–85; the window key IS the 30-second `windowStart`/
+`WindowStartTime`/`timestamp`), and the module docstring documents it ("Best-effort delivery can
+duplicate → we DEDUPE to one row per (capacityId, window)"). Present and correct; no change.
+
+### 1.7 — Reconcile tools.py collector assembly vs job.py build_collector_from_env — PENDING
+The last Phase-1 item and the only real code change left in Phase 1 (the "0 findings / healthy /
+peakCuPct null" App-path bug: tools.py builds collectors independently so job.py's LA branch never
+runs on the App path → need ONE shared builder both call). Deferred until the Phase 0.3
+blast-radius map (`tasks/BLAST-RADIUS-CORE.md`, subagent) lands, since it maps tools.py's structure
+and I must not duplicate that read. NEXT ITEM on resume.
