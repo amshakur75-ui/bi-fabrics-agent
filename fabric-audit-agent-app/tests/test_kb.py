@@ -43,3 +43,19 @@ def test_every_domain_has_at_least_one_known_flag():
 
 def test_unknown_flag_returns_default():
     assert get_remediation("nope.nope")["rootCause"].startswith("Pattern not yet")
+
+
+def test_new_alerting_types_have_real_remediation():
+    """BUG 6: activity/query/refresh/xmla finding types must not fall back to the generic
+    boilerplate default -- each needs its own concise, accurate remediation entry."""
+    for t in [
+        "activity.slow-operation", "activity.recurring-shape", "activity.long-running-cluster",
+        "query.mdx-crossjoin", "query.dax-antipattern",
+        "refresh.credential", "refresh.gateway", "refresh.timeout",
+        "refresh.concurrency", "refresh.constraint",
+        "xmla.auth", "xmla.bad-request", "xmla.timeout", "xmla.connection-drop",
+    ]:
+        r = get_remediation(t)
+        assert r["rootCause"] != "Pattern not yet in the knowledge base.", t
+        assert isinstance(r["fixes"], list) and r["fixes"], t
+        assert r["owner"], t

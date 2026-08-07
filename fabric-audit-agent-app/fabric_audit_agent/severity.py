@@ -90,4 +90,42 @@ def score_severity(flag, config=None):
         n = (e or {}).get("workspaceCount")
         return {"level": "Warning", "reason": f"same pattern in {n} workspaces" if n else "systemic pattern"}
 
+    if t == "activity.slow-operation":
+        return {"level": "Warning", "reason": f"operation took {e.get('durationSeconds')}s"}
+    if t == "activity.recurring-shape":
+        return {"level": "Warning", "reason": f"same query shape recurred {e.get('occurrences')}x"}
+    if t == "activity.long-running-cluster":
+        return {"level": "Warning", "reason": f"{e.get('count')} long-running operations on one item"}
+
+    if t == "query.mdx-crossjoin":
+        return {"level": "Warning", "reason": "heavy MDX matrix cross-join shape recurring"}
+    if t == "query.dax-antipattern":
+        return {"level": "Warning", "reason": "recurring DAX anti-pattern"}
+
+    if t == "refresh.credential":
+        return {"level": "Critical", "reason": "refresh failing on an expired/invalid credential"}
+    if t == "refresh.gateway":
+        return {"level": "Warning", "reason": "refresh failing on a gateway problem"}
+    if t == "refresh.timeout":
+        return {"level": "Warning", "reason": "refresh failing on a source query timeout"}
+    if t == "refresh.concurrency":
+        return {"level": "Warning", "reason": "refresh failing on a concurrency/capacity limit"}
+    if t == "refresh.constraint":
+        return {"level": "Warning", "reason": "refresh failing on a data/constraint violation"}
+    if t == "refresh.chronic":
+        return {"level": "Warning", "reason": f"same refresh error {e.get('count')}x — a chronic pattern"}
+    if t == "refresh.retry-storm":
+        return {"level": "Warning", "reason": f"refresh retried {e.get('attempts')} times"}
+    if t == "refresh.failing":
+        return {"level": "Warning", "reason": f"refresh failed with {e.get('errorCode')}"}
+
+    if t == "xmla.auth":
+        return {"level": "Warning", "reason": "XMLA endpoint authentication/token failure"}
+    if t == "xmla.bad-request":
+        return {"level": "Warning", "reason": "Bad Request on a TMSL/XMLA command"}
+    if t == "xmla.timeout":
+        return {"level": "Warning", "reason": "XML for Analysis request timed out"}
+    if t == "xmla.connection-drop":
+        return {"level": "Warning", "reason": "XMLA connection dropped/reset"}
+
     return {"level": "Info", "reason": "unclassified"}

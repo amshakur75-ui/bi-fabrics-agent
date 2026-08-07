@@ -27,28 +27,35 @@ _SUPPRESSED = (
     "the session was moved to another node",
 )
 
+
+# BUG 2 fix: only UNAMBIGUOUS, distinctive XMLA/connection-error phrases belong here — bare
+# numeric-looking substrings ("400", "401") and bare words that show up in ordinary DAX/MDX
+# (e.g. "malformed", "forbidden" alone) were removed because they false-positive on normal
+# query text like ``TOPN(400, Sales)`` or ``WHERE CustomerID = 401``. Every marker below is a
+# full phrase that never appears in legitimate DAX/MDX query text.
 _AUTH_MARKERS = (
-    "authentication failed", "authentication error", "unauthorized", "401",
+    "authentication failed", "authentication error", "unauthorized",
     "invalid token", "token has expired", "token is expired", "access token has expired",
-    "aadsts", "credentials are invalid", "invalid credentials", "forbidden",
-    "the caller does not have permission",
+    "aadsts", "credentials are invalid", "invalid credentials",
+    "the caller does not have permission", "access is denied",
 )
 
 _BAD_REQUEST_MARKERS = (
-    "bad request", "400", "tmsl", "the json document is invalid", "invalid xmla request",
-    "the request could not be deserialized", "malformed",
+    "bad request", "the json document is invalid", "invalid xmla request",
+    "the request could not be deserialized",
 )
 
 _TIMEOUT_MARKERS = (
     "xml for analysis request timed out", "xmla request timed out", "request timed out",
-    "-2147467259", "execution timeout expired",
+    "the xml for analysis request", "-2147467259", "execution timeout expired",
 )
 
 _CONNECTION_DROP_MARKERS = (
     "connection was forcibly closed", "connection reset", "connection dropped",
     "connection was lost", "the underlying connection was closed",
     "unable to connect", "connection refused", "server was not found",
-    "network-related or instance-specific error",
+    "network-related or instance-specific error", "cannot connect to",
+    "connection to the server",
 )
 
 

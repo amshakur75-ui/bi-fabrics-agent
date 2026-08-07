@@ -11,6 +11,10 @@ from .lineage import LINEAGE_PLAYBOOKS
 from .security import SECURITY_PLAYBOOKS
 from .cost import COST_PLAYBOOKS
 from .meta import META_PLAYBOOKS
+from .activity import ACTIVITY_PLAYBOOKS
+from .query import QUERY_PLAYBOOKS
+from .refresh import REFRESH_PLAYBOOKS
+from .xmla import XMLA_PLAYBOOKS
 from .metric_definitions import (
     METRIC_DEFINITIONS, MetricValue, get_metric, is_proxy, is_verified,
     DOMINANT_ITEM_SHARE_PCT,
@@ -20,6 +24,7 @@ from .metric_definitions import (
 _ALL = {
     **CAPACITY_PLAYBOOKS, **MODEL_PLAYBOOKS, **REPORT_PLAYBOOKS, **PIPELINE_PLAYBOOKS,
     **LINEAGE_PLAYBOOKS, **SECURITY_PLAYBOOKS, **COST_PLAYBOOKS, **META_PLAYBOOKS,
+    **ACTIVITY_PLAYBOOKS, **QUERY_PLAYBOOKS, **REFRESH_PLAYBOOKS, **XMLA_PLAYBOOKS,
 }
 
 _DEFAULT = {

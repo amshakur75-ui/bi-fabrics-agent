@@ -242,6 +242,20 @@ def test_correct003_inner_join_fires_separately_from_select_from():
     assert any(f["ruleId"] == "CORRECT003" for f in findings)
 
 
+# BUG 3: SQL-syntax tokens INSIDE a quoted string literal are normal KQL, not SQL — they must
+# not fire CORRECT003 (an "error"/blocking finding), while real SQL-shaped code still does.
+
+def test_correct003_does_not_fire_on_sql_keywords_inside_string_literal():
+    assert check_correct003('AppRequests | where Url contains "select * from orders"') == []
+    assert check_correct003("T | where Message has 'GROUP BY region'") == []
+
+
+def test_correct003_still_fires_on_real_sql_syntax():
+    findings = check_correct003("SELECT * FROM T")
+    assert any(f["ruleId"] == "CORRECT003" for f in findings)
+    assert all(f["severity"] == "error" for f in findings)
+
+
 # ── CORRECT004: deprecated mvexpand ────────────────────────────────────────────────
 
 
@@ -270,6 +284,17 @@ def test_correct005_does_not_fire_with_time_generated():
 
 def test_correct005_scoped_to_app_insights_tables():
     assert check_correct005("ContainerLog | where timestamp > ago(1h)") == []
+
+
+# BUG 3: a `timestamp` token inside a quoted string literal must not fire CORRECT005.
+
+def test_correct005_does_not_fire_on_timestamp_inside_string_literal():
+    assert check_correct005('AppRequests | where Url contains "timestamp"') == []
+
+
+def test_correct005_still_fires_on_real_timestamp_column_reference():
+    findings = check_correct005('AppRequests | where timestamp > ago(1h) and Url contains "x"')
+    assert findings and findings[0]["ruleId"] == "CORRECT005"
 
 
 # ── CORRECT006: Unix-timestamp conversion in query ───────────────────────────────

@@ -47,7 +47,9 @@ def _check_concentration(facts, config=None):
     # Capacity this window (Part 5): carried as a SEPARATE fact alongside the attribution share —
     # never computed from it. Omitted (not fabricated) when this run's collector had no capacity
     # reading at all.
-    cap_peak = ((facts or {}).get("capacity") or {}).get("peakCuPct")
+    cap = (facts or {}).get("capacity") or {}
+    cap_peak = cap.get("peakCuPct")
+    cap_throttle = cap.get("throttleMinutes")
     for item in items:
         share = item.get("sharePct")
         if share is None:
@@ -77,6 +79,7 @@ def _check_concentration(facts, config=None):
             }
             if cap_peak is not None:
                 trig["capacityPeakCuPct"] = cap_peak
+                trig["capacityThrottleMinutes"] = cap_throttle
             triggers.append(trig)
     return triggers
 
@@ -141,7 +144,9 @@ def _check_same_item_cross_user(facts, mcfg=None):
     share_each = float(mcfg.get("cross_user_share", 15.0))
     # Capacity this window (Part 5): SEPARATE fact, never derived from the attribution share; omitted
     # when this run's collector had no capacity reading at all.
-    cap_peak = ((facts or {}).get("capacity") or {}).get("peakCuPct")
+    cap = (facts or {}).get("capacity") or {}
+    cap_peak = cap.get("peakCuPct")
+    cap_throttle = cap.get("throttleMinutes")
     triggers = []
     for it in (facts or {}).get("items") or []:
         try:
@@ -170,6 +175,7 @@ def _check_same_item_cross_user(facts, mcfg=None):
             }
             if cap_peak is not None:
                 trig["capacityPeakCuPct"] = cap_peak
+                trig["capacityThrottleMinutes"] = cap_throttle
             triggers.append(trig)
     return triggers
 
@@ -441,7 +447,22 @@ def _facts_for(t):
     if check in ("concentration", "cross_user"):
         cap_peak = t.get("capacityPeakCuPct")
         if cap_peak is not None:
-            f.append(("Capacity this window", f"{cap_peak}% (no throttle)"))
+            # BUG 4 fix: "(no throttle)" was unconditional — fabricated even at e.g. 96% peak
+            # with a live throttle. Only claim "no throttle" when that's actually confirmed
+            # (no throttle minutes AND peak below 100%); otherwise state the honest number,
+            # optionally flagging an elevated peak, never a claim we can't back up.
+            throttle_min = t.get("capacityThrottleMinutes")
+            try:
+                peak_val = float(cap_peak)
+            except (TypeError, ValueError):
+                peak_val = None
+            confirmed_no_throttle = throttle_min in (None, 0) and peak_val is not None and peak_val < 100
+            if confirmed_no_throttle:
+                f.append(("Capacity this window", f"{cap_peak}% (no throttle)"))
+            elif peak_val is not None and peak_val >= 100:
+                f.append(("Capacity this window", f"{cap_peak}% (elevated)"))
+            else:
+                f.append(("Capacity this window", f"{cap_peak}%"))
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
 
 

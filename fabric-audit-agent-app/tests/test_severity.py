@@ -102,3 +102,44 @@ def test_partial_config_does_not_fail_unrelated_branch():
     # a config missing the 'security' domain must still score a capacity flag (lazy access)
     cfg = {"capacity": {"throttleCritPct": 90, "throttleCritMinutes": 30}}
     assert score_severity({"type": "capacity.throttle", "evidence": {"peakCuPct": 50, "throttleMinutes": 0}}, cfg)["level"] == "Warning"
+
+
+# ---- BUG 1: new finding types were falling through to Info/"unclassified" and getting dropped
+# by deliver_new_findings's default min_level="Warning" gate — every one of these must score at
+# least Warning (never Info) so it actually reaches the alert store/ticket/digest.
+
+def test_new_activity_types_are_not_info():
+    for t in ("activity.slow-operation", "activity.recurring-shape", "activity.long-running-cluster"):
+        s = sev(t)
+        assert s["level"] != "Info", t
+        assert s["reason"] != "unclassified", t
+
+
+def test_new_query_types_are_not_info():
+    for t in ("query.mdx-crossjoin", "query.dax-antipattern"):
+        s = sev(t)
+        assert s["level"] != "Info", t
+        assert s["reason"] != "unclassified", t
+
+
+def test_new_refresh_subcause_types_are_not_info():
+    assert sev("refresh.credential")["level"] == "Critical"
+    for t in ("refresh.gateway", "refresh.timeout", "refresh.concurrency", "refresh.constraint"):
+        s = sev(t)
+        assert s["level"] == "Warning", t
+        assert s["reason"] != "unclassified", t
+
+
+def test_refresh_chronic_retry_storm_failing_are_not_info():
+    for t in ("refresh.chronic", "refresh.retry-storm", "refresh.failing"):
+        s = sev(t)
+        assert s["level"] != "Info", t
+        assert s["reason"] != "unclassified", t
+
+
+def test_new_xmla_types_are_not_info():
+    assert sev("xmla.auth")["level"] == "Warning"
+    for t in ("xmla.bad-request", "xmla.timeout", "xmla.connection-drop"):
+        s = sev(t)
+        assert s["level"] == "Warning", t
+        assert s["reason"] != "unclassified", t

@@ -153,6 +153,26 @@ def test_top_users_falls_back_to_finding_count_and_notes_limitation():
     assert "%" not in top_section
 
 
+def test_top_users_with_events_but_no_usable_cu_seconds_does_not_claim_zero_cost():
+    # BUG 5: events exist but every one carries None cuSeconds -- must not say "0.0 CU-s".
+    events = [
+        {"user": "erin@x.com", "cuSeconds": None, "operation": "Query"},
+        {"user": "erin@x.com", "cuSeconds": None, "operation": "Query"},
+        {"user": "frank@x.com", "cuSeconds": None, "operation": "Query"},
+    ]
+    md, card, _ = build_daily_summary(
+        open_tickets=[_ticket("activity.slow-operation", "erin@x.com")],
+        capacity={}, coverage_gaps=[], date_str="2026-08-05", app_url="https://app",
+        events=events)
+    assert "## Top users today" in md
+    top_section = md[md.index("## Top users today"):]
+    assert "0.0 CU-s" not in top_section
+    assert "erin@x.com — 2 operation(s) (cost unknown)" in top_section
+    assert "cost unknown" in top_section.lower() or "no usable cu-seconds" in top_section.lower()
+    blob = json.dumps(card)
+    assert "0.0 CU-s" not in blob
+
+
 def test_build_unacked_banner_still_shown():
     md, card, summary = build_daily_summary(
         open_tickets=[], capacity={}, coverage_gaps=["true CU% reached 82% with zero monitored activity"],

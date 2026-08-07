@@ -785,11 +785,17 @@ _SQL_SYNTAX_PATTERNS = (
 def check_correct003(kql):
     """CORRECT003 — SQL syntax (``SELECT``/``FROM``/``GROUP BY``/``INNER JOIN``) is not valid KQL.
     error. Ports CORRECT003.check.
+
+    BUG 3 fix: the SQL-syntax regexes must only match actual code, never text INSIDE a quoted
+    string literal (e.g. ``where Url contains "select * from orders"`` is valid KQL, not SQL) —
+    so string-literal CONTENTS are blanked out (``kql_guard._strip_string_literals``) on top of
+    the existing comment-stripping before matching.
     """
+    from .kql_guard import _strip_string_literals
     findings = []
     for pat, label, fix in _SQL_SYNTAX_PATTERNS:
         for line in re.split(r"\r?\n", kql):
-            if pat.search(_strip_comments(line)):
+            if pat.search(_strip_string_literals(_strip_comments(line))):
                 findings.append(_finding(
                     "CORRECT003", "error", f"{label} is not valid KQL.", fix,
                 ))
@@ -815,10 +821,11 @@ def check_correct005(kql):
     a query using `timestamp` against one of these will fail or silently return no rows. Ports
     CORRECT005.check.
     """
+    from .kql_guard import _strip_string_literals
     table = _first_table_name(kql)
     if not table or table not in APP_INSIGHTS_TABLES:
         return []
-    stripped = _strip_comments(kql)
+    stripped = _strip_string_literals(_strip_comments(kql))
     if not re.search(r"\btimestamp\b", stripped):
         return []
     return [_finding(

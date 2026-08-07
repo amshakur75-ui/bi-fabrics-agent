@@ -493,6 +493,36 @@ def test_facts_for_attribution_omits_capacity_fact_when_unavailable():
     assert "Capacity this window" not in facts
 
 
+# BUG 4: "(no throttle)" was appended unconditionally whenever a peak CU% was present, even at
+# e.g. 96% with a live throttle signal — a fabricated claim. It must only appear when actually
+# confirmed (no throttle minutes AND peak below 100%).
+
+def test_facts_for_does_not_claim_no_throttle_when_actually_throttling():
+    triggers = _check_concentration(
+        {"items": [{"name": "DTC", "workspace": "Ent", "sharePct": 46}],
+         "capacity": {"peakCuPct": 96, "throttleMinutes": 5}})
+    facts = dict(_facts_for(triggers[0]))
+    assert facts["Capacity this window"] == "96%"
+    assert "no throttle" not in facts["Capacity this window"]
+
+
+def test_facts_for_says_no_throttle_when_actually_confirmed():
+    triggers = _check_concentration(
+        {"items": [{"name": "DTC", "workspace": "Ent", "sharePct": 46}],
+         "capacity": {"peakCuPct": 40, "throttleMinutes": 0}})
+    facts = dict(_facts_for(triggers[0]))
+    assert facts["Capacity this window"] == "40% (no throttle)"
+
+
+def test_facts_for_elevated_peak_without_confirmed_throttle():
+    triggers = _check_concentration(
+        {"items": [{"name": "DTC", "workspace": "Ent", "sharePct": 46}],
+         "capacity": {"peakCuPct": 105}})
+    facts = dict(_facts_for(triggers[0]))
+    assert facts["Capacity this window"] == "105% (elevated)"
+    assert "no throttle" not in facts["Capacity this window"]
+
+
 # ---- Part 6: investigation pivot when the anchored window is empty ----
 
 def test_investigate_query_includes_pivot_fallback_when_anchored():

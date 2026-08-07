@@ -121,23 +121,38 @@ def _top_users(open_tickets, events, limit=_TOP_USERS_LIMIT):
     caller is told so via the returned ``source`` so the text can note the limitation.
 
     Returns ``(ranked, source)`` where ``ranked`` is a list of
-    ``{"user", "cuSeconds"|None, "operations"}`` and ``source`` is ``"events"`` or
-    ``"findingCount"`` (or ``None`` when there is nothing to rank).
+    ``{"user", "cuSeconds"|None, "operations"}`` and ``source`` is ``"events"``,
+    ``"costUnknown"`` (events were passed in but NONE carried a usable ``cuSeconds`` — ranked by
+    operation count instead of fabricating a 0.0 CU-s cost), or ``"findingCount"`` (or ``None``
+    when there is nothing to rank).
     """
     events = list(events or [])
     if events:
         agg = {}
+        any_usable_cu = False
         for ev in events:
             user = ev.get("user")
             if not user:
                 continue
-            cu = _num(ev.get("cuSeconds")) or 0.0
+            cu_raw = _num(ev.get("cuSeconds"))
+            if cu_raw is not None:
+                any_usable_cu = True
             row = agg.setdefault(user, {"user": user, "cuSeconds": 0.0, "operations": 0})
-            row["cuSeconds"] += cu
+            row["cuSeconds"] += cu_raw or 0.0
             row["operations"] += 1
         if agg:
-            ranked = sorted(agg.values(), key=lambda r: (-r["cuSeconds"], -r["operations"]))
-            return ranked[:limit], "events"
+            # BUG 5 fix: when events exist but none carry a usable cuSeconds, ranking by (all-zero)
+            # cuSeconds and reporting source="events" fabricates "0.0 CU-s" — a real cost that
+            # just isn't known, not a zero cost. Fall back to an operation-count ranking labeled
+            # honestly as cost-unknown instead.
+            if any_usable_cu:
+                ranked = sorted(agg.values(), key=lambda r: (-r["cuSeconds"], -r["operations"]))
+                return ranked[:limit], "events"
+            ranked = sorted(
+                ({"user": r["user"], "cuSeconds": None, "operations": r["operations"]}
+                 for r in agg.values()),
+                key=lambda r: -r["operations"])
+            return ranked[:limit], "costUnknown"
 
     counts = {}
     for t in open_tickets:
@@ -179,6 +194,8 @@ def _top_users_lines(ranked, source):
         if source == "events":
             cu = r["cuSeconds"]
             lines.append(f"{i}. {r['user']} — {cu:.1f} CU-s ({r['operations']} operation(s))")
+        elif source == "costUnknown":
+            lines.append(f"{i}. {r['user']} — {r['operations']} operation(s) (cost unknown)")
         else:
             lines.append(f"{i}. {r['user']} — {r['operations']} finding(s)")
     return lines
@@ -267,6 +284,9 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         if users_source == "findingCount":
             md.append("_No per-event CU-seconds data for this digest — ranked by open finding "
                        "count instead._")
+        elif users_source == "costUnknown":
+            md.append("_Events present but none carried usable CU-seconds — ranked by operation "
+                       "count instead._")
         md += _top_users_lines(ranked_users, users_source)
 
     if coverage_gaps:
@@ -334,8 +354,12 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
                      "wrap": True})
 
     if ranked_users:
-        note = ("_No per-event CU-seconds data — ranked by open finding count._\n"
-                if users_source == "findingCount" else "")
+        if users_source == "findingCount":
+            note = "_No per-event CU-seconds data — ranked by open finding count._\n"
+        elif users_source == "costUnknown":
+            note = "_No usable CU-seconds on today's events — ranked by operation count._\n"
+        else:
+            note = ""
         listing = note + "\n".join(_top_users_lines(ranked_users, users_source))
         body.append({"type": "TextBlock", "text": f"**Top users today**\n{listing}", "wrap": True})
 

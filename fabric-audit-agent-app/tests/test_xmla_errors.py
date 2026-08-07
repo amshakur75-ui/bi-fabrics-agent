@@ -97,3 +97,30 @@ def test_detector_truncates_long_error_text():
     flags = detect_xmla_errors({"events": events})
     assert len(flags) == 1
     assert len(flags[0]["evidence"]["errorText"]) <= 300
+
+
+# ---- BUG 2: bare "400"/"401"/"malformed"/"forbidden" substring markers false-positived on
+# perfectly normal DAX/MDX query text (e.g. a literal 400 in a TOPN call). Only unambiguous,
+# distinctive XMLA/connection-error phrases should classify.
+
+def test_classify_normal_dax_mdx_with_incidental_numbers_is_not_an_error():
+    assert classify_xmla_error("EVALUATE TOPN(400, Sales, Sales[Amount])") is None
+    assert classify_xmla_error("SELECT {[Measures].[Sales]} ON 0 FROM [Model] WHERE [Region].&[400]") is None
+    assert classify_xmla_error("EVALUATE FILTER(Sales, Sales[CustomerID] = 401)") is None
+    assert classify_xmla_error("EVALUATE CALCULATETABLE(Sales, Sales[Status] = \"forbidden\")") is None
+
+
+def test_classify_still_catches_real_bad_request_and_auth_text():
+    assert classify_xmla_error("The XML for Analysis request timed out") == "timeout"
+    assert classify_xmla_error("Authentication failed: token has expired") == "auth"
+    assert classify_xmla_error("Bad Request: the JSON document is invalid") == "bad-request"
+
+
+def test_detector_zero_findings_on_normal_query_corpus():
+    events = [
+        _event(queryText="EVALUATE TOPN(400, Sales, Sales[Amount])"),
+        _event(queryText="EVALUATE FILTER(Sales, Sales[CustomerID] = 401)"),
+        _event(queryText="EVALUATE CALCULATETABLE(Sales, Sales[Status] = \"forbidden\")"),
+        _event(queryText=None),
+    ]
+    assert detect_xmla_errors({"events": events}) == []
