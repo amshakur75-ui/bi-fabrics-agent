@@ -409,7 +409,6 @@ export async function updateChatVisiblityById({
   }
 }
 
-
 export async function updateChatTitleById({
   chatId,
   title,
@@ -418,7 +417,9 @@ export async function updateChatTitleById({
   title: string;
 }) {
   if (!isDatabaseAvailable()) {
-    console.log('[updateChatTitleById] Database not available, skipping update');
+    console.log(
+      '[updateChatTitleById] Database not available, skipping update',
+    );
     return;
   }
 
@@ -484,7 +485,9 @@ export async function voteMessage({
     });
 }
 
-export async function getVotesByChatId({ id }: { id: string }): Promise<Vote[]> {
+export async function getVotesByChatId({
+  id,
+}: { id: string }): Promise<Vote[]> {
   if (!isDatabaseAvailable()) {
     return [];
   }
@@ -560,7 +563,9 @@ export async function setAlertAck({
 export async function clearAlertAck(chatId: string): Promise<void> {
   if (!isDatabaseAvailable()) return;
   const db = await ensureDb();
-  await db.execute(sql`DELETE FROM ai_chatbot.alert_ack WHERE chat_id = ${chatId}`);
+  await db.execute(
+    sql`DELETE FROM ai_chatbot.alert_ack WHERE chat_id = ${chatId}`,
+  );
 }
 
 // ── Part-7 read-path: chat-less tickets (incident_key-keyed ack) ───────────
@@ -594,7 +599,9 @@ export async function resolveAlertByIncident({
   `);
 }
 
-export async function reopenAlertByIncident(incidentKey: string): Promise<void> {
+export async function reopenAlertByIncident(
+  incidentKey: string,
+): Promise<void> {
   await clearAlertAckByIncident(incidentKey);
 }
 
@@ -622,7 +629,9 @@ export async function setAlertAckByIncident({
   `);
 }
 
-export async function clearAlertAckByIncident(incidentKey: string): Promise<void> {
+export async function clearAlertAckByIncident(
+  incidentKey: string,
+): Promise<void> {
   if (!isDatabaseAvailable()) return;
   const db = await ensureDb();
   await db.execute(

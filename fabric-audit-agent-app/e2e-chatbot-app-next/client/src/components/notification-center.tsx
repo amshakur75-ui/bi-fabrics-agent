@@ -160,12 +160,12 @@ export function NotificationCenter() {
             className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className='flex items-start justify-between gap-3 border-border border-b px-5 py-4'>
+            <div className="flex items-start justify-between gap-3 border-border border-b px-5 py-4">
               <div className="flex items-center gap-2">
                 <span className="text-lg leading-none">
                   {detail.ticket?.severity === 'warn' ? '⚠️' : 'ℹ️'}
                 </span>
-                <h3 className='font-semibold text-sm'>{detail.title}</h3>
+                <h3 className="font-semibold text-sm">{detail.title}</h3>
               </div>
               <button
                 type="button"
@@ -214,22 +214,23 @@ export function NotificationCenter() {
                 ) : null}
               </dl>
               {detail.ticket?.detail ? (
-                <p className='rounded-lg bg-muted/50 p-3 text-[13px] text-foreground/90 leading-relaxed'>
+                <p className="rounded-lg bg-muted/50 p-3 text-[13px] text-foreground/90 leading-relaxed">
                   {detail.ticket.detail}
                 </p>
               ) : null}
-              {detail.ack?.status === 'resolved' && detail.ack.resolutionNote ? (
+              {detail.ack?.status === 'resolved' &&
+              detail.ack.resolutionNote ? (
                 <p className="text-[12px] text-emerald-600 dark:text-emerald-400">
                   ✓ Resolved — {detail.ack.resolutionNote}
                 </p>
               ) : null}
             </div>
-            <div className='flex items-center justify-end gap-2 border-border border-t px-5 py-3'>
+            <div className="flex items-center justify-end gap-2 border-border border-t px-5 py-3">
               {detail.ack?.status !== 'resolved' && (
                 <button
                   type="button"
                   onClick={() => resolve(detail)}
-                  className='rounded-md px-3 py-1.5 text-muted-foreground text-sm hover:bg-muted hover:text-foreground'
+                  className="rounded-md px-3 py-1.5 text-muted-foreground text-sm hover:bg-muted hover:text-foreground"
                 >
                   Resolve
                 </button>
@@ -237,7 +238,7 @@ export function NotificationCenter() {
               <button
                 type="button"
                 onClick={() => chatAbout(detail)}
-                className='rounded-md bg-primary px-3 py-1.5 font-medium text-background text-sm hover:opacity-90'
+                className="rounded-md bg-primary px-3 py-1.5 font-medium text-background text-sm hover:opacity-90"
               >
                 Investigate in chat
               </button>
@@ -246,9 +247,9 @@ export function NotificationCenter() {
         </div>
       )}
       {open && (
-        <div className='fixed right-4 bottom-20 z-50 flex max-h-[70vh] w-[22rem] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]'>
-          <div className='flex items-center justify-between border-border border-b px-4 py-3'>
-            <div className='font-semibold text-sm'>Issues to review</div>
+        <div className="fixed right-4 bottom-20 z-50 flex max-h-[70vh] w-[22rem] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]">
+          <div className="flex items-center justify-between border-border border-b px-4 py-3">
+            <div className="font-semibold text-sm">Issues to review</div>
             <button
               type="button"
               onClick={() => setOpen(false)}
@@ -259,7 +260,7 @@ export function NotificationCenter() {
             </button>
           </div>
 
-          <div className='flex gap-1 border-border border-b px-2 py-2 text-xs'>
+          <div className="flex gap-1 border-border border-b px-2 py-2 text-xs">
             <button
               type="button"
               onClick={() => setTab('open')}
@@ -278,7 +279,7 @@ export function NotificationCenter() {
 
           <div className="flex-1 overflow-y-auto">
             {shown.length === 0 ? (
-              <div className='px-4 py-10 text-center text-muted-foreground text-sm'>
+              <div className="px-4 py-10 text-center text-muted-foreground text-sm">
                 {tab === 'open'
                   ? 'No open issues right now. 🎉'
                   : 'Nothing resolved yet.'}
@@ -293,7 +294,7 @@ export function NotificationCenter() {
                 return (
                   <div
                     key={t.id}
-                    className='flex flex-col gap-1 border-border/60 border-b px-4 py-3 last:border-b-0'
+                    className="flex flex-col gap-1 border-border/60 border-b px-4 py-3 last:border-b-0"
                   >
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 text-base leading-none">
@@ -302,7 +303,7 @@ export function NotificationCenter() {
                       <button
                         type="button"
                         onClick={() => setDetail(t)}
-                        className='min-w-0 flex-1 truncate text-left font-medium text-sm hover:underline'
+                        className="min-w-0 flex-1 truncate text-left font-medium text-sm hover:underline"
                         title="Open details"
                       >
                         {t.title}
@@ -316,7 +317,7 @@ export function NotificationCenter() {
                       ) : null}
                       {when ? <span>· since {when}</span> : null}
                     </div>
-                    <div className='flex items-center gap-3 pt-1 pl-6 text-xs'>
+                    <div className="flex items-center gap-3 pt-1 pl-6 text-xs">
                       <button
                         type="button"
                         onClick={() => chatAbout(t)}
@@ -362,7 +363,7 @@ export function NotificationCenter() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="Open notifications"
-        className='fixed right-4 bottom-4 z-50 flex size-12 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[var(--shadow-db-lg)] transition hover:bg-muted'
+        className="fixed right-4 bottom-4 z-50 flex size-12 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[var(--shadow-db-lg)] transition hover:bg-muted"
       >
         <svg
           viewBox="0 0 24 24"
@@ -378,7 +379,7 @@ export function NotificationCenter() {
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
         </svg>
         {openTickets.length > 0 && (
-          <span className='-right-1 -top-1 absolute flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1 font-semibold text-[11px] text-white'>
+          <span className="-right-1 -top-1 absolute flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1 font-semibold text-[11px] text-white">
             {openTickets.length > 9 ? '9+' : openTickets.length}
           </span>
         )}
