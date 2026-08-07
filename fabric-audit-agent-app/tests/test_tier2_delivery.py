@@ -1,5 +1,7 @@
 """Tier-2 webhook delivery — Adaptive Card builder + POST sink + outbound gating."""
 import json
+import urllib.error
+import urllib.request
 
 from fabric_audit_agent.adapters.delivery_webhook import (
     build_card, create_webhook_sink, PROXY_RANKING_DISCLOSURE)
@@ -60,6 +62,21 @@ def test_webhook_sink_posts_utf8_attachments_and_reports_delivered():
     out = sink["deliver"]({"attachments": [card]})
     assert out == {"delivered": True, "status": 202}
     assert sent["body"]["attachments"][0]["contentType"].endswith("card.adaptive")
+
+
+def test_webhook_sink_url_error_never_raises_and_reports_not_delivered(monkeypatch):
+    """16c regression: a connection-level failure (DNS, refused connection, socket timeout — all
+    urllib.error.URLError, HTTPError's parent, not itself an HTTP response) must be caught, not
+    propagate as an unhandled exception, and must still yield the standard delivered=False shape."""
+    def _raise_url_error(req, timeout=None):
+        raise urllib.error.URLError("[Errno 11001] getaddrinfo failed")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise_url_error)
+
+    sink = create_webhook_sink("https://hook.invalid")
+    card = build_card("new", title="X", facts=[("A", "1")])
+    out = sink["deliver"]({"attachments": [card]})
+    assert out == {"delivered": False, "status": 0}
 
 
 def test_dispatch_routes_through_outbound_gate():

@@ -4,9 +4,12 @@ import json
 import pytest
 
 from fabric_audit_agent.adapters.chat_store_lakebase import (
+    LakebaseWriteError,
     create_alert_chat,
+    create_ticket_writer,
     _endpoint_path,
     _lakebase_conn,
+    _resolve_pg_user,
 )
 
 
@@ -84,6 +87,9 @@ def test_lakebase_conn_uses_autoscaling_postgres_api(monkeypatch):
     monkeypatch.delenv("FABRIC_LAKEBASE_ENDPOINT_PATH", raising=False)
     monkeypatch.delenv("FABRIC_LAKEBASE_BRANCH", raising=False)
     monkeypatch.delenv("FABRIC_LAKEBASE_ENDPOINT_ID", raising=False)
+    # No execution identity here -> FABRIC_LAKEBASE_USER is the local-dev fallback (16a); see
+    # test_resolve_pg_user_* below for the precedence itself.
+    monkeypatch.delenv("DATABRICKS_CLIENT_ID", raising=False)
     seen = {}
 
     class _Postgres:
@@ -110,3 +116,128 @@ def test_lakebase_conn_uses_autoscaling_postgres_api(monkeypatch):
     assert seen["connect"]["user"] == "the-user"
     assert seen["connect"]["password"] == "short-lived-token"
     assert seen["connect"]["sslmode"] == "require"
+
+
+# ---------------------------------------------------------------------------
+# 16a: Postgres connecting-user identity resolution
+# ---------------------------------------------------------------------------
+
+def test_resolve_pg_user_prefers_execution_identity_over_hardcoded_override():
+    """The job's own service-principal identity (DATABRICKS_CLIENT_ID) MUST win over a hardcoded
+    FABRIC_LAKEBASE_USER — Postgres token auth requires the connecting user to match whoever
+    actually generated the token, which is always the execution identity, never a stray env var
+    (this was Part 7's root cause: a hardcoded human email out-precedenced the real job identity)."""
+    env = {"FABRIC_LAKEBASE_USER": "abdishakur.mohamed@newellco.com",
+           "DATABRICKS_CLIENT_ID": "sp-1234-execution-identity"}
+    assert _resolve_pg_user(env) == "sp-1234-execution-identity"
+
+
+def test_resolve_pg_user_falls_back_to_local_dev_override():
+    """With no execution identity present (e.g. running the CLI on a laptop), FABRIC_LAKEBASE_USER
+    is still honored as a local-dev override."""
+    env = {"FABRIC_LAKEBASE_USER": "someone@example.com"}
+    assert _resolve_pg_user(env) == "someone@example.com"
+
+
+def test_resolve_pg_user_none_when_neither_set():
+    assert _resolve_pg_user({}) is None
+
+
+# ---------------------------------------------------------------------------
+# 16b: create_ticket_writer() reconnect/retry on a dropped connection
+# ---------------------------------------------------------------------------
+
+class _RecordingCursor:
+    def __init__(self, fail_times=0, exc_cls=None):
+        self.calls = []
+        self._fail_times = fail_times
+        self._exc_cls = exc_cls or Exception
+
+    def execute(self, sql, params):
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            msg = ("server closed the connection unexpectedly"
+                   if self._exc_cls is _OperationalError else "invalid input syntax")
+            raise self._exc_cls(msg)
+        self.calls.append((sql, params))
+
+
+class _RecordingConn:
+    def __init__(self, fail_times=0, exc_cls=None):
+        self.cur = _RecordingCursor(fail_times=fail_times, exc_cls=exc_cls)
+        self.committed = 0
+        self.closed = False
+
+    def cursor(self):
+        return self.cur
+
+    def commit(self):
+        self.committed += 1
+
+    def close(self):
+        self.closed = True
+
+
+class _OperationalError(Exception):
+    """Stand-in for psycopg2.OperationalError — matched by class name, not by import (16b)."""
+
+
+def _meta(key="incident-1"):
+    return {"incidentKey": key, "checkType": "throttle", "severity": "warn",
+            "resource": "R", "workspace": "W", "detail": "d",
+            "firstDetected": "2026-08-07T00:00:00Z", "currentlyActive": True}
+
+
+def test_write_reconnects_and_retries_once_on_transient_connection_error():
+    """A write that hits a dropped connection (OperationalError) reconnects once and succeeds."""
+    bad_conn = _RecordingConn(fail_times=1, exc_cls=_OperationalError)
+    good_conn = _RecordingConn()
+    conns = iter([bad_conn, good_conn])
+
+    writer = create_ticket_writer(connect=lambda: next(conns))
+    writer("chat-1", _meta())  # first _conn() call opens bad_conn
+
+    assert bad_conn.committed == 0          # failed before commit
+    assert good_conn.committed == 1         # succeeded on the fresh connection
+    assert len(good_conn.cur.calls) == 1
+
+
+def test_write_raises_clear_error_after_persistent_connection_failure():
+    """A connection error that persists across the one allowed retry raises LakebaseWriteError
+    (not a bare driver exception, not a hang) after exactly 2 attempts."""
+    always_bad = lambda: _RecordingConn(fail_times=1, exc_cls=_OperationalError)
+    writer = create_ticket_writer(connect=always_bad)
+
+    with pytest.raises(LakebaseWriteError) as exc_info:
+        writer("chat-1", _meta())
+    assert "incident-1" in str(exc_info.value)
+    assert "2 attempts" in str(exc_info.value)
+
+
+def test_write_does_not_retry_non_connection_errors():
+    """A non-connection failure (e.g. a constraint/SQL error) must not be retried — it should raise
+    immediately, on the first attempt, without opening a second connection."""
+    conn = _RecordingConn(fail_times=1, exc_cls=ValueError)
+    opened = {"n": 0}
+
+    def _connect():
+        opened["n"] += 1
+        return conn
+
+    writer = create_ticket_writer(connect=_connect)
+    with pytest.raises(LakebaseWriteError) as exc_info:
+        writer("chat-1", _meta())
+    assert opened["n"] == 1  # never reconnected
+    assert "1 attempt" in str(exc_info.value)
+
+
+def test_write_succeeds_on_first_try_with_injected_conn():
+    """Baseline: no failure at all -> single attempt, single commit, correct SQL shape."""
+    conn = _RecordingConn()
+    writer = create_ticket_writer(conn=conn)
+    writer("chat-1", _meta("incident-2"))
+
+    assert conn.committed == 1
+    (sql, params), = conn.cur.calls
+    assert "alert_ticket" in sql and "ON CONFLICT" in sql
+    assert params[0] == "incident-2" and params[1] == "chat-1"

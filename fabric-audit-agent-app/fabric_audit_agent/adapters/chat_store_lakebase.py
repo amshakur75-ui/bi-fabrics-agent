@@ -96,7 +96,26 @@ def create_ack_store(*, conn=None):
     return {"get": lambda chat_id: snapshot.get(chat_id), "reopen": reopen}
 
 
-def create_ticket_writer(*, conn=None):
+class LakebaseWriteError(RuntimeError):
+    """Raised by ``create_ticket_writer``'s ``write()`` when a Postgres write still fails after the
+    dropped-connection retry (16b). Callers already fail-open around ticket writes (they catch
+    ``Exception`` and log); this exists so that failure surfaces with a clear, actionable message
+    rather than a bare driver exception or (worse) a call that silently hangs on a dead socket."""
+
+
+def _is_pg_connection_error(exc):
+    """True iff *exc* looks like a dropped/broken Postgres connection — psycopg2's
+    ``OperationalError``/``InterfaceError`` (raised for a lost connection, closed socket, etc.) or a
+    "connection ... closed" message — matched by class name + message so psycopg2 need not be
+    imported here (it's an optional job dependency, same pattern as ``clients._la_is_transient``).
+    A non-connection error (e.g. a SQL/constraint error) returns False so it is never retried."""
+    if type(exc).__name__ in ("OperationalError", "InterfaceError"):
+        return True
+    msg = str(exc).lower()
+    return "connection" in msg and ("closed" in msg or "lost" in msg or "terminat" in msg)
+
+
+def create_ticket_writer(*, conn=None, connect=None):
     """Return a writer ``fn(chat_id, meta)`` that upserts a row into ``ai_chatbot.alert_ticket``
     (Step 9). The Tier-2 job WRITES this; the chat app READS it to show ticket detail (what / where /
     since when / currently active) in the Alerts sidebar — the reverse of the ``alert_ack`` boundary.
@@ -107,36 +126,58 @@ def create_ticket_writer(*, conn=None):
     a row's identity, since a table keyed by chat_id would silently drop it — see tightening.md
     Part 7). ``meta`` keys: incidentKey, checkType, severity, resource, workspace, detail,
     firstDetected (ISO text), currentlyActive. One connection is opened lazily and reused for the
-    whole run (the tier2 wheel task exits after one run). ``conn`` injectable for tests. Raises on
-    the FIRST connect so the caller can fail-open; per-write errors surface to the caller, which
-    swallows them (ticket metadata is best-effort — never a reason to drop a real alert)."""
+    whole run (the tier2 wheel task exits after one run). ``conn`` injectable for tests, ``connect``
+    (a zero-arg connection factory, default ``_lakebase_conn``) also injectable so tests can control
+    reconnects. Raises on the FIRST connect so the caller can fail-open.
+
+    16b: if a write hits a dropped/broken connection (``_is_pg_connection_error``), the writer
+    discards the stale connection, opens exactly one fresh one via ``connect``, and retries the same
+    write once. A second failure (connection or otherwise) raises ``LakebaseWriteError`` with a
+    clear message instead of a bare driver exception — the caller's existing try/except still
+    swallows it (ticket metadata is best-effort, never a reason to drop a real alert)."""
+    _connect = connect if connect is not None else _lakebase_conn
     state = {"conn": conn}
 
     def _conn():
         if state["conn"] is None:
-            state["conn"] = _lakebase_conn()
+            state["conn"] = _connect()
         return state["conn"]
 
     def write(chat_id, meta):
         incident_key = meta.get("incidentKey") or chat_id  # defensive: always need SOME stable key
-        c = _conn()
-        cur = c.cursor()
-        cur.execute(
-            "INSERT INTO ai_chatbot.alert_ticket "
-            "(incident_key, chat_id, check_type, severity, resource, workspace, detail, "
-            "first_detected, currently_active, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
-            "ON CONFLICT (incident_key) DO UPDATE SET "
-            "chat_id = excluded.chat_id, check_type = excluded.check_type, "
-            "severity = excluded.severity, resource = excluded.resource, "
-            "workspace = excluded.workspace, detail = excluded.detail, "
-            "first_detected = excluded.first_detected, "
-            "currently_active = excluded.currently_active, updated_at = now()",
-            (incident_key, chat_id, meta.get("checkType"), meta.get("severity"),
-             meta.get("resource"), meta.get("workspace"), meta.get("detail"),
-             meta.get("firstDetected"), meta.get("currentlyActive")),
-        )
-        c.commit()
+        last_exc = None
+        for attempt in range(2):  # first attempt + one reconnect retry
+            c = _conn()
+            try:
+                cur = c.cursor()
+                cur.execute(
+                    "INSERT INTO ai_chatbot.alert_ticket "
+                    "(incident_key, chat_id, check_type, severity, resource, workspace, detail, "
+                    "first_detected, currently_active, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
+                    "ON CONFLICT (incident_key) DO UPDATE SET "
+                    "chat_id = excluded.chat_id, check_type = excluded.check_type, "
+                    "severity = excluded.severity, resource = excluded.resource, "
+                    "workspace = excluded.workspace, detail = excluded.detail, "
+                    "first_detected = excluded.first_detected, "
+                    "currently_active = excluded.currently_active, updated_at = now()",
+                    (incident_key, chat_id, meta.get("checkType"), meta.get("severity"),
+                     meta.get("resource"), meta.get("workspace"), meta.get("detail"),
+                     meta.get("firstDetected"), meta.get("currentlyActive")),
+                )
+                c.commit()
+                return
+            except Exception as exc:  # noqa: BLE001 — classified immediately below
+                last_exc = exc
+                if attempt == 1 or not _is_pg_connection_error(exc):
+                    break
+                state["conn"] = None  # stale/broken connection: drop it, reconnect on next _conn()
+
+        raise LakebaseWriteError(
+            f"Lakebase ticket write failed for incident {incident_key!r} after "
+            f"{'2 attempts (reconnect retry exhausted)' if _is_pg_connection_error(last_exc) else '1 attempt'}"
+            f": {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
 
     return write
 
@@ -158,17 +199,32 @@ def _endpoint_path():
     return f"projects/{instance}/branches/{branch}/endpoints/{endpoint}"
 
 
+def _resolve_pg_user(env):
+    """Resolve the Postgres connecting user for a Lakebase token-auth connection (16a).
+
+    Postgres token auth requires the connecting ``user`` to match the identity that generated the
+    token. ``generate_database_credential()`` always mints a token for the identity actually
+    running the code — the job/App's own service-principal identity, exposed as
+    ``DATABRICKS_CLIENT_ID`` — so that identity MUST win whenever it's present; a hardcoded human
+    email in ``FABRIC_LAKEBASE_USER`` would otherwise silently out-precedence it and every
+    automated connection attempt becomes a guaranteed identity mismatch (tightening.md Part 16a).
+    ``FABRIC_LAKEBASE_USER`` is kept only as a local-dev fallback for when no execution identity
+    (no ``DATABRICKS_CLIENT_ID``) is present at all, e.g. running the CLI on a laptop."""
+    return env.get("DATABRICKS_CLIENT_ID") or env.get("FABRIC_LAKEBASE_USER")
+
+
 def _lakebase_conn(*, client=None, connect=None):
     """Build a psycopg connection to Lakebase using the run identity's DB credential.
 
-    Reads FABRIC_LAKEBASE_HOST / FABRIC_LAKEBASE_DB / FABRIC_LAKEBASE_USER; the password is a
-    short-lived token from the **Autoscaling** postgres credential API
+    Reads FABRIC_LAKEBASE_HOST / FABRIC_LAKEBASE_DB; the connecting user is resolved by
+    ``_resolve_pg_user`` (execution identity first, local-dev override second — 16a). The password
+    is a short-lived token from the **Autoscaling** postgres credential API
     (``w.postgres.generate_database_credential(<endpoint path>)``). ``client`` (a WorkspaceClient)
     and ``connect`` (``psycopg2.connect``) are injectable for tests; both default to the real ones.
     """
     host = os.environ["FABRIC_LAKEBASE_HOST"]
     db = os.environ.get("FABRIC_LAKEBASE_DB", "databricks_postgres")
-    user = os.environ.get("FABRIC_LAKEBASE_USER") or os.environ.get("DATABRICKS_CLIENT_ID")
+    user = _resolve_pg_user(os.environ)
     if client is None:
         from databricks.sdk import WorkspaceClient
         client = WorkspaceClient()

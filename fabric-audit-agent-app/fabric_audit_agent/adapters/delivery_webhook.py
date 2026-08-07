@@ -69,6 +69,13 @@ def create_webhook_sink(url, *, poster=None):
                 return int(r.status)
         except urllib.error.HTTPError as e:
             return int(e.code)
+        except urllib.error.URLError:
+            # Connection-level failure (DNS resolution, connection refused, the 30s socket timeout
+            # firing) — HTTPError's parent class, not itself an HTTP response. Never let a genuine
+            # network outage while delivering a Teams alert propagate as an unhandled exception
+            # (16c); 0 is a sentinel meaning "never got an HTTP response at all", distinct from any
+            # real HTTP status code so callers can tell the two apart if they ever care to.
+            return 0
 
     def deliver(body):
         status = _post(body)

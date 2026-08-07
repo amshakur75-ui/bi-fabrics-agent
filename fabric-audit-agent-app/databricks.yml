@@ -69,7 +69,6 @@ resources:
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
               APP_URL: "https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com"
               FABRIC_LAKEBASE_HOST: "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net"
-              FABRIC_LAKEBASE_USER: "abdishakur.mohamed@newellco.com"
               FABRIC_LAKEBASE_INSTANCE: "fabrics-audit-agent-memory"
           environment_key: default
       environments:
@@ -115,7 +114,6 @@ resources:
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
               APP_URL: "https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com"
               FABRIC_LAKEBASE_HOST: "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net"
-              FABRIC_LAKEBASE_USER: "abdishakur.mohamed@newellco.com"
               FABRIC_LAKEBASE_INSTANCE: "fabrics-audit-agent-memory"
           environment_key: default
       environments:
@@ -158,7 +156,6 @@ resources:
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
               APP_URL: "https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com"
               FABRIC_LAKEBASE_HOST: "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net"
-              FABRIC_LAKEBASE_USER: "abdishakur.mohamed@newellco.com"
               FABRIC_LAKEBASE_INSTANCE: "fabrics-audit-agent-memory"
           environment_key: default
       environments:
