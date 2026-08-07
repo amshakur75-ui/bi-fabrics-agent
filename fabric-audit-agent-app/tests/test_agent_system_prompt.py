@@ -187,6 +187,17 @@ def test_sp7_query_provenance_rule_present():
     assert "_provenance" in low or "provenance" in low
 
 
+def test_audit_before_execute_rule_present():
+    """Sub-plan 5 Part 5e: before firing an agent-authored ad-hoc run_kql query, the agent must
+    mentally audit it for known correctness pitfalls (esp. never hand-authoring an EventText
+    filter) and fix issues first -- the firewall/advisories are a backstop, not a substitute."""
+    low = build_system_prompt().lower()
+    assert "audit before you execute" in low
+    assert "never hand-author an" in low
+    assert "backstop" in low
+    assert "not a substitute for this check" in low
+
+
 def test_investigation_pivot_rule_present():
     """Part 6: a durable rule (governs freely-typed investigation questions too, not just the
     deep-link's own anchored prompt) — if the anchored ±30-min window doesn't corroborate the named

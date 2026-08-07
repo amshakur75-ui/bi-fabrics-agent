@@ -43,6 +43,7 @@ from .query.sql_guard import assert_read_only_sql as _assert_read_only_sql, esca
 from .query.dax_guard import assert_read_only_dax as _assert_read_only_dax, escape_dax_reference as _escape_dax_reference, _MAX_DAX_ROWS
 from .query.target_classifier import classify as _classify_target
 from .query.deeplinks import kusto_deeplink as _kusto_deeplink
+from .query.kql_format import format_kql as _format_kql
 from .timefmt import add_display_time, to_display as _to_display, parse_iso_utc
 from .key_utils import user_matches as _user_matches
 from .investigation.timepoint_peaks import (
@@ -2290,7 +2291,10 @@ def create_tool_definitions(base_dir=None):
         # advise but never block execution (error-severity findings were already blocked above).
         if advisories.get("warnings") or advisories.get("risks"):
             result["advisories"] = advisories
-        out = _finish(result, rows_key="rows", kql=bounded, extra=cap_meta)
+        # Display-only formatting of the surfaced query text -- the query already executed
+        # above as `bounded`; format_kql only reflows the copy shown back to the agent/user
+        # (pipe-per-line indentation), it never re-derives or alters what actually ran.
+        out = _finish(result, rows_key="rows", kql=_format_kql(bounded), extra=cap_meta)
         if large_result:
             # _finish() sets rowCount = len(payload["rows"]) (the preview) -- override with the
             # TRUE row count so callers can never mistake the preview length for the real total.

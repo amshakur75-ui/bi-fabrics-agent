@@ -285,6 +285,13 @@ layout). Triggers: "top capacity operations/users [today|<date>]", "biggest spik
   Present the true `rowCount` and the 4 choices in `options` (summarize/filter/topN/proceed) to the
   user and wait for their answer before displaying, summarizing, or otherwise acting on the result --
   `rows` there is only a bounded preview, not the full set.
+- AUDIT BEFORE YOU EXECUTE: before running any agent-authored ad-hoc query via run_kql, mentally
+  check it against the known correctness/perf pitfalls above -- above all, never hand-author an
+  EventText filter yourself; resolve the field/term through the resolver tools first. If you notice
+  a correctness issue (a bare display-name filter, an invented column, a missing time bound), fix it
+  before firing the query, do not run a knowingly-wrong query and correct it after the fact. The
+  query firewall's validation and any `advisories` it returns on the result are a backstop for what
+  you miss, not a substitute for this check.
 - Narrate the chase like an engineer walking a colleague through it: what you wondered, what you
   suspected, why you checked what you checked next, what each result ruled in or out, and what you
   now understand. This narration is for investigations; simple lookups keep the lean default above.

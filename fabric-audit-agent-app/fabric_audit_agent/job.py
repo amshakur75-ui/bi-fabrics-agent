@@ -42,6 +42,34 @@ def _check_startup_invariant(health=None, *, catalog=None, known_names=None):
             health.record_issue(msg)
 
 
+def _run_startup_preflight(env, health=None):
+    """Sub-plan 5 Part 5d: run the read-only config/health preflight snapshot
+    (``automation.preflight.run_preflight``) once at job startup, log it, and -- when a
+    ``HealthReport`` is available -- fold any failed check into it as a recorded issue (reusing
+    the existing health surface rather than a parallel one). Never raises: any failure inside
+    the preflight itself is already caught by ``run_preflight``; this wrapper adds no new
+    exception path of its own."""
+    try:
+        from .automation.preflight import run_preflight
+        report = run_preflight(env)
+    except Exception as exc:
+        msg = f"startup preflight failed to run: {type(exc).__name__}: {exc}"
+        print(f"[startup] WARN: {msg}")
+        if health is not None:
+            health.record_issue(msg)
+        return {"ok": False, "checks": [], "degraded": True}
+
+    if report["ok"]:
+        print("[startup] preflight: ok (" + ", ".join(c["name"] for c in report["checks"]) + ")")
+    else:
+        failed = [c for c in report["checks"] if not c["ok"]]
+        detail = "; ".join(f"{c['name']}: {c['detail']}" for c in failed)
+        print(f"[startup] WARN: preflight degraded: {detail}")
+        if health is not None:
+            health.record_issue(f"startup preflight degraded: {detail}")
+    return report
+
+
 def _append_error_record(store, t0):
     """Append a minimal observability record on sweep failure. Failure-isolated — never raises."""
     from datetime import datetime, timezone
@@ -609,6 +637,7 @@ def job_main():
     from .automation.health import HealthReport, render_health_line
     health = HealthReport()
     _check_startup_invariant(health)
+    _run_startup_preflight(os.environ, health)
     try:
         envelope = run_unified_job()
     except Exception as exc:
@@ -837,6 +866,7 @@ def tier2_main():
     health = HealthReport()
     _check_startup_invariant(health)
     env = os.environ
+    _run_startup_preflight(env, health)
     try:
         result = run_tier2_job(env=env, health=health)
     except Exception as exc:
@@ -868,6 +898,7 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     # catalog degrades to a recorded health issue (surfaced in the digest banner below), never a
     # crashed job.
     _check_startup_invariant(health)
+    _run_startup_preflight(env, health)
 
     # Day high-water CU% / throttle from a fresh 1d collect (degrade to {} on any error). The same
     # collect also carries facts["events"] (normalize_event-shaped, the same source the Part 12
