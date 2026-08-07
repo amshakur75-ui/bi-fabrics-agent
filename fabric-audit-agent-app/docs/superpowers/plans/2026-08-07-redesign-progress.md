@@ -33,7 +33,19 @@ Durable resume point for the 6-sub-plan program. Spec: `docs/superpowers/specs/2
 - [x] **5b** large-result display gate on run_kql (>50 rows → `largeResult` + 4 options + 100-row cap) + prompt rule. suite 1974.
 - [x] **5c/5d/5e** `query/kql_format.py` (wired to display queryKql) + `automation/preflight.py` (startup snapshot → health) + audit-before-execute prompt rule. `e25dcc1`.
 
-## Sub-plan 6 — Frontend UX (NOT STARTED)
-U1 structured investigation card; U3 per-number CU-vs-proxy marker. (U2/U4 already shipped.)
+## Sub-plan 6 — Frontend UX + Part-7 read-path (DONE — Python 1996, client builds)
+- [x] **6a** Part-7 TS read-path: chat-less tickets surfaced (`getChatlessAlertTickets` + `/by-incident/` routes + UI `?query=` deep-link fallback); manual migration `packages/db/migrations/manual/0001_alert_ack_incident_key.sql` (apply at deploy). client+server builds pass. `4e73b1f`,`1819c69`.
+- [x] **6b/6c** U1 structured investigation answers (Finding/Evidence/Root cause/Fix headings) + U3 inline proxy labeling — both via single-sourced system_prompt rules (PROSE already styles headings). `6fae6b5`.
+
+## PROGRAM COMPLETE — all 6 sub-plans done. Python suite 1775 → 1996 (+221), zero regressions.
+
+### Deploy-time steps (operator, not code):
+1. Apply `scripts/create_lakebase_alert_ticket.sql` (incident_key PK migration — Part 7).
+2. Apply `packages/db/migrations/manual/0001_alert_ack_incident_key.sql` (alert_ack incident_key — Part 7 read-path).
+3. Apply `scripts/create_delta_tables.sql` liquid-clustering ALTERs (from the earlier phase-7 work).
+4. Grant the job's service-principal client id on Lakebase (Part 16 auth).
+5. Frontend: `npm run build && npm run lint`; deploy the chat app.
+
+### Deferred (unchanged): HR enrichment; Teams-push (Phase 10); App-Insights TELEMETRY rules; business-measure formulas; per-user baseline detector (needs a history store); run_sql/run_dax large-result gate; describe_sql_table/semantic_model error-class parity.
 
 ## Deferred (NOT in program): HR enrichment; Teams-push (Phase 10); App-Insights TELEMETRY rules; business-measure formulas.
