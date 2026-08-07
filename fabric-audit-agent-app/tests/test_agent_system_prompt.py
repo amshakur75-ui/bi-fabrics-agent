@@ -205,4 +205,31 @@ def test_investigation_pivot_rule_present():
     low = build_system_prompt().lower()
     assert "pivot" in low
     assert "7-30 days" in low or "7–30 days" in low
+
+
+def test_u1_investigation_structure_headings_rule_present():
+    """Sub-plan 6 U1: investigation/root-cause answers must be structured with Finding / Evidence /
+    Root cause / Fix headings — scannable sections instead of one wall of prose — with sections
+    omitted only when genuinely empty."""
+    p = build_system_prompt()
+    low = p.lower()
+    assert "u1" in low
+    assert "finding" in low and "evidence" in low
+    assert "root cause" in low
+    assert "fix / next step" in low
+    assert "genuinely empty" in low
+
+
+def test_u3_inline_proxy_label_rule_present():
+    """Sub-plan 6 U3: a proxy/estimated/inferred figure must carry an inline marker at its first
+    point of use (e.g. "34% (proxy)"), in addition to — not instead of — the single response-level
+    proxy caveat (SP-refined 'ONE proxy caveat PER RESPONSE' rule)."""
+    p = build_system_prompt()
+    low = p.lower()
+    assert "u3" in low
+    assert "point of use" in low
+    assert "(proxy)" in p
+    assert "(est.)" in p
+    assert "in addition" in low
+    assert "one proxy caveat per response" in low
     assert "does not corroborate" in low or "does not hold up" in low or "didn't hold up" in low
