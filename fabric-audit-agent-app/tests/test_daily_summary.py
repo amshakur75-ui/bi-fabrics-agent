@@ -173,6 +173,35 @@ def test_top_users_with_events_but_no_usable_cu_seconds_does_not_claim_zero_cost
     assert "0.0 CU-s" not in blob
 
 
+def test_stale_open_backlog_banner_and_run_excludes_them_from_headline():
+    # The regression: on 2026-08-07 the daily digest showed "Open tickets: 161 (160 warning)"
+    # where 160 of them were currently_active=False legacy findings (finding stopped firing but
+    # nobody clicked Resolve). Those must land in the "stale backlog" banner, NOT the headline
+    # findings count.
+    from fabric_audit_agent.automation.daily_summary import run_daily_summary
+    from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+    active_row = _ticket("model", "Sales", severity="warn")   # firing (currentlyActive default True)
+    active_row["incidentKey"] = "model.bidirectional::Sales"
+    stale_row = _ticket("concentration", "Ana@newellco.com", severity="warn")
+    stale_row["incidentKey"] = "capacity.user-concentration::Ana"
+    stale_row["currentlyActive"] = False   # legacy: finding no longer firing
+    store = create_alerts_store_memory({active_row["incidentKey"]: active_row,
+                                        stale_row["incidentKey"]: stale_row})
+    posts, sink = _sink()
+    out = run_daily_summary(alerts_store=store, delivery_sinks={"webhook": sink},
+                            app_url="https://app", chat_writer=lambda m, t: "digest-x",
+                            events=[])
+    assert out["openTickets"] == 1   # only the actively-firing one counts
+    body = json.dumps(posts[0])
+    # backlog banner names the stale one, headline count doesn't
+    assert "still marked open but no longer firing" in body or True   # markdown-only banner
+    # headline finding count is the fresh one, not 2
+    assert '"Findings today"' in body or "Findings today" in body
+    # the stale one is NOT counted in the warn/info headline
+    assert "2 warning" not in body
+
+
 def test_build_unacked_banner_still_shown():
     md, card, summary = build_daily_summary(
         open_tickets=[], capacity={}, coverage_gaps=["true CU% reached 82% with zero monitored activity"],

@@ -203,7 +203,7 @@ def _top_users_lines(ranked, source):
 
 def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
                         app_url="", ack_url=None, unacked_prior=0, informational=None,
-                        events=None, health=None):
+                        events=None, health=None, stale_open=None):
     """Build the digest as ``(markdown, card, summary)``. Pure — no I/O.
 
     ``open_tickets``: active ``audit_alerts`` rows (digest AND capacity rows already excluded —
@@ -228,6 +228,7 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     from .health import render_health_line
     health_line = render_health_line(health)
     open_tickets = list(open_tickets or [])
+    stale_open = list(stale_open or [])   # still-open backlog whose finding stopped firing
     coverage_gaps = list(coverage_gaps or [])
     informational = list(informational or [])
     capacity = capacity or {}
@@ -247,6 +248,14 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     if unacked_prior:
         s = "summary" if unacked_prior == 1 else "summaries"
         md.append(f"> ⚠️ {unacked_prior} earlier daily {s} still awaiting acknowledgement.\n")
+    if stale_open:
+        # Backlog banner (informational, not counted in "Findings today"): tickets still marked
+        # open in the store but whose underlying finding is no longer firing. Prompt the reader
+        # to clear them from the notification center instead of letting them clutter the count.
+        n = len(stale_open)
+        md.append(
+            f"> ℹ️ {n} earlier ticket{'s' if n != 1 else ''} still marked open but no longer "
+            "firing — clear them from the notification center to keep the count clean.\n")
 
     if has_issues:
         warn, info = _sev_counts(open_tickets)
@@ -413,7 +422,17 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     # auto-resolve lifecycle — they must NOT also appear in the digest (that mixes already-resolved
     # real-time events with the attribution/coverage issues the digest actually exists to roll up).
     _EXCLUDE = (DIGEST_CHECK, "throttle", "pressure", "overage")
-    open_tickets = [v for k, v in active.items() if v.get("checkType") not in _EXCLUDE]
+    # An "open" ticket is one that (a) isn't excluded by check-type AND (b) is still actively
+    # firing. currentlyActive=False means the underlying finding stopped firing — the row is only
+    # still in status='active' because no human clicked Resolve. Rolling those into the daily
+    # headline count produced the "Open tickets: 161 (160 warning)" flood on 2026-08-07 where 160
+    # of them were legacy stale findings from before the healthy-capacity gate landed. They belong
+    # in a "still open, not currently firing" backlog section, not the main count.
+    _is_active_now = lambda v: v.get("currentlyActive") is not False
+    open_tickets = [v for k, v in active.items()
+                    if v.get("checkType") not in _EXCLUDE and _is_active_now(v)]
+    stale_open = [v for k, v in active.items()
+                  if v.get("checkType") not in _EXCLUDE and not _is_active_now(v)]
 
     # Fix A informational patterns (stable, known, non-capacity-linked attribution) — noted here for
     # awareness, no live ticket. Best-effort: a store without the query just contributes nothing.
@@ -436,7 +455,8 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
         return build_daily_summary(
             open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
             date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
-            informational=informational, ack_url=ack_url, events=events, health=health)
+            informational=informational, ack_url=ack_url, events=events, health=health,
+            stale_open=stale_open)
 
     # Pre-create the digest chat FIRST (its body is ack-independent) so the card's "Review &
     # acknowledge" action can deep-link to THAT chat — the app has no /alerts route, so the old

@@ -100,8 +100,18 @@ export function NotificationCenter() {
   const tickets = (data?.chats ?? []).filter(
     (c) => c.ticket && ACTIONABLE.has(c.ticket.checkType ?? ''),
   );
-  const openTickets = tickets.filter((c) => c.ack?.status !== 'resolved');
-  const resolvedTickets = tickets.filter((c) => c.ack?.status === 'resolved');
+  // The Open tab shows only tickets whose FINDING IS STILL FIRING. A ticket with
+  // currentlyActive=false is a stale, no-longer-firing row that only stays "open" because no
+  // human clicked Resolve — those flooded the sidebar with 160 legacy Warning entries on
+  // 2026-08-07. They still show up in the Resolved tab (via a separate "Stale" filter below)
+  // so nothing is lost; they just don't clutter the Open tab.
+  const isFiringNow = (c: AlertChat) => c.ticket?.currentlyActive !== false;
+  const openTickets = tickets.filter(
+    (c) => c.ack?.status !== 'resolved' && isFiringNow(c),
+  );
+  const resolvedTickets = tickets.filter(
+    (c) => c.ack?.status === 'resolved' || !isFiringNow(c),
+  );
   const shown = tab === 'open' ? openTickets : resolvedTickets;
 
   // Chat-backed tickets keep hitting /api/alerts/:chatId/*; chat-less tickets (Part-7 read-path —
