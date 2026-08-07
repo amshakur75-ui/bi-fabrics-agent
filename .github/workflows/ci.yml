@@ -1,10 +1,15 @@
 name: CI
 
-# Runs the offline test suites for both packages on every push/PR.
-# The py-package matrix pins Python 3.10 (its stated minimum, requires-python >=3.10)
-# alongside 3.12 so the query/windows.py Z-suffix normalization (datetime.fromisoformat
-# rejects trailing "Z" before 3.11) is exercised on 3.10 where it is load-bearing.
-# The app package requires >=3.11, so its tests run on 3.12 only.
+# Offline test suites for the restructured monorepo (paths updated 2026-08-07 — the old
+# `fabric-audit-agent-py/` project was renamed to `fabric-audit-mcp/` during the consolidation and
+# the core package moved to `fabric-audit-agent-app/`; the previous workflow still referenced the
+# dead path and failed at the install step on every push):
+#   - fabric-audit-agent-app  = the core package `fabric-audit-agent` (fabric_audit_agent core +
+#     agent_server + the full test suite); requires-python >=3.10. Python 3.10 is exercised so
+#     query/windows.py's Z-suffix normalization (datetime.fromisoformat rejects a trailing "Z"
+#     before 3.11) is covered where it is load-bearing.
+#   - fabric-audit-mcp        = the thin MCP tool server; depends on the fabric-audit-agent wheel,
+#     so its job installs the app package first.
 
 on:
   push:
@@ -12,8 +17,8 @@ on:
   pull_request:
 
 jobs:
-  test-py:
-    name: fabric-audit-agent-py (Python ${{ matrix.python-version }})
+  test-app:
+    name: fabric-audit-agent-app (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -21,7 +26,7 @@ jobs:
         python-version: ["3.10", "3.12"]
     defaults:
       run:
-        working-directory: fabric-audit-agent-py
+        working-directory: fabric-audit-agent-app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,20 +35,20 @@ jobs:
       - name: Install (offline core + dev)
         run: pip install -e ".[dev]"
       - name: Run test suite
-        run: python -m pytest tests/ -x -q
+        run: python -m pytest tests/ -q
 
-  test-app:
-    name: fabric-audit-agent-app
+  test-mcp:
+    name: fabric-audit-mcp
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install MCP tools package (needed by app tests)
-        run: pip install -e "./fabric-audit-agent-py[dev]"
-      - name: Install chat app
-        run: pip install -e "./fabric-audit-agent-app" && pip install pytest
+      - name: Install the core agent package (the MCP dependency)
+        run: pip install -e "./fabric-audit-agent-app[dev]"
+      - name: Install the MCP server
+        run: pip install -e "./fabric-audit-mcp[dev]"
       - name: Run test suite
-        working-directory: fabric-audit-agent-app
-        run: python -m pytest tests/ -x -q
+        working-directory: fabric-audit-mcp
+        run: python -m pytest tests/ -q
