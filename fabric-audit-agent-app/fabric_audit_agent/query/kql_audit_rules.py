@@ -14,7 +14,10 @@ Public API:
     * ``preflight_limits(kql, expected_row_count=0) -> list[dict]`` — service-limit risk checks.
     * ``parse_kusto_error(msg) -> dict`` — Kusto error-code → actionable-suggestion mapping.
     * ``check_perf001`` / ``check_perf003_power_bi`` / ``check_correct001`` /
-      ``check_correct007`` / ``check_retention`` — the individual named rule checks.
+      ``check_correct007`` / ``check_retention`` — the original 5 named rule checks.
+    * ``check_perf002`` / ``check_perf004``..``check_perf011`` / ``check_correct002``..
+      ``check_correct006`` / ``check_best001``..``check_best006`` / ``check_hint001`` /
+      ``check_hint002`` — Part 24a domain-relevant rule port (see below).
 
 SOURCE
 ------
@@ -23,7 +26,8 @@ Ported from the ``kql-mcp`` TypeScript plugin (plan Phase 2 — "port the KQL au
       CORRECT001, CORRECT007, parseQueryOutline, and the score/grade model.
     * ``index.ts`` ``kql_query_limits`` tool — the 8 pre-flight service-limit checks.
     * ``services/workspace-client.ts`` ``parseKustoError`` — the error-code mapping.
-    * ``constants.ts`` — HIGH_VOLUME_TABLES, APP_INSIGHTS_TABLES, WORKSPACE_RETENTION_DAYS.
+    * ``constants.ts`` — HIGH_VOLUME_TABLES, APP_INSIGHTS_TABLES, TIME_SERIES_TABLES,
+      WORKSPACE_RETENTION_DAYS.
 
 SPEC CORRECTIONS (tasks/tightening.md)
 --------------------------------------
@@ -33,6 +37,39 @@ SPEC CORRECTIONS (tasks/tightening.md)
       ``WORKSPACE_RETENTION_DAYS`` (60d) on the ``POWER_BI_TABLES`` set.
     * 26r — ``audit_kql`` blocks only on error-severity findings; warnings are surfaced but
       never block (``blocking`` is True iff any finding is error-severity).
+
+PART 24a — DOMAIN-RELEVANT RULE PORT (alerting-redesign design spec, Sub-plan 5)
+---------------------------------------------------------------------------------
+The plugin's ``audit-rules.ts`` defines 28 rules total: PERF001-010, CORRECT001-007,
+TELEMETRY001-003, BEST001-006, HINT001-002. Before this part, only 5 were ported (PERF001,
+the custom PERF003_POWER_BI, CORRECT001, CORRECT007, RETENTION). This part ports the rest of
+the domain-relevant subset — everything that applies to Fabric / Power BI / Log Analytics KQL:
+
+    * PERF002, PERF004-010 — performance rules (tolower/toupper in filters, order-by without
+      take/top, join without pre-filtering, bare count on high-volume tables, unmaterialized
+      repeated ``let``, ``union *``, filter-on-calculated-column, high-cardinality summarize
+      without a shuffle hint).
+    * PERF011 (NEW — not a plugin rule ID; sourced from the kql-performance-tuner skill's
+      ``optimization-patterns.md`` Pattern 7, "dcount over count(distinct)". Given a PERF01x
+      slot to stay consistent with the existing PERF numbering since the plugin has no rule ID
+      for this pattern.)
+    * CORRECT002-006 — summarize-by-datetime-without-bin, SQL syntax in KQL, deprecated
+      ``mvexpand``, wrong time column on App Insights tables, Unix-timestamp conversion in
+      query instead of at ingestion.
+    * BEST001-006 — no time filter, no row limit, ``render`` without ``summarize``, filter
+      after ``summarize``, missing ``bin()`` on time-series tables, ``set notruncation``
+      without a row limit. Auto-fix rules per the plugin: PERF001, PERF003(_POWER_BI),
+      CORRECT001, BEST001, BEST002 — ``_fix_best001``/``_fix_best002`` below extend the
+      existing three fix helpers.
+    * HINT001-002 — zero-score-deduction advisories (no column selection on a wide/high-volume
+      table; ``count`` without a time filter on a time-series table).
+
+DELIBERATELY SKIPPED — TELEMETRY001-003 (out of domain)
+    ``AppRequests``/``AppExceptions``/``AppDependencies``-specific advisories (raw-request-scan,
+    missing-project-on-exceptions, missing-success-filter-on-dependencies) are classic-schema
+    Application Insights ergonomics rules with no Fabric / Power BI / Log Analytics analogue in
+    this agent's domain (workspace-based App* tables and PowerBIDatasetsWorkspace query
+    telemetry). Per the design spec's load-bearing decision #4, they are not ported here.
 """
 
 import re
@@ -100,6 +137,22 @@ HIGH_VOLUME_TABLES = {
     "StorageTableLogs",
     "SQLInsights",
     "AzureSQLDatabaseAdvisorRecommendationsV2",
+}
+
+# Tables designed for time-series analysis (constants.ts TIME_SERIES_TABLES). Used by BEST005
+# (missing bin() on a summarize/render over these) and HINT002 (count without a time filter).
+TIME_SERIES_TABLES = {
+    "AppRequests",
+    "AppDependencies",
+    "AppTraces",
+    "AppExceptions",
+    "AppPerformanceCounters",
+    "AppMetrics",
+    "Perf",
+    "InsightsMetrics",
+    "AzureMetrics",
+    "ContainerLog",
+    "ContainerLogV2",
 }
 
 # Identifiers that are keywords, not source-table names (audit-rules.ts firstTableName).
@@ -319,6 +372,45 @@ def _fix_perf003(query):
     return "\n".join(result)
 
 
+def _fix_best001(query):
+    """Insert ``| where TimeGenerated > ago(24h)`` before the first pipe. Ports BEST001.fix.
+
+    Idempotent with ``_fix_perf003``: both insert the same shape of time filter, and both
+    bail out via ``_has_time_filter_present`` when one has already run.
+    """
+    if _has_time_filter_present(query):
+        return query
+    time_col = _detect_time_column(query) or "TimeGenerated"
+    q_lines = re.split(r"\r?\n", query)
+    insertion = f"  | where {time_col} > ago(24h)"
+    first_pipe_idx = next((i for i, l in enumerate(q_lines) if l.strip().startswith("|")), -1)
+    if first_pipe_idx == -1:
+        return query.rstrip() + "\n" + insertion
+    result = list(q_lines)
+    result.insert(first_pipe_idx, insertion)
+    return "\n".join(result)
+
+
+def _has_row_limit_present(query):
+    """True when the query already has ``take``/``limit``/``top``, ``summarize``, or ``count``."""
+    stripped = _strip_comments(query)
+    return bool(
+        re.search(r"\|\s*(?:take|limit|top)\s+\d+", stripped, re.IGNORECASE)
+        or re.search(r"\|\s*summarize\b", stripped, re.IGNORECASE)
+        or re.search(r"\|\s*count\b", stripped, re.IGNORECASE)
+    )
+
+
+def _fix_best002(query):
+    """Append ``| take 1000``. Idempotent — does nothing if a row limit already exists.
+
+    Ports BEST002.fix.
+    """
+    if _has_row_limit_present(query):
+        return query
+    return query.rstrip() + "\n  | take 1000"
+
+
 def _finding(rule_id, severity, message, suggestion, corrected=None):
     f = {"ruleId": rule_id, "severity": severity, "message": message, "suggestion": suggestion}
     if corrected is not None:
@@ -450,12 +542,489 @@ def check_retention(kql):
     )]
 
 
+# ─────────────────────────────────────────────────────────
+# Part 24a — domain-relevant rule port (PERF002/004-011, CORRECT002-006, BEST001-006,
+# HINT001-002). See the module docstring "PART 24a" section for scope + the deliberate
+# TELEMETRY001-003 skip. Each check is pure and tolerant: a line/query it cannot parse simply
+# produces no finding, mirroring the existing five checks above.
+# ─────────────────────────────────────────────────────────
+
+
+def check_perf002(kql):
+    """PERF002 — ``tolower()``/``toupper()`` inside a ``where`` clause. warning.
+
+    Re-casing inside a filter bypasses the index and forces a full column scan; ``=~`` is
+    index-aware and case-insensitive already. Ports PERF002.check (also optimization-patterns.md
+    Pattern 3, "=~ over tolower()").
+    """
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\b(?:tolower|toupper)\s*\(", line, re.IGNORECASE) \
+                and re.search(r"\|\s*where\b", line, re.IGNORECASE):
+            findings.append(_finding(
+                "PERF002", "warning",
+                "Re-casing inside a `where` prevents index usage and forces a full column scan.",
+                'Use case-insensitive `=~` instead: `where col =~ "value"` rather than '
+                '`where tolower(col) == "value"`.',
+            ))
+    return findings
+
+
+def check_perf004(kql):
+    """PERF004 — ``order by``/``sort by`` without a ``take``/``limit``/``top`` row cap. warning.
+
+    Sorting without a limit materialises and sorts the full result set. Ports PERF004.check
+    (also optimization-patterns.md Pattern 5, "top N over order by + take").
+    """
+    stripped = _strip_comments(kql)
+    if re.search(r"\|\s*(?:order|sort)\s+by\b", stripped, re.IGNORECASE) \
+            and not re.search(r"\|\s*(?:take|limit|top)\s+\d+", stripped, re.IGNORECASE):
+        return [_finding(
+            "PERF004", "warning",
+            "Sorting without a row limit materialises and sorts every matching row before returning.",
+            "Add `| take 1000` or use `| top N by column` which combines sort + limit in one pass.",
+        )]
+    return []
+
+
+def check_perf005(kql):
+    """PERF005 — ``join`` with no ``where`` filter nearby. warning.
+
+    Joining large unfiltered tables is expensive; both sides should be reduced (filtered AND
+    projected down to the columns actually needed) before the join. Ports PERF005.check (also
+    optimization-patterns.md Pattern 6, "pre-filter both join sides").
+    """
+    lines = re.split(r"\r?\n", kql)
+    findings = []
+    for i, line in enumerate(lines):
+        if re.search(r"\|\s*join\b", line, re.IGNORECASE):
+            inner = " ".join(lines[i:i + 6])
+            if not re.search(r"\bwhere\b", inner, re.IGNORECASE):
+                findings.append(_finding(
+                    "PERF005", "warning",
+                    "Joining large unfiltered tables is expensive. Both sides should be reduced "
+                    "first.",
+                    "Add `| where` clauses on both the outer table and inside the join subquery "
+                    "(and `| project` down to the columns the join actually needs).",
+                ))
+    return findings
+
+
+def check_perf006(kql):
+    """PERF006 — bare ``count`` on a ``HIGH_VOLUME_TABLES`` table with no ``summarize``. info.
+
+    Running `count` on a high-volume table scans every matching row; the pre-aggregated `Usage`
+    table is far cheaper for ingestion-volume questions. Ports PERF006.check.
+    """
+    table = _first_table_name(kql)
+    if not table or table not in HIGH_VOLUME_TABLES:
+        return []
+    stripped = _strip_comments(kql)
+    has_bare_count = bool(re.search(r"\|\s*count\b(?!\s*if\s*\()", stripped, re.IGNORECASE))
+    has_summarize = bool(re.search(r"\|\s*summarize\b", stripped, re.IGNORECASE))
+    if not has_bare_count or has_summarize:
+        return []
+    return [_finding(
+        "PERF006", "info",
+        f"Running `count` on `{table}` must scan every matching row. For volume analysis, the "
+        "`Usage` table (pre-aggregated) is far cheaper.",
+        f'Replace with: `Usage | where DataType == "{table}" | summarize TotalGB = '
+        "sum(Quantity) / 1000.0 by bin(TimeGenerated, 1d)`",
+    )]
+
+
+def check_perf007(kql):
+    """PERF007 — a ``let`` binding referenced 2+ times without ``materialize()``. warning.
+
+    Without ``materialize()``, a repeated ``let`` re-runs the underlying computation once per
+    reference. Ports PERF007.check.
+    """
+    stripped = _strip_comments(kql)
+    for m in re.finditer(r"\blet\s+(\w+)\s*=", stripped, re.IGNORECASE):
+        name = m.group(1)
+        if not name:
+            continue
+        after_eq = stripped[m.end():].lstrip()
+        if re.match(r"^materialize\s*\(", after_eq, re.IGNORECASE):
+            continue
+        escaped = re.escape(name)
+        usage_count = len(re.findall(rf"\b{escaped}\b", stripped)) - 1
+        if usage_count >= 2:
+            return [_finding(
+                "PERF007", "warning",
+                f"When a `let` binding is referenced multiple times the underlying calculation "
+                f"runs once per reference (`let {name}` is referenced {usage_count} times).",
+                f"Wrap the value: `let {name} = materialize(<expression>);` to evaluate exactly "
+                "once.",
+            )]
+    return []
+
+
+def check_perf008(kql):
+    """PERF008 — ``union *`` scans every table simultaneously. warning.
+
+    Exempts the standard table-discovery idiom (``union withsource=T * | ... | distinct``).
+    Ports PERF008.check.
+    """
+    stripped = _strip_comments(kql)
+    if re.search(r"union\s+withsource\s*=\s*T\s+\*[\s\S]*?\|\s*distinct", stripped, re.IGNORECASE):
+        return []
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\bunion\s+\*", line, re.IGNORECASE):
+            findings.append(_finding(
+                "PERF008", "warning",
+                "`union *` issues a query against every table simultaneously, causing query plan "
+                "complexity to explode.",
+                "Specify the exact tables you need: `union Table1, Table2` instead of `union *`.",
+            ))
+    return findings
+
+
+def check_perf009(kql):
+    """PERF009 — a ``where`` immediately after an ``extend`` filters on the calculated column. info.
+
+    Filtering on a value created by `extend` forces every row to be computed first. Ports
+    PERF009.check.
+    """
+    lines = re.split(r"\r?\n", kql)
+    saw_extend_alias = None
+    findings = []
+    for line in lines:
+        m = re.search(r"\|\s*extend\s+(\w+)\s*=", line, re.IGNORECASE)
+        if m:
+            saw_extend_alias = m.group(1)
+            continue
+        if saw_extend_alias is not None:
+            alias = saw_extend_alias
+            if re.search(r"\|\s*where\b", line, re.IGNORECASE) and alias in line:
+                findings.append(_finding(
+                    "PERF009", "info",
+                    f"Filtering on a value created by `extend` (`{alias}`) forces every row to be "
+                    "processed first.",
+                    "Move the filter before `extend`, or re-express it using the original column "
+                    "directly.",
+                ))
+            saw_extend_alias = None
+    return findings
+
+
+def check_perf010(kql):
+    """PERF010 — high-cardinality ``summarize by`` without ``hint.shufflekey``. info.
+
+    Grouping by a high-cardinality column (user/client/ip/session/request id) concentrates load
+    on a single node. Ports PERF010.check.
+    """
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\|\s*summarize\b", line, re.IGNORECASE) \
+                and re.search(r"\bby\s+(?:user|user_id|userid|client|ip|address|session|"
+                               r"request_?id)", line, re.IGNORECASE) \
+                and not re.search(r"hint\.shufflekey", line, re.IGNORECASE):
+            findings.append(_finding(
+                "PERF010", "info",
+                "Grouping by high-cardinality columns concentrates load on a single node.",
+                "Add the shuffle hint: `| summarize ... by hint.shufflekey=<key> <key>, ...`",
+            ))
+    return findings
+
+
+def check_perf011(kql):
+    """PERF011 (NEW — not a plugin rule ID; see module docstring) — ``count(distinct x)`` where
+    an approximate ``dcount(x)`` would do. info.
+
+    Sourced from the kql-performance-tuner skill's optimization-patterns.md Pattern 7: `dcount`
+    is ~10x faster than exact `count(distinct ...)` and is usually accurate enough.
+    """
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\bcount\s*\(\s*distinct\b", line, re.IGNORECASE):
+            findings.append(_finding(
+                "PERF011", "info",
+                "`count(distinct x)` computes an exact distinct count, which is expensive on "
+                "large tables.",
+                "Use `dcount(x)` for an approximate count (~10x faster, usually accurate enough) "
+                "unless exactness is required.",
+            ))
+    return findings
+
+
+def check_correct002(kql):
+    """CORRECT002 — ``summarize by`` a raw datetime column without ``bin()``. warning.
+
+    Grouping by a raw datetime produces one group per distinct timestamp value (often one per
+    millisecond) — almost never what's intended, and extremely expensive. Ports CORRECT002.check.
+    """
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\|\s*summarize\b", line, re.IGNORECASE):
+            has_by_datetime = bool(
+                re.search(r"\bby\b.*(?:TimeGenerated|timestamp)\b", line, re.IGNORECASE)
+            )
+            has_bin = bool(re.search(r"\bbin\s*\(", line, re.IGNORECASE))
+            if has_by_datetime and not has_bin:
+                findings.append(_finding(
+                    "CORRECT002", "warning",
+                    "Grouping by a raw datetime produces one group per millisecond — likely not "
+                    "what you want and extremely expensive.",
+                    "Wrap the datetime: `| summarize count() by bin(TimeGenerated, 1h)` or "
+                    "`bin(timestamp, 5m)`.",
+                ))
+    return findings
+
+
+_SQL_SYNTAX_PATTERNS = (
+    (re.compile(r"\bSELECT\b", re.IGNORECASE), "SQL `SELECT`", "Use `| project col1, col2` instead"),
+    (re.compile(r"\bFROM\b(?!\s+\w[\w.]*\s*:)", re.IGNORECASE), "SQL `FROM`",
+     "Table name goes at the start: `TableName | where ...`"),
+    (re.compile(r"\bGROUP\s+BY\b", re.IGNORECASE), "SQL `GROUP BY`", "Use `| summarize count() by column`"),
+    (re.compile(r"\bINNER\s+JOIN\b", re.IGNORECASE), "SQL `INNER JOIN`", "Use `| join kind=inner (...)` in KQL"),
+)
+
+
+def check_correct003(kql):
+    """CORRECT003 — SQL syntax (``SELECT``/``FROM``/``GROUP BY``/``INNER JOIN``) is not valid KQL.
+    error. Ports CORRECT003.check.
+    """
+    findings = []
+    for pat, label, fix in _SQL_SYNTAX_PATTERNS:
+        for line in re.split(r"\r?\n", kql):
+            if pat.search(_strip_comments(line)):
+                findings.append(_finding(
+                    "CORRECT003", "error", f"{label} is not valid KQL.", fix,
+                ))
+    return findings
+
+
+def check_correct004(kql):
+    """CORRECT004 — deprecated ``mvexpand`` (use ``mv-expand``). warning. Ports CORRECT004.check."""
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\bmvexpand\b", line, re.IGNORECASE) and not re.search(r"\bmv-expand\b", line, re.IGNORECASE):
+            findings.append(_finding(
+                "CORRECT004", "warning",
+                "`mvexpand` is deprecated and may be removed.", "Replace with `mv-expand`.",
+            ))
+    return findings
+
+
+def check_correct005(kql):
+    """CORRECT005 — ``timestamp`` used on a workspace-based App Insights table. error.
+
+    Workspace-based App* tables use `TimeGenerated`, not the classic-schema `timestamp` column;
+    a query using `timestamp` against one of these will fail or silently return no rows. Ports
+    CORRECT005.check.
+    """
+    table = _first_table_name(kql)
+    if not table or table not in APP_INSIGHTS_TABLES:
+        return []
+    stripped = _strip_comments(kql)
+    if not re.search(r"\btimestamp\b", stripped):
+        return []
+    return [_finding(
+        "CORRECT005", "error",
+        f"This workspace uses the workspace-based Application Insights schema (App* tables), "
+        f"where the time column is `TimeGenerated`. `timestamp` does not exist on `{table}`, so "
+        "the query will fail or return no rows.",
+        "Replace `timestamp` with `TimeGenerated`: `| where TimeGenerated > ago(24h)`",
+    )]
+
+
+def check_correct006(kql):
+    """CORRECT006 — Unix-timestamp conversion inside the query. info.
+
+    Converting Unix timestamps on every query forces a per-row type conversion; converting once
+    at ingestion (via an update policy) is cheaper. Ports CORRECT006.check.
+    """
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"unixtime_(?:milliseconds|seconds|microseconds|nanoseconds)_todatetime\s*\(",
+                      line, re.IGNORECASE):
+            findings.append(_finding(
+                "CORRECT006", "info",
+                "Converting Unix timestamps on every query forces a per-row type conversion. "
+                "Convert once at ingestion via an update policy.",
+                "Use an ingestion update policy to store time as `datetime` at write time.",
+            ))
+    return findings
+
+
+def check_best001(kql):
+    """BEST001 — no time filter anywhere in the query. info. Ports BEST001.check."""
+    if _has_time_filter_present(kql):
+        return []
+    return [_finding(
+        "BEST001", "info",
+        "Queries without a time filter scan the full retention window of every table involved.",
+        "Add `| where TimeGenerated > ago(24h)` (Log Analytics) or `| where timestamp > ago(24h)` "
+        "(App Insights).",
+        corrected=_fix_best001(kql),
+    )]
+
+
+def check_best002(kql):
+    """BEST002 — no row limit (``take``/``limit``/``top``, ``summarize``, or ``count``). info.
+    Ports BEST002.check.
+    """
+    if _has_row_limit_present(kql):
+        return []
+    return [_finding(
+        "BEST002", "info",
+        "Without `take`/`limit`, large tables return up to the service cap (500k rows).",
+        "Add `| take 1000` for exploration, or use `| summarize` to aggregate before returning.",
+        corrected=_fix_best002(kql),
+    )]
+
+
+def check_best003(kql):
+    """BEST003 — ``render`` without a preceding ``summarize`` produces an unreadable chart. info.
+    Ports BEST003.check.
+    """
+    stripped = _strip_comments(kql)
+    if re.search(r"\|\s*render\b", stripped, re.IGNORECASE) \
+            and not re.search(r"\|\s*summarize\b", stripped, re.IGNORECASE):
+        return [_finding(
+            "BEST003", "info",
+            "Rendering raw rows produces an unreadable chart. Aggregate first.",
+            "Add `| summarize count() by bin(TimeGenerated, 1h)` before `| render timechart`.",
+        )]
+    return []
+
+
+def check_best004(kql):
+    """BEST004 — a ``where`` after ``summarize`` filters post-aggregation. info.
+
+    Filtering after aggregation means every row must be aggregated before the filter applies.
+    Ports BEST004.check.
+    """
+    saw_summarize = False
+    findings = []
+    for line in re.split(r"\r?\n", kql):
+        if re.search(r"\|\s*summarize\b", line, re.IGNORECASE):
+            saw_summarize = True
+            continue
+        if saw_summarize and re.search(r"\|\s*where\b", line, re.IGNORECASE):
+            findings.append(_finding(
+                "BEST004", "info",
+                "Filtering after aggregation means all rows must be aggregated before the filter "
+                "is applied.",
+                "Move `| where` clauses before `| summarize` to reduce the rows being aggregated.",
+            ))
+            saw_summarize = False
+    return findings
+
+
+def check_best005(kql):
+    """BEST005 — a ``TIME_SERIES_TABLES`` table aggregated/rendered without ``bin()``. warning.
+
+    Aggregating time-series data without `bin()` groups by exact timestamp instead of a time
+    bucket. Ports BEST005.check.
+    """
+    table = _first_table_name(kql)
+    if not table or table not in TIME_SERIES_TABLES:
+        return []
+    stripped = _strip_comments(kql)
+    has_summarize = bool(re.search(r"\|\s*summarize\b", stripped, re.IGNORECASE))
+    has_bin = bool(re.search(r"\bbin\s*\(", stripped, re.IGNORECASE))
+    has_render = bool(re.search(r"\|\s*render\b", stripped, re.IGNORECASE))
+    if (has_summarize or has_render) and not has_bin:
+        return [_finding(
+            "BEST005", "warning",
+            f"`{table}` is designed for time-series analysis. Aggregating without `bin()` groups "
+            "by exact timestamp.",
+            "Use `bin(timestamp, 5m)` or `bin(TimeGenerated, 1h)` in your `summarize by` clause.",
+        )]
+    return []
+
+
+def check_best006(kql):
+    """BEST006 — ``set notruncation`` with no compensating row limit. warning.
+
+    `set notruncation` removes the 500,000-row / 64 MB result limit; without a `take` or
+    `summarize`, the query could return unbounded data. Ports BEST006.check.
+    """
+    stripped = _strip_comments(kql)
+    if re.search(r"\bset\s+notruncation\s*;", stripped, re.IGNORECASE) \
+            and not re.search(r"\|\s*(?:take|limit|top)\s+\d+", stripped, re.IGNORECASE) \
+            and not re.search(r"\|\s*summarize\b", stripped, re.IGNORECASE):
+        return [_finding(
+            "BEST006", "warning",
+            "`set notruncation` removes the 500,000-row / 64 MB result limit. Without a `take` "
+            "or `summarize`, this query could return unbounded data.",
+            "Always pair `set notruncation` with `| take N` or use `| summarize`. For bulk "
+            "export, use the `.export` command instead.",
+        )]
+    return []
+
+
+def check_hint001(kql):
+    """HINT001 — no column selection on a ``HIGH_VOLUME_TABLES`` table. hint (0 deduction).
+
+    Advisory only — returning all columns from a wide, high-volume table increases data
+    transfer and can make results harder to interpret. Ports HINT001.check.
+    """
+    table = _first_table_name(kql)
+    if not table or table not in HIGH_VOLUME_TABLES:
+        return []
+    stripped = _strip_comments(kql)
+    if not re.search(r"\|\s*project\b", stripped, re.IGNORECASE) \
+            and not re.search(r"\|\s*summarize\b", stripped, re.IGNORECASE):
+        return [_finding(
+            "HINT001", "hint",
+            f"`{table}` is a high-volume table with many columns. Returning all columns "
+            "increases data transfer and can make results harder to interpret.",
+            "Add `| project col1, col2, col3` to select only the columns you need.",
+        )]
+    return []
+
+
+def check_hint002(kql):
+    """HINT002 — ``count`` without a time filter on a ``TIME_SERIES_TABLES`` table. hint
+    (0 deduction). Ports HINT002.check.
+    """
+    table = _first_table_name(kql)
+    if not table or table not in TIME_SERIES_TABLES:
+        return []
+    stripped = _strip_comments(kql)
+    if re.search(r"\|\s*count\b(?!\s*if\s*\()", stripped, re.IGNORECASE) \
+            and not _has_time_filter_present(kql):
+        return [_finding(
+            "HINT002", "hint",
+            f"Counting all rows in `{table}` without a time filter gives the total since "
+            "ingestion, which is rarely the intended metric.",
+            "Add a time filter to scope the count: `| where TimeGenerated > ago(24h) | count`",
+        )]
+    return []
+
+
 _RULE_CHECKS = (
     check_perf001,
+    check_perf002,
     check_perf003_power_bi,
+    check_perf004,
+    check_perf005,
+    check_perf006,
+    check_perf007,
+    check_perf008,
+    check_perf009,
+    check_perf010,
+    check_perf011,
     check_correct001,
+    check_correct002,
+    check_correct003,
+    check_correct004,
+    check_correct005,
+    check_correct006,
     check_correct007,
     check_retention,
+    check_best001,
+    check_best002,
+    check_best003,
+    check_best004,
+    check_best005,
+    check_best006,
+    check_hint001,
+    check_hint002,
 )
 
 # ─────────────────────────────────────────────────────────

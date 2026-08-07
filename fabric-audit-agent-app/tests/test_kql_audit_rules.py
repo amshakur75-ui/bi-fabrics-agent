@@ -3,6 +3,9 @@
 Mirrors the plugin's audit-rules.test.ts cases for the ported rules (PERF001 + its EventText
 exemption, CORRECT001, CORRECT007) and adds cases for the custom 25a checks (PERF003_POWER_BI,
 retention), the QueryOutline parser, the pre-flight limit checks, and the Kusto error mapper.
+
+Part 24a adds one focused test per newly-ported domain-relevant rule (PERF002/004-011,
+CORRECT002-006, BEST001-006, HINT001-002) — see test_kql_audit_rules_ported.py.
 """
 
 from fabric_audit_agent.query.kql_audit_rules import (
