@@ -28,6 +28,11 @@ type AlertChat = {
   createdAt?: string | null;
   ack?: AlertAck | null;
   ticket?: AlertTicket | null;
+  // Part-7 read-path: chat-less tickets (alert_ticket.chat_id IS NULL — chat creation failed
+  // upstream, but the finding still needs to surface). `id` is the incident_key for these, not a
+  // navigable chat id.
+  hasChat?: boolean;
+  incidentKey?: string | null;
 };
 type AlertsData = { chats: AlertChat[] };
 
@@ -96,22 +101,50 @@ export function NotificationCenter() {
   const resolvedTickets = tickets.filter((c) => c.ack?.status === 'resolved');
   const shown = tab === 'open' ? openTickets : resolvedTickets;
 
-  const resolve = async (id: string) => {
+  // Chat-backed tickets keep hitting /api/alerts/:chatId/*; chat-less tickets (Part-7 read-path —
+  // alert_ticket.chat_id IS NULL) have no chat to key off, so they use the incident-key-keyed
+  // routes instead. `t.id` is the incident_key for those rows (see server GET /api/alerts).
+  const resolve = async (t: AlertChat) => {
     const note = window.prompt(
       'Resolve this issue — what changed / what did you find? (required)',
     );
     if (!note || !note.trim()) return;
-    await post(`/api/alerts/${id}/resolve`, { note: note.trim() });
+    const path =
+      t.hasChat === false
+        ? `/api/alerts/by-incident/${t.id}/resolve`
+        : `/api/alerts/${t.id}/resolve`;
+    await post(path, { note: note.trim() });
     mutate();
   };
-  const reopen = async (id: string) => {
-    await post(`/api/alerts/${id}/reopen`);
+  const reopen = async (t: AlertChat) => {
+    const path =
+      t.hasChat === false
+        ? `/api/alerts/by-incident/${t.id}/reopen`
+        : `/api/alerts/${t.id}/reopen`;
+    await post(path);
     mutate();
   };
-  const chatAbout = (id: string) => {
+  // Builds the same kind of auto-investigation prompt the Python side's Teams deep-link uses
+  // (fabric_audit_agent/automation/sweep_delivery.py:_investigate_query), anchored to when the
+  // finding was first detected so the agent investigates the right time window.
+  const investigateQuery = (t: AlertChat): string => {
+    const what = t.ticket?.detail || t.title;
+    const when = t.ticket?.firstDetected ?? t.createdAt;
+    const anchor = when
+      ? ` This was detected around ${when} — investigate the capacity and activity in that time window as your primary anchor, not the current moment.`
+      : '';
+    return `Investigate this finding and give me the root cause and the specific fix: ${what}.${anchor}`;
+  };
+  const chatAbout = (t: AlertChat) => {
     setOpen(false);
     setDetail(null);
-    navigate(`/chat/${id}`);
+    if (t.hasChat === false) {
+      // No chat exists for this ticket — open a fresh chat pre-loaded with the investigation
+      // prompt instead of navigating to /chat/:id (which would 404 for a null chat id).
+      navigate(`/?query=${encodeURIComponent(investigateQuery(t))}`);
+      return;
+    }
+    navigate(`/chat/${t.id}`);
   };
 
   return (
@@ -127,12 +160,12 @@ export function NotificationCenter() {
             className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+            <div className='flex items-start justify-between gap-3 border-border border-b px-5 py-4'>
               <div className="flex items-center gap-2">
                 <span className="text-lg leading-none">
                   {detail.ticket?.severity === 'warn' ? '⚠️' : 'ℹ️'}
                 </span>
-                <h3 className="text-sm font-semibold">{detail.title}</h3>
+                <h3 className='font-semibold text-sm'>{detail.title}</h3>
               </div>
               <button
                 type="button"
@@ -181,7 +214,7 @@ export function NotificationCenter() {
                 ) : null}
               </dl>
               {detail.ticket?.detail ? (
-                <p className="rounded-lg bg-muted/50 p-3 text-[13px] leading-relaxed text-foreground/90">
+                <p className='rounded-lg bg-muted/50 p-3 text-[13px] text-foreground/90 leading-relaxed'>
                   {detail.ticket.detail}
                 </p>
               ) : null}
@@ -191,20 +224,20 @@ export function NotificationCenter() {
                 </p>
               ) : null}
             </div>
-            <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+            <div className='flex items-center justify-end gap-2 border-border border-t px-5 py-3'>
               {detail.ack?.status !== 'resolved' && (
                 <button
                   type="button"
-                  onClick={() => resolve(detail.id)}
-                  className="rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={() => resolve(detail)}
+                  className='rounded-md px-3 py-1.5 text-muted-foreground text-sm hover:bg-muted hover:text-foreground'
                 >
                   Resolve
                 </button>
               )}
               <button
                 type="button"
-                onClick={() => chatAbout(detail.id)}
-                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-background hover:opacity-90"
+                onClick={() => chatAbout(detail)}
+                className='rounded-md bg-primary px-3 py-1.5 font-medium text-background text-sm hover:opacity-90'
               >
                 Investigate in chat
               </button>
@@ -213,9 +246,9 @@ export function NotificationCenter() {
         </div>
       )}
       {open && (
-        <div className="fixed bottom-20 right-4 z-50 flex max-h-[70vh] w-[22rem] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div className="text-sm font-semibold">Issues to review</div>
+        <div className='fixed right-4 bottom-20 z-50 flex max-h-[70vh] w-[22rem] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-[var(--shadow-db-lg)]'>
+          <div className='flex items-center justify-between border-border border-b px-4 py-3'>
+            <div className='font-semibold text-sm'>Issues to review</div>
             <button
               type="button"
               onClick={() => setOpen(false)}
@@ -226,7 +259,7 @@ export function NotificationCenter() {
             </button>
           </div>
 
-          <div className="flex gap-1 border-b border-border px-2 py-2 text-xs">
+          <div className='flex gap-1 border-border border-b px-2 py-2 text-xs'>
             <button
               type="button"
               onClick={() => setTab('open')}
@@ -245,7 +278,7 @@ export function NotificationCenter() {
 
           <div className="flex-1 overflow-y-auto">
             {shown.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              <div className='px-4 py-10 text-center text-muted-foreground text-sm'>
                 {tab === 'open'
                   ? 'No open issues right now. 🎉'
                   : 'Nothing resolved yet.'}
@@ -260,7 +293,7 @@ export function NotificationCenter() {
                 return (
                   <div
                     key={t.id}
-                    className="flex flex-col gap-1 border-b border-border/60 px-4 py-3 last:border-b-0"
+                    className='flex flex-col gap-1 border-border/60 border-b px-4 py-3 last:border-b-0'
                   >
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 text-base leading-none">
@@ -269,7 +302,7 @@ export function NotificationCenter() {
                       <button
                         type="button"
                         onClick={() => setDetail(t)}
-                        className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:underline"
+                        className='min-w-0 flex-1 truncate text-left font-medium text-sm hover:underline'
                         title="Open details"
                       >
                         {t.title}
@@ -283,10 +316,10 @@ export function NotificationCenter() {
                       ) : null}
                       {when ? <span>· since {when}</span> : null}
                     </div>
-                    <div className="flex items-center gap-3 pl-6 pt-1 text-xs">
+                    <div className='flex items-center gap-3 pt-1 pl-6 text-xs'>
                       <button
                         type="button"
-                        onClick={() => chatAbout(t.id)}
+                        onClick={() => chatAbout(t)}
                         className="text-sky-600 hover:underline dark:text-sky-400"
                       >
                         Chat about it
@@ -301,7 +334,7 @@ export function NotificationCenter() {
                           </span>
                           <button
                             type="button"
-                            onClick={() => reopen(t.id)}
+                            onClick={() => reopen(t)}
                             className="text-muted-foreground hover:text-foreground"
                           >
                             reopen
@@ -310,7 +343,7 @@ export function NotificationCenter() {
                       ) : (
                         <button
                           type="button"
-                          onClick={() => resolve(t.id)}
+                          onClick={() => resolve(t)}
                           className="font-medium text-foreground hover:underline"
                         >
                           Resolve
@@ -329,7 +362,7 @@ export function NotificationCenter() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="Open notifications"
-        className="fixed bottom-4 right-4 z-50 flex size-12 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[var(--shadow-db-lg)] transition hover:bg-muted"
+        className='fixed right-4 bottom-4 z-50 flex size-12 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[var(--shadow-db-lg)] transition hover:bg-muted'
       >
         <svg
           viewBox="0 0 24 24"
@@ -345,7 +378,7 @@ export function NotificationCenter() {
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
         </svg>
         {openTickets.length > 0 && (
-          <span className="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[11px] font-semibold text-white">
+          <span className='-right-1 -top-1 absolute flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1 font-semibold text-[11px] text-white'>
             {openTickets.length > 9 ? '9+' : openTickets.length}
           </span>
         )}

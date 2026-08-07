@@ -563,6 +563,114 @@ export async function clearAlertAck(chatId: string): Promise<void> {
   await db.execute(sql`DELETE FROM ai_chatbot.alert_ack WHERE chat_id = ${chatId}`);
 }
 
+// ── Part-7 read-path: chat-less tickets (incident_key-keyed ack) ───────────
+// alert_ticket rows are now written even when chat creation failed upstream (chat_id NULL),
+// keyed by incident_key. alert_ack gained a parallel, nullable `incident_key` column (see
+// packages/db/migrations/manual/0001_alert_ack_incident_key.sql) so those tickets can still be
+// acked/resolved/reopened without a chat. All functions below degrade to a no-op / empty result
+// if that column doesn't exist yet on an older deployment — never break the existing chat-backed
+// path.
+
+export async function resolveAlertByIncident({
+  incidentKey,
+  note,
+  resolvedBy,
+}: {
+  incidentKey: string;
+  note: string;
+  resolvedBy?: string | null;
+}): Promise<void> {
+  if (!isDatabaseAvailable()) return;
+  const db = await ensureDb();
+  await db.execute(sql`
+    INSERT INTO ai_chatbot.alert_ack (incident_key, status, resolution_note, updated_by, updated_at)
+    VALUES (${incidentKey}, 'resolved', ${note}, ${resolvedBy ?? null}, now())
+    ON CONFLICT (incident_key) DO UPDATE SET
+      status = 'resolved',
+      resolution_note = excluded.resolution_note,
+      snooze_until = NULL,
+      updated_by = excluded.updated_by,
+      updated_at = now()
+  `);
+}
+
+export async function reopenAlertByIncident(incidentKey: string): Promise<void> {
+  await clearAlertAckByIncident(incidentKey);
+}
+
+export async function setAlertAckByIncident({
+  incidentKey,
+  status,
+  snoozeUntil,
+  updatedBy,
+}: {
+  incidentKey: string;
+  status: 'acked' | 'snoozed';
+  snoozeUntil?: string | null;
+  updatedBy?: string | null;
+}): Promise<void> {
+  if (!isDatabaseAvailable()) return;
+  const db = await ensureDb();
+  await db.execute(sql`
+    INSERT INTO ai_chatbot.alert_ack (incident_key, status, snooze_until, updated_by, updated_at)
+    VALUES (${incidentKey}, ${status}, ${snoozeUntil ?? null}, ${updatedBy ?? null}, now())
+    ON CONFLICT (incident_key) DO UPDATE SET
+      status = excluded.status,
+      snooze_until = excluded.snooze_until,
+      updated_by = excluded.updated_by,
+      updated_at = now()
+  `);
+}
+
+export async function clearAlertAckByIncident(incidentKey: string): Promise<void> {
+  if (!isDatabaseAvailable()) return;
+  const db = await ensureDb();
+  await db.execute(
+    sql`DELETE FROM ai_chatbot.alert_ack WHERE incident_key = ${incidentKey}`,
+  );
+}
+
+export async function getAlertAckMapByIncidentKeys(
+  incidentKeys: string[],
+): Promise<Record<string, AlertAck>> {
+  const out: Record<string, AlertAck> = {};
+  if (!isDatabaseAvailable() || incidentKeys.length === 0) return out;
+  const db = await ensureDb();
+  let rows: unknown = [];
+  try {
+    rows = await db.execute(sql`
+      SELECT incident_key, status, snooze_until, resolution_note, updated_by, updated_at
+      FROM ai_chatbot.alert_ack
+      WHERE incident_key IN (${sql.join(
+        incidentKeys.map((id) => sql`${id}`),
+        sql`, `,
+      )})
+    `);
+  } catch {
+    // incident_key column may not exist yet on an older deployment — degrade to no ack state.
+    return out;
+  }
+  for (const r of rows as unknown as Array<{
+    incident_key: string;
+    status: string;
+    snooze_until: string | null;
+    resolution_note: string | null;
+    updated_by: string | null;
+    updated_at: string | null;
+  }>) {
+    const status =
+      r.status === 'acked' || r.status === 'resolved' ? r.status : 'snoozed';
+    out[r.incident_key] = {
+      status,
+      snoozeUntil: r.snooze_until,
+      resolutionNote: r.resolution_note,
+      updatedBy: r.updated_by,
+      updatedAt: r.updated_at,
+    };
+  }
+  return out;
+}
+
 export async function getAlertAckMap(
   chatIds: string[],
 ): Promise<Record<string, AlertAck>> {
@@ -655,4 +763,53 @@ export async function getAlertTicketMap(
     };
   }
   return out;
+}
+
+// Part-7 fix: alert_ticket rows written with chat_id = NULL (chat creation failed upstream, but
+// the finding still needs to surface) are invisible to getAlertTicketMap (it filters by chat_id
+// IN (...)). This reads those chat-less rows directly, keyed by their own incident_key — there is
+// no chat to join through. Additive: never touches/affects the chat-backed path above.
+export type ChatlessAlertTicket = AlertTicket & { incidentKey: string };
+
+export async function getChatlessAlertTickets(
+  limit = 50,
+): Promise<ChatlessAlertTicket[]> {
+  if (!isDatabaseAvailable()) return [];
+  const db = await ensureDb();
+  let rows: unknown = [];
+  try {
+    rows = await db.execute(sql`
+      SELECT incident_key, check_type, severity, resource, workspace, detail,
+             first_detected, currently_active
+      FROM ai_chatbot.alert_ticket
+      WHERE chat_id IS NULL
+      ORDER BY first_detected DESC NULLS LAST
+      LIMIT ${limit}
+    `);
+  } catch {
+    // Table may not exist yet, or predates the Part-7 nullable-chat_id migration — degrade to
+    // none, never break the (chat-backed) list.
+    return [];
+  }
+  return (
+    rows as unknown as Array<{
+      incident_key: string;
+      check_type: string | null;
+      severity: string | null;
+      resource: string | null;
+      workspace: string | null;
+      detail: string | null;
+      first_detected: string | null;
+      currently_active: boolean | null;
+    }>
+  ).map((r) => ({
+    incidentKey: r.incident_key,
+    checkType: r.check_type,
+    severity: r.severity,
+    resource: r.resource,
+    workspace: r.workspace,
+    detail: r.detail,
+    firstDetected: r.first_detected,
+    currentlyActive: r.currently_active,
+  }));
 }
