@@ -17,6 +17,9 @@ DEFAULT_CONFIG = {
     "cost": {"idleCuPct": 5},
     "refresh": {"retryStormAttempts": 3, "slowDataPhaseMin": 60, "chronicFailureCount": 3},
     "crossWorkspace": {"minWorkspaces": 3},   # B4: an anti-pattern in >= N workspaces is systemic
+    # tightening.md Part 1a: absolute-cost thresholds for a single operation — pure Log Analytics
+    # fact, independent of any share-of-capacity.
+    "activity": {"slowOperationSeconds": 300, "highCuSeconds": 100},
 }
 
 
