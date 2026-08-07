@@ -12,10 +12,12 @@ prioritises fixes, gives an **optimize-vs-size-up** verdict, and runs the **30% 
 reads + advises + notifies; it never edits/refreshes/scales/deletes.
 
 ## Current state
-- **Build: complete & verified.** All-Python port of the Node reference (`../fabric-audit-agent/`).
-  `python -m pytest -q` → **841 passed, 3 skipped** (skips = optional `mcp` SDK not installed). Audit/eval output is
-  byte-identical to Node; zero Node in the runtime path. Exposes **18 read-only tools** (added the
-  `run_kql`/`query_library` ad-hoc-KQL query firewall on `feat/query-firewall`, 2026-07-08).
+- **Build: complete & verified.** All-Python — the Node reference app has been retired.
+  `python -m pytest -q` → **1766 passed / 55 subtests** as of the Phase-2/3/5 port + integration
+  pass (2026-08-07). Zero Node in the runtime path. Exposes **33 read-only tools** — the original
+  audit/verdict/attribution surface + the resolve-layer (`resolve_term`, `resolve_field`,
+  `field_usage_query`, `workspace_usage_query`, `field_search`, `field_detail`, `artifact_lookup`)
+  + `render_chart`/`create_notification_ticket`/`export_html_report`/`export_xlsx_report`.
 - **Rollout: Phase 1 done · Phase 2 built · Phase 3 (Databricks deploy) in progress** — the read-only
   agent App + MCP app are **deployed and verified end-to-end** on Databricks (see [`docs/DEPLOY-STATUS.md`](docs/DEPLOY-STATUS.md));
   the scheduled Job / Teams surface is still pending.

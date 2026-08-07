@@ -135,7 +135,7 @@ All changes in `adapters/`. Blast radius: `collector_merge.py`, `job.py`'s
       facts + a recorded health event instead of killing the whole run (July 22 finding). The
       failure MUST be surfaced in the run's health output (ties into tightening Part 4), never
       only printed.
-- [ ] 1.7 Reconcile `tools.py` collector assembly vs `job.py`'s `build_collector_from_env` —
+- [x] 1.7 Reconcile `tools.py` collector assembly vs `job.py`'s `build_collector_from_env` —
       the Playground "0 findings / healthy / peakCuPct: null" bug came from tools.py building
       collectors independently so job.py's LA branch never executed on the App path. Make ONE
       shared builder both call. Blast radius: every tool in tools.py that triggers collection,
@@ -156,25 +156,25 @@ untouched (its callers rely on `assert_read_only_kql` semantics — do not chang
 Blast radius: `query/firewall.py` (the P4 firewall for agent-authored KQL calls the guard),
 `tools.py` run_kql path, `agent_server` dispatch of run_kql, all query/ tests.
 
-- [ ] 2.1 Port as named checks: PERF001 (contains→has, WITH the EventText bracket exemption —
+- [x] 2.1 Port as named checks: PERF001 (contains→has, WITH the EventText bracket exemption —
       operand containing `[` or `]` is exempt), PERF003-style time-filter check via a custom
       `POWER_BI_TABLES = {"PowerBIDatasetsWorkspace"}` set (25a — it is NOT in the plugin's
       HIGH_VOLUME_TABLES), CORRECT001 (`== null` → isnull()), CORRECT007 (hand-authored
       EventText filter detection). Each check: rule id, severity, message, suggestion,
       corrected form where deterministic.
-- [ ] 2.2 Severity contract per 26r: error-severity blocks execution; warnings surface but
+- [x] 2.2 Severity contract per 26r: error-severity blocks execution; warnings surface but
       never block. Wire this into the firewall path that executes agent-authored KQL.
-- [ ] 2.3 Retention check: timespan > 60d on PowerBIDatasetsWorkspace → WARNING (not error)
+- [x] 2.3 Retention check: timespan > 60d on PowerBIDatasetsWorkspace → WARNING (not error)
       with the retention text (25a). Constant `WORKSPACE_RETENTION_DAYS = 60` in one place.
-- [ ] 2.4 Produce a `QueryOutline` dataclass (24h): sourceTable, pipelineSteps, hasTimeFilter,
+- [x] 2.4 Produce a `QueryOutline` dataclass (24h): sourceTable, pipelineSteps, hasTimeFilter,
       hasRowLimit, hasSummarize, hasJoin — returned by the audit entry point so investigation/
       code can stop re-parsing query strings ad hoc.
-- [ ] 2.5 Port the 8 `kql_query_limits` pre-flight checks (24f + Pass-1 detail): no take/
+- [x] 2.5 Port the 8 `kql_query_limits` pre-flight checks (24f + Pass-1 detail): no take/
       summarize=HIGH truncation risk; expected>400k rows=HIGH; no project=MEDIUM; no time
       filter=HIGH timeout; join w/o time filter=HIGH E_RUNAWAY; make-series=LOW; >5 unions=
       MEDIUM; >10 lets=MEDIUM; `set notruncation` w/o take=HIGH. Expose as
       `preflight_limits(kql) -> list[Risk]` used by the collectors and firewall.
-- [ ] 2.6 Port `parseKustoError` fix-suggestion mapping (E_RUNAWAY_QUERY /
+- [x] 2.6 Port `parseKustoError` fix-suggestion mapping (E_RUNAWAY_QUERY /
       E_QUERY_RESULT_SET_TOO_LARGE / timeout / 401-403) into the collector error path so users
       see actionable fixes, not raw Kusto errors.
 
@@ -183,31 +183,31 @@ Blast radius: `query/firewall.py` (the P4 firewall for agent-authored KQL calls 
 All new code under `fabric_audit_agent/resolve/`. Nothing existing changes until 3.8.
 Data dependency: Phase 0.2 extraction complete.
 
-- [ ] 3.1 `text_normalize.py`: ONE `normalize_for_matching()` — lowercase → non-alphanumeric
+- [x] 3.1 `text_normalize.py`: ONE `normalize_for_matching()` — lowercase → non-alphanumeric
       runs → single space → trim (25c). Property test: idempotent, matches the TS behavior on
       the documented examples ("Z.Sales" == "z sales" == "Z-SALES").
-- [ ] 3.2 `routing_table.py`: all 15 entries transcribed from routing-table.ts including
+- [x] 3.2 `routing_table.py`: all 15 entries transcribed from routing-table.ts including
       `catalogModelName`, `connectionPath` (8 entries — 26b), `confidence`, per-variant
       `verified`/`matchMode`/`ambiguousWith`, `TABLE_VERSION="2.1.0"`, `LAST_REVIEWED`.
       LOW entries (CMMS, OEE Monthly Reports) stay in the file but are excluded from the
       match index AND from the known-models message (26a).
-- [ ] 3.3 `term_resolver.py`: two-pass (exact; then whole-word containment excluding
+- [x] 3.3 `term_resolver.py`: two-pass (exact; then whole-word containment excluding
       matchMode="exact" variants), curated ambiguity first (DTC↔Ecomm), generic collision
       safety net with distinguishable reason text, connectionPath included in resolved result
       (26q). Port the invariant tests from term-resolver.test.ts: no duplicate normalized
       variants per entry, no uncurated cross-entry collisions, every ambiguousWith target real.
-- [ ] 3.4 `field_aliases.py`: ALIAS_MAP (35 entries per 25c) + trailing-s strip (>3 chars,
+- [x] 3.4 `field_aliases.py`: ALIAS_MAP (35 entries per 25c) + trailing-s strip (>3 chars,
       not `ss`).
-- [ ] 3.5 `schema_link.py`: token index from catalog search-index.json with all 4 guardrails
+- [x] 3.5 `schema_link.py`: token index from catalog search-index.json with all 4 guardrails
       (26c): single-token ≥4 chars, multi-token AND-intersection, 500 ceiling, alias variants
       tried first.
-- [ ] 3.6 `field_resolver.py`: 4 passes (exact → alias → schema-link → containment),
+- [x] 3.6 `field_resolver.py`: 4 passes (exact → alias → schema-link → containment),
       disambiguation order (model_hint→HIGH, sole-measure→MEDIUM, else ambiguous +
       combinedKqlFilter from FULL candidate list), HR special case (routing entry exists, no
       field schema → no_match with a redirect message to HR enrichment), DTC special case
       (catalog only, not newell-schema.json) (25f). `AuthoritativeFilter` as a Python wrapper
       class — the usage builder REJECTS plain strings (branded-type pattern, runtime-enforced).
-- [ ] 3.7 `usage_query_builder.py`: SAFE_USAGE_COLUMNS (25d — NO DatasetName), escape `\`
+- [x] 3.7 `usage_query_builder.py`: SAFE_USAGE_COLUMNS (25d — NO DatasetName), escape `\`
       then `"` in that order, provenance per clause + `format_provenance()` (26t), retention
       warn-never-clamp, compare-periods doubles the window and gates on the doubled span (26i),
       single-window always includes DistinctUsers + LastUsed, title newline-stripping
@@ -215,7 +215,7 @@ Data dependency: Phase 0.2 extraction complete.
       degraded-mode on any missing file (never crash startup). `artifact_lookup.py`: 3-way
       lookup, first-encountered dedup with logged conflicts, exactly-one-param guard.
       resolveFieldUsage returns 5 statuses incl. invalid_request (26s).
-- [ ] 3.8 Register new tools in `tools.py` AND in the agent's direct toolset (whichever path
+- [x] 3.8 Register new tools in `tools.py` AND in the agent's direct toolset (whichever path
       agent_server actually serves — check how render_chart was registered in chart_tool.py
       and follow the same dual-registration pattern): `resolve_term`, `resolve_field`,
       `field_usage_query`, `workspace_usage_query`, `field_search`, `field_detail`,
@@ -223,11 +223,11 @@ Data dependency: Phase 0.2 extraction complete.
       "you never see, write, edit, or verify the EventText filter yourself", the xmSQL
       never-search rule (24e), and the kql_execute-style display rules where results include
       ExecutingUser.
-- [ ] 3.9 System prompt additions (`agent_server/system_prompt.py`): tool-sequencing rules
+- [x] 3.9 System prompt additions (`agent_server/system_prompt.py`): tool-sequencing rules
       (resolve term FIRST on informal names; never hand-author EventText filters with the
       wrong-pattern examples; xmSQL rule; identity display rule). Keep prompt single-sourced
       per ADR-001 — do NOT add a copy in the MCP package.
-- [ ] 3.10 Loop hooks (24b — THREE, not one) in BOTH `agent_server/agent.py` (async) and
+- [x] 3.10 Loop hooks (24b — THREE, not one) in BOTH `agent_server/agent.py` (async) and
       `agent_server/loop.py` (sync twin — they must stay structurally in sync, this is an
       explicit repo invariant): (a) after run_kql-style execution, auto-analysis nudge;
       (b) after execution with ExecutingUser column, identity normalization applied at the
@@ -241,27 +241,27 @@ Data dependency: Phase 0.2 extraction complete.
 Blast radius: `forecast.py`, `anomaly.py`, `automation/trend.py`, `investigation/*`,
 `detectors/*`, `investigation/gates.py`, `config.py`, digest + tier2 consumers.
 
-- [ ] 4.1 Trend discipline: n≥6 minimum, OLS with R², R²<0.3 caveated, ±15% direction bands.
-- [ ] 4.2 Spike detection: median+4×MAD (MAD=0 → 3×median fallback, value>10 floor), z-band
+- [x] 4.1 Trend discipline: n≥6 minimum, OLS with R², R²<0.3 caveated, ±15% direction bands.
+- [x] 4.2 Spike detection: median+4×MAD (MAD=0 → 3×median fallback, value>10 floor), z-band
       severity (≥3σ or ≥100% severe; ≥2σ moderate).
-- [ ] 4.3 Minimum-volume floor: suppress %-change when prior <10 (26 analysis.ts + period-delta.sh).
-- [ ] 4.4 Same-hour/day-of-week baseline comparison in anomaly.py (Part 21 ADOPT METHOD).
+- [x] 4.3 Minimum-volume floor: suppress %-change when prior <10 (26 analysis.ts + period-delta.sh).
+- [x] 4.4 Same-hour/day-of-week baseline comparison in anomaly.py (Part 21 ADOPT METHOD).
 - [ ] 4.5 Concentration threshold cross-check: our 30%/40% vs plugin's externally-validated
       60% top-1 — after the metric() formula fix lands, re-evaluate and either raise or
       document why ours differs. Route BOTH concentration detectors through the shared
       `concentration_gate()` (FIX 2) and exclude system item kinds (N5/N6 —
       `detectors/system_item_kinds.py` exists; verify both detectors actually use it).
-- [ ] 4.6 Unify the ≥3 independent 30% threshold definitions (N8) into config.py constants;
+- [x] 4.6 Unify the ≥3 independent 30% threshold definitions (N8) into config.py constants;
       document `DOMINANT_ITEM_SHARE_PCT=40` (N9) where it governs verdict logic.
-- [ ] 4.7 N7: `attribution_rollup.py` — stop hardcoding `attributionMode="cost"` when the
+- [x] 4.7 N7: `attribution_rollup.py` — stop hardcoding `attributionMode="cost"` when the
       underlying number is DurationMs not CpuTimeMs.
-- [ ] 4.8 Verify `kb/metric_definitions.py` is exported/wired (known dead-KB gap) and add the
+- [x] 4.8 Verify `kb/metric_definitions.py` is exported/wired (known dead-KB gap) and add the
       verified formulas as grounding constants: CU% = TimepointCU_s/(base×30); burndown
       recursion Cumulative[T]=Cumulative[T-1]+Add[T-1]+Burndown[T-1] (negative, one-window
       lag); expected_burndown_minutes = Cumulative%/200; threshold fields are boolean flags.
-- [ ] 4.9 Math-consistency check (B4 in GAPS file): any inline arithmetic in agent responses
+- [x] 4.9 Math-consistency check (B4 in GAPS file): any inline arithmetic in agent responses
       verified against tool numbers before final answer (the 17%-computed-as-0.5% bug).
-- [ ] 4.10 Burndown auto-trigger: >100% findings automatically invoke the burndown chain.
+- [x] 4.10 Burndown auto-trigger: >100% findings automatically invoke the burndown chain.
 - [ ] 4.11 SKU mismatch (HIGHEST RISK open item): add a startup/collection cross-check that
       the base CU value used by the agent matches the SKU reported by the capacity API; on
       mismatch, flag loudly in every percentage output rather than silently computing.
@@ -272,8 +272,8 @@ Design principle: the plugin wrote local files to ~/Downloads on a desktop. Our 
 hosted multi-user Databricks app — the SAME capabilities become server-generated downloadable
 artifacts + an in-chat viewer. Nothing writes to a user's local disk.
 
-- [ ] 5.1 `export/html_utils.py` — port esc() (5-char HTML escape) and file_timestamp().
-- [ ] 5.2 `export/html_report.py` — reverse-engineered from html-visualizer.ts (722 lines,
+- [x] 5.1 `export/html_utils.py` — port esc() (5-char HTML escape) and file_timestamp().
+- [x] 5.2 `export/html_report.py` — reverse-engineered from html-visualizer.ts (722 lines,
       fully read): self-contained Newell-branded HTML string builder. Port EXACTLY: the
       column classifier (datetime+numeric→line ≤5 series; categorical+numeric→vertical bar
       ≤20 uniques else horizontal, ≤4 value cols; else table-only), the brand tokens
@@ -282,7 +282,7 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
       CDN chart, sticky-header table capped at 2,000 rows, timestamp footer), ExecutingUser
       normalization on every displayed cell, esc() on ALL interpolated values. Returns HTML
       text — the caller decides where it goes.
-- [ ] 5.3 `export/xlsx_report.py` — reverse-engineered from visualizer.ts. The TS version
+- [x] 5.3 `export/xlsx_report.py` — reverse-engineered from visualizer.ts. The TS version
       hand-builds OOXML chart XML via adm-zip ONLY because SheetJS can't embed charts. In
       Python, openpyxl has native chart support — the entire OOXML injection machinery
       collapses to `openpyxl.chart.LineChart/BarChart` + typed cells. Port the CONTRACT, not
@@ -293,7 +293,7 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
       categorical+numeric→BarChart, ≥3 numeric cols→column variant; else no chart),
       empty-rowset guard (no chart on 0 rows), ExecutingUser normalization in the export
       column, non-fatal chart failure (data table still valid).
-- [ ] 5.4 `agent_server/export_tool.py` — two direct tools `export_html_report` and
+- [x] 5.4 `agent_server/export_tool.py` — two direct tools `export_html_report` and
       `export_xlsx_report`, following chart_tool.py's exact pattern (pure validate + handler,
       dual registration, tolerant point/row coercion). Input: columns+rows from a prior tool
       result (NEVER re-execute — 26p: reuse data already in context; put that rule in the
@@ -338,19 +338,19 @@ artifacts + an in-chat viewer. Nothing writes to a user's local disk.
       into kb/metric_definitions.py. Section 12.9 loose thread ("SKU CU by timepoint
       basecore" two hypotheses) remains OPEN — do not guess; the SKU cross-check in 4.11
       covers the operational risk meanwhile.
-- [ ] 6.5 N1 reminder: WM eventDepth withholding is DELIBERATE (prevents mock events being
+- [x] 6.5 N1 reminder: WM eventDepth withholding is DELIBERATE (prevents mock events being
       mislabeled as real perQuery data) — a "fix" that reinstates it reintroduces that bug.
       Leave unless the underlying mock-labeling issue is solved first.
-- [ ] 6.6 N15: verify whether tool-loop duplication between `agent/tools_anthropic.py` /
+- [x] 6.6 N15: verify whether tool-loop duplication between `agent/tools_anthropic.py` /
       `agent_server/agent.py` / `agent_server/loop.py` still exists beyond the sanctioned
       sync/async twin pair; consolidate anything OUTSIDE that pair.
-- [ ] 6.7 D4: the dead Node.js reference app — delete after this plan's build completes;
+- [x] 6.7 D4: the dead Node.js reference app — delete after this plan's build completes;
       fix README stale claims (byte-identical-to-Node, test count 246 vs 841) NOW since
       they're documentation lies regardless of the deletion timing.
 
 ## PHASE 7 — Final verification loop
 
-- [ ] 7.1 Full test suite green vs the Phase-0 baseline; new modules each have tests
+- [x] 7.1 Full test suite green vs the Phase-0 baseline; new modules each have tests
       including the ported invariant tests (term resolver table invariants, builder
       provenance completeness, filter-brand rejection of plain strings, guard severity gate).
 - [ ] 7.2 Live checks against the deployed app: the five standing questions (capacity health;

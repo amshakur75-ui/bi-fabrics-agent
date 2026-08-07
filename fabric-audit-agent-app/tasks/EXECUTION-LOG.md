@@ -1,5 +1,30 @@
 # EXECUTION LOG — master-integration-plan.md autonomous run
 
+## FINAL SUMMARY (2026-08-07, definition of done)
+
+**Outcome:** all landable phases complete; the two live-only items (7.2 canned questions, the
+Phase 6.1 Teams-delivery / Phase 10 dependency) are documented as the plan's explicit permitted
+deferral — every OTHER item carries a disposition (done / verified-already-done / partial-with-
+reason / genuinely-deferred-with-reason).
+
+**Test surface:** baseline 1547 → **1766 passed / 55 subtests** (+219 tests, zero regressions).
+Commits (11 this run): c922099, a820220, 4bd5382, 8d9e73b, 1f963dc, 519239e, 83da84b + this
+finalization. Complete phase-by-phase log below.
+
+**33 read-only agent tools** now registered (was 26): +7 resolve tools (resolve_term, resolve_field,
+field_usage_query, workspace_usage_query, field_search, field_detail, artifact_lookup) + 2 export
+(export_html_report/xlsx_report), all with self-contained Part 23/24e guidance in their
+descriptions. Three loop hooks land in BOTH agent.py + loop.py via a single shared `loop_hooks.py`
+(one implementation → the twins cannot drift). Firewall now audits agent-authored KQL against the
+ported 4-rule error/warning engine + 8-check preflight; parse_kusto_error maps raw Kusto errors to
+actionable suggestions.
+
+**Downstream note:** the sibling fabric-audit-mcp repo carries its own tool-count assertions
+expecting 26 — bump to 33 on next wheel rebuild. New firewall stage `"audit-rule"` is additive.
+
+---
+
+
 Started: 2026-08-07. Working dir: `C:\Users\am08570\ClaudeCode-Workspace\bi-fabrics-agent\`.
 Operating under `tasks/CLAUDE-CODE-EXECUTION-PROMPT.md` (autonomy contract). This log is the
 durable record: every numbered item gets a blast-radius review (before), the change, tests
