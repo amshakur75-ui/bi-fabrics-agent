@@ -127,7 +127,7 @@ def test_resolve_pg_user_prefers_execution_identity_over_hardcoded_override():
     FABRIC_LAKEBASE_USER — Postgres token auth requires the connecting user to match whoever
     actually generated the token, which is always the execution identity, never a stray env var
     (this was Part 7's root cause: a hardcoded human email out-precedenced the real job identity)."""
-    env = {"FABRIC_LAKEBASE_USER": "abdishakur.mohamed@newellco.com",
+    env = {"FABRIC_LAKEBASE_USER": "svc-user@example.com",
            "DATABRICKS_CLIENT_ID": "sp-1234-execution-identity"}
     assert _resolve_pg_user(env) == "sp-1234-execution-identity"
 

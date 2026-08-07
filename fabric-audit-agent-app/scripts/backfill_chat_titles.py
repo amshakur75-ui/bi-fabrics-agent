@@ -36,7 +36,7 @@ from fabric_audit_agent.automation.sweep_delivery import short_title  # noqa: E4
 _ENDPOINT = "projects/fabrics-audit-agent-memory/branches/production/endpoints/primary"
 _HOST = os.environ.get("FABRIC_LAKEBASE_HOST",
                        "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net")
-_USER = os.environ.get("FABRIC_LAKEBASE_USER", "abdishakur.mohamed@newellco.com")
+_USER = os.environ.get("FABRIC_LAKEBASE_USER", "")
 _PROFILE = os.environ.get("DATABRICKS_CONFIG_PROFILE", "fabric-test")
 _SYSTEM_USER = "fabric-audit-agent"   # owner of alert chats (SYSTEM_USER_ID in chat_store_lakebase)
 _LONG = 55                             # a title longer than this is too long to glance in the sidebar

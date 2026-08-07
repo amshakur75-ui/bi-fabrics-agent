@@ -143,3 +143,9 @@ def test_new_xmla_types_are_not_info():
         s = sev(t)
         assert s["level"] == "Warning", t
         assert s["reason"] != "unclassified", t
+
+
+def test_refresh_slow_phase_is_warning_not_info():
+    s = sev("refresh.slow-phase", phase="Data", minutes=45.2)
+    assert s["level"] == "Warning"
+    assert s["reason"] != "unclassified"

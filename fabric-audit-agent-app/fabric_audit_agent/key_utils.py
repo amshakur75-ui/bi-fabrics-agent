@@ -13,10 +13,10 @@ def _user_local(s):
     """Normalise a user handle for matching: lower-cased, domain stripped.
 
     Log Analytics / Workspace Monitoring store ``ExecutingUser`` as a full UPN
-    (``kory.johnson@newellco.com``), but the agent (and users) naturally refer to people by the
-    short display name it prints in tables (``Kory.Johnson``). An exact-string match on the full
+    (``jane.doe@example.com``), but the agent (and users) naturally refer to people by the
+    short display name it prints in tables (``Jane.Doe``). An exact-string match on the full
     email therefore returns ``found: false`` for people who ARE in the data. Reducing both sides to
-    the local part (before ``@``) lets ``Kory.Johnson`` match ``kory.johnson@newellco.com`` while
+    the local part (before ``@``) lets ``Jane.Doe`` match ``jane.doe@example.com`` while
     still distinguishing genuinely different people."""
     s = (s or "").strip().lower()
     return s.split("@", 1)[0] if "@" in s else s

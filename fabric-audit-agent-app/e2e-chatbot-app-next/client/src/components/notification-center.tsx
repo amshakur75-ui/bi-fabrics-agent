@@ -58,6 +58,9 @@ const ACTIONABLE = new Set([
   'pattern', // cross-workspace systemic patterns (B4)
   'sweep', // generic fallback
   'manual', // user-flagged tickets created from a chat conversation
+  'activity', // activity.slow-operation / activity.recurring-shape / activity.long-running-cluster
+  'query', // query.mdx-crossjoin / query.dax-antipattern
+  'xmla', // xmla.* findings
 ]);
 
 async function post(path: string, body?: unknown) {

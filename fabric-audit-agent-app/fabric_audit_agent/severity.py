@@ -118,6 +118,8 @@ def score_severity(flag, config=None):
         return {"level": "Warning", "reason": f"refresh retried {e.get('attempts')} times"}
     if t == "refresh.failing":
         return {"level": "Warning", "reason": f"refresh failed with {e.get('errorCode')}"}
+    if t == "refresh.slow-phase":
+        return {"level": "Warning", "reason": f"Data phase took {e.get('minutes')} minutes — a slow refresh phase"}
 
     if t == "xmla.auth":
         return {"level": "Warning", "reason": "XMLA endpoint authentication/token failure"}

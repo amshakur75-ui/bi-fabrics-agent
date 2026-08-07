@@ -65,4 +65,14 @@ REFRESH_PLAYBOOKS = {
         ],
         "owner": "Power BI team",
     },
+    "refresh.slow-phase": {
+        "rootCause": "The Data phase of the refresh ran unusually long, slowing the overall "
+                     "refresh and consuming extra capacity.",
+        "fixes": [
+            "Optimize the source query/partitioning feeding this phase (indexes, filters, folding).",
+            "Enable incremental refresh so each run processes less data in the Data phase.",
+            "Check for source-side contention or throttling during the refresh window.",
+        ],
+        "owner": "Power BI team",
+    },
 }

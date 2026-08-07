@@ -56,7 +56,7 @@ def _kql(window, user, item, cap, operations=None, order="cost", exclude_prefixe
     ]
     if user:
         # Match a full UPN exactly OR a short display name against the local part
-        # (bryant.carlson -> bryant.carlson@newellco.com), so a scoped pull never misses a user
+        # (jsmith -> jsmith@example.com), so a scoped pull never misses a user
         # just because the caller passed the short name the UI shows. =~ is case-insensitive.
         u = escape_string(user)
         lines.append('| where _euser =~ "{0}" or _euser startswith "{0}@"'.format(u))

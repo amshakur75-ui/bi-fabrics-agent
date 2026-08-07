@@ -2,7 +2,7 @@
 
 **Purpose:** A single searchable catalog of every doc, portal, and repo the Fabric
 Audit Agent depends on or that its permission asks reference. Use this when preparing
-for stakeholder conversations (Sowmya, Daniel, IAM approvers), or when researching a
+for stakeholder conversations (the IAM approvers / capacity admins), or when researching a
 specific concept.
 
 Organized by topic. Where possible, links point to Microsoft's official docs, GitHub
