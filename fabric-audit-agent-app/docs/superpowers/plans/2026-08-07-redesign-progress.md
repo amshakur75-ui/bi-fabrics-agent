@@ -11,8 +11,11 @@ Durable resume point for the 6-sub-plan program. Spec: `docs/superpowers/specs/2
 - [x] **FIX 0** — `detectors/capacity.py::_capacity_refreshes` falls back to top-level `facts["refreshes"]` on the merge path → optimize verdict reachable. `944926c`.
 - [x] **FIX 3** — `accountability.AUTO_RESOLVING_TYPES` (throttle/pressure/overage) excluded from "no-resolution"/SLA-breach language. `944926c`.
 
-## Sub-plan 2 — Bad-activity taxonomy detectors (NOT STARTED)
-refresh sub-causes; MDX shape/fact-FILTER/high-SE anti-patterns; XMLA Category-3 + "session moved" suppression; long-running-cluster + per-user baseline detector; multi-visual suppression.
+## Sub-plan 2 — Bad-activity taxonomy detectors (DONE — suite 1852)
+- [x] **2a** refresh sub-causes (credential/gateway/timeout/concurrency/constraint; silent-success skipped=no rows/bytes field). `847247c`
+- [x] **2b** query anti-patterns incl. flagship MDX Hierarchize/CrossJoin shape + DAX via analyze_dax; fact/dim + SE-count skipped (no data). `7ef4ce5`
+- [x] **2c** XMLA/connection error classifier + detector (uses EventText/queryText) + "session moved" suppression. `c557918`
+- [x] **2d** long-running-cluster detector (wired); per-user baseline helper built-but-DEFERRED (no per-user history store); multi-visual suppression in query_shape (all-fast recurring shapes suppressed). `fb1fa01`
 
 ## Sub-plan 3 — Daily-summary + card/notification redesign (NOT STARTED)
 Part-7 chat_id swallow bug FIRST; daily-summary taxonomy rebuild + top-10 users + refresh section + no-CU-fallback; card separate capacity/attribution facts + When/first-noticed; investigation pivot.
