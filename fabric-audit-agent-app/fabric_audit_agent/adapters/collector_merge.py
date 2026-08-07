@@ -28,7 +28,12 @@ def merge_facts_list(facts_list):
     capacity, items = {}, {}
     # "refreshes" (B3) was previously missing — a standalone refresh collector's facts would be
     # silently dropped on merge. Included so refresh flags survive a multi-source collect.
-    extra = {"models": [], "reports": [], "pipelines": [], "users": [], "refreshes": []}
+    # "events" (TASK 1-WIRE, 2026-08-07): raw per-operation events from an events collector
+    # (adapters/collector_events_la.py, wired via job._build_events_collector) — concatenated the
+    # same way as the other list domains so detectors/absolute_cost.py + detectors/query_shape.py
+    # see facts["events"] in the merged sweep. Absent when no source contributes any (dropped below
+    # by the same `if rows:` guard as every other extra key), matching the fail-open contract.
+    extra = {"models": [], "reports": [], "pipelines": [], "users": [], "refreshes": [], "events": []}
     # Track the earliest collectedAt across sources — the merged result is only
     # as fresh as the OLDEST contributing source.
     collected_at = None

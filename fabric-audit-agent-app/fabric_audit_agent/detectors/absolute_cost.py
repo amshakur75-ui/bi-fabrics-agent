@@ -11,13 +11,13 @@ Contract: reads ``facts["events"]``, a list of normalize_event-shaped dicts (see
 ``investigation/events.py``: ``user``, ``item``, ``operation``, ``durationMs``, ``cuSeconds``,
 ``queryText``, ...). One flag per qualifying operation.
 
-NOTE (traced 2026-08-07): as of this writing, nothing in ``pipeline.py`` /
-``adapters/collector_merge.py`` populates ``facts["events"]`` -- the collectors that produce
-normalized events (``adapters/collector_events_la.py``, via ``investigation/events.normalize_event``)
-feed the MCP query tools (``tools.py``: ``spike_events`` / ``raw_events``) on demand, not the
-``facts`` dict that ``detect_all`` iterates. Until a caller wires raw events onto
-``facts["events"]``, this detector is correctly implemented but will not fire in the production
-pipeline. See the report for this task.
+WIRED (TASK 1-WIRE, 2026-08-07): ``job.build_collector_from_env`` now attaches a bounded
+(``job._EVENTS_CAP`` = 5000, costliest-first) list of normalized events onto ``facts["events"]``
+via ``job._build_events_collector`` (same builder as ``adapters/collector_events_la.py``, which the
+MCP query tools' ``spike_events`` / ``raw_events`` already use), and ``adapters/collector_merge.py``
+folds it across sources. Gated on the same env as the summarized Log Analytics collector
+(``FABRIC_LA_WORKSPACE_ID`` + ``FABRIC_CLIENT_ID``); fails open to ``[]`` on any pull error. See
+``tests/test_events_wiring.py``.
 """
 import math
 

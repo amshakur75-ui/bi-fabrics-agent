@@ -14,10 +14,9 @@ Contract: reads ``facts["events"]``, a list of normalize_event-shaped dicts (see
 ``queryText``, ...) -- the same source ``detectors/absolute_cost.py`` reads, for consistency.
 Events with no usable ``queryText`` are skipped (fingerprint returns ``None`` for them).
 
-NOTE (traced 2026-08-07): as of this writing, nothing in ``pipeline.py`` /
-``adapters/collector_merge.py`` populates ``facts["events"]`` -- same gap ``absolute_cost.py``
-documents. This detector is correctly implemented but will not fire in the production pipeline
-until a caller wires raw events onto ``facts["events"]``. See the report for this task.
+WIRED (TASK 1-WIRE, 2026-08-07): see ``detectors/absolute_cost.py``'s header -- same
+``facts["events"]`` wiring via ``job.build_collector_from_env`` / ``job._build_events_collector`` /
+``adapters/collector_merge.py``, both detectors share the source. See ``tests/test_events_wiring.py``.
 """
 from ..config import DEFAULT_CONFIG
 from ..investigation.query_fingerprint import fingerprint, normalize_shape

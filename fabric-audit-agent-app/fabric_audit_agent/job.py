@@ -224,6 +224,48 @@ def csv_main():
 
 # ---- unified production sweep (CSV now; live sources auto-included once configured) ----
 
+# Bounded cap for the raw events attached onto facts["events"] (TASK 1-WIRE) — keeps the costliest
+# events (order="cost", same default as create_event_collector / tools.py's _EVENT_CAP) so a merged
+# sweep's facts dict never bloats. Matches the row cap the live event-depth MCP tools already use.
+_EVENTS_CAP = 5000
+
+
+def _build_events_collector(env, window=None):
+    """CollectorPort wrapping ``create_event_collector`` — the SAME builder the event-depth MCP
+    tools (``tools.py``) and the 5-min watcher (``watch_run.py``) already use against Log Analytics
+    ``PowerBIDatasetsWorkspace`` — into ``{"events": [...]}`` so ``collector_merge`` folds it onto
+    the top-level ``facts["events"]`` key (TASK 1-WIRE: wires the dormant
+    ``detectors/absolute_cost.py`` + ``detectors/query_shape.py`` into the sweep). No new outward
+    call type; read-only.
+
+    Capped at ``_EVENTS_CAP`` events, costliest-first (``order="cost"``), excluding VertiPaq
+    storage-engine sub-query children (``VertiPaqSE*``) that double-count a parent QueryEnd — same
+    exclusion ``watch_run.py``'s live pull uses.
+
+    FAIL-OPEN at collect time: an auth/query/schema error is logged and yields ``{"events": []}``
+    rather than raising, so a Log Analytics outage never breaks the sweep — the activity detectors
+    already no-op on empty/missing ``facts["events"]``.
+    """
+    tenant = _require(env, "FABRIC_TENANT_ID")
+    client = _require(env, "FABRIC_CLIENT_ID")
+    secret = _require(env, "FABRIC_CLIENT_SECRET")
+    lookback = window if window is not None else env.get("FABRIC_LA_WINDOW", "1d")
+
+    def collect():
+        try:
+            from .adapters.clients import build_log_analytics_query
+            from .adapters.collector_events_la import create_event_collector
+            la_query = build_log_analytics_query(env["FABRIC_LA_WORKSPACE_ID"], tenant, client, secret)
+            cfg = {"window": f"| where TimeGenerated > ago({lookback})", "cap": _EVENTS_CAP,
+                   "order": "cost", "excludePrefixes": ["VertiPaqSE"]}
+            return {"events": create_event_collector(la_query, cfg)["collect"]()}
+        except Exception as exc:
+            print(f"[sweep] events pull failed ({type(exc).__name__}: {exc})")
+            return {"events": []}
+
+    return {"collect": collect}
+
+
 def build_collector_from_env(env, window=None):
     """Compose the collector from whatever is configured — the SAME deployment grows as access lands.
 
@@ -275,6 +317,17 @@ def build_collector_from_env(env, window=None):
         if env.get("FABRIC_LA_WORKSPACE_LABEL"):
             la_cfg["workspace"] = env["FABRIC_LA_WORKSPACE_LABEL"]
         collectors.append(create_log_analytics_collector(la_query, la_cfg))
+
+        # Raw per-operation events (TASK 1-WIRE) — feeds facts["events"] for detectors/absolute_cost.py
+        # + detectors/query_shape.py. Gated on the SAME env as the summarized LA collector just above
+        # (it is the same live source, just a different query shape); construction-time errors (e.g. a
+        # missing secret resolved after the `if` check above) are caught here so one bad source never
+        # blocks the rest of build_collector_from_env — collection-time errors fail open inside
+        # _build_events_collector itself.
+        try:
+            collectors.append(_build_events_collector(env, window))
+        except Exception as exc:
+            print(f"[sweep] events collector skipped ({type(exc).__name__}: {exc})")
 
     # Live capacity CU% / throttle from Real-Time Hub Capacity Overview Events (custom Eventhouse).
     if (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
