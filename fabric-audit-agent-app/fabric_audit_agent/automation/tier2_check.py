@@ -27,6 +27,7 @@ from ..investigation.gates import (
 )
 from .incident import incident_key, severity_of, primary_metric
 from .materiality import classify, is_escalation, load_cfg
+from ..timefmt import to_display
 
 
 def _now_iso():
@@ -43,6 +44,10 @@ def _check_concentration(facts, config=None):
     threshold = None
     if config:
         threshold = float((config.get("capacity") or {}).get("concentrationPct", 30))
+    # Capacity this window (Part 5): carried as a SEPARATE fact alongside the attribution share —
+    # never computed from it. Omitted (not fabricated) when this run's collector had no capacity
+    # reading at all.
+    cap_peak = ((facts or {}).get("capacity") or {}).get("peakCuPct")
     for item in items:
         share = item.get("sharePct")
         if share is None:
@@ -60,7 +65,7 @@ def _check_concentration(facts, config=None):
                     "verify if this is a known batch job" if share >= 50
                     else "Moderate share — may be a large legitimate user run; "
                          "check if this matches a known scheduled job or report")
-            triggers.append({
+            trig = {
                 "check": "concentration",
                 "gate": result,
                 "item": item.get("name"),
@@ -69,7 +74,10 @@ def _check_concentration(facts, config=None):
                 "owner": item.get("owner"),
                 "topUsers": item.get("topUsers"),
                 "normalityHint": hint,
-            })
+            }
+            if cap_peak is not None:
+                trig["capacityPeakCuPct"] = cap_peak
+            triggers.append(trig)
     return triggers
 
 
@@ -131,6 +139,9 @@ def _check_same_item_cross_user(facts, mcfg=None):
     mcfg = mcfg if mcfg is not None else load_cfg()
     min_users = int(mcfg.get("cross_user_min_users", 3))
     share_each = float(mcfg.get("cross_user_share", 15.0))
+    # Capacity this window (Part 5): SEPARATE fact, never derived from the attribution share; omitted
+    # when this run's collector had no capacity reading at all.
+    cap_peak = ((facts or {}).get("capacity") or {}).get("peakCuPct")
     triggers = []
     for it in (facts or {}).get("items") or []:
         try:
@@ -149,14 +160,17 @@ def _check_same_item_cross_user(facts, mcfg=None):
             if ucu / item_cu * 100 >= share_each:
                 qualifying.append(u.get("user"))
         if len(qualifying) >= min_users:
-            triggers.append({
+            trig = {
                 "check": "cross_user", "item": it.get("name"), "workspace": it.get("workspace"),
                 "userCount": len(qualifying), "users": qualifying,
                 "sharePct": round(float(it.get("sharePct") or 0), 1),
                 "normalityHint": (f"{len(qualifying)} users are each driving a large share of this one "
                                   "item — a shared/popular item (e.g. a broadly-used report), not a "
                                   "single-user runaway; look at the item's design, not one person."),
-            })
+            }
+            if cap_peak is not None:
+                trig["capacityPeakCuPct"] = cap_peak
+            triggers.append(trig)
     return triggers
 
 
@@ -421,6 +435,13 @@ def _facts_for(t):
         f = [("Blind runs", t.get("runs"))]
     if (t.get("recurrence") or {}).get("isRecurring"):
         f.append(("Recurrence", "recurring (matches prior findings)"))
+    # Capacity + attribution are SEPARATE facts (Part 5): for attribution checks, when this window's
+    # true CU% is available, surface it as its OWN fact — never computed FROM the attribution share
+    # above. Omitted (not fabricated) when the trigger carries no capacity reading.
+    if check in ("concentration", "cross_user"):
+        cap_peak = t.get("capacityPeakCuPct")
+        if cap_peak is not None:
+            f.append(("Capacity this window", f"{cap_peak}% (no throttle)"))
     return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
 
 
@@ -452,7 +473,12 @@ def _investigate_query(t, *, prefix=None, when=None):
     if when:
         anchor = (f" This alert fired around {when} — investigate the capacity and activity IN THAT "
                   "TIME WINDOW as your primary anchor (use it as a direction, ±30 min), not the current "
-                  "moment; the live 'now' may look clean because the event has already passed.")
+                  "moment; the live 'now' may look clean because the event has already passed. If that "
+                  "±30-min window does NOT corroborate the named user/finding (they don't appear among "
+                  "the top actors there, or their activity is trivial), do NOT just widen the same "
+                  "window — PIVOT: search the named user's own activity broadly (last 7-30 days) to "
+                  "find when THEY were actually most active/anomalous, and investigate THAT time "
+                  "instead.")
     return (f"{lead}Investigate this {check} alert and give me the root cause. {_title_for(t)}.{anchor} "
             "Pull the recent capacity + activity, identify the top consumers and any expensive "
             "operations or refresh contention driving it, and tell me what's causing it and what "
@@ -513,8 +539,16 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         # Concentration/attribution alerts rank a CPU-time PROXY, not true CU — the card must say so.
         disclosure = (PROXY_RANKING_DISCLOSURE
                       if trigger.get("check") in ("concentration", "cross_user") else None)
+        # "When / first noticed" (Part 5): sourced from the incident row's firstAlertedAt, falling
+        # back to runAt when the row has no first-alerted timestamp yet. Uses the repo's canonical
+        # display-time helper (never hand-rolled tz math); falls back to the raw ISO string if the
+        # timestamp doesn't parse.
+        facts = list(_facts_for(trigger))
+        when_raw = row.get("firstAlertedAt") or row.get("runAt")
+        if when_raw:
+            facts.append(("When", to_display(when_raw) or when_raw))
         card = build_card(kind, title=_title_for(trigger), severity=row.get("severity", "info"),
-                          facts=_facts_for(trigger), summary=summary, chat_url=chat_url,
+                          facts=facts, summary=summary, chat_url=chat_url,
                           disclosure=disclosure)
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
         return bool(res.get("delivered"))

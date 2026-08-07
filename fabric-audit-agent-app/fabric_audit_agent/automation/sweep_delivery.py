@@ -66,7 +66,12 @@ def _investigate_query(what, when=None):
     if when:
         anchor = (f" This was detected around {when} — investigate the capacity and activity IN THAT "
                   "TIME WINDOW as your primary anchor (use it as a direction, ±30 min), not the current "
-                  "moment; the live 'now' may look clean because the event has already passed.")
+                  "moment; the live 'now' may look clean because the event has already passed. If that "
+                  "±30-min window does NOT corroborate the named user/finding (they don't appear among "
+                  "the top actors there, or their activity is trivial), do NOT just widen the same "
+                  "window — PIVOT: search the named user's own activity broadly (last 7-30 days) to "
+                  "find when THEY were actually most active/anomalous, and investigate THAT time "
+                  "instead.")
     return (f"Investigate this finding and give me the root cause and the specific fix: {what}.{anchor} "
             "Pull the recent capacity + activity and name what's driving it. Distinguish true CU% "
             "(ground truth) from the monitored-activity proxy — do not present the proxy as capacity "

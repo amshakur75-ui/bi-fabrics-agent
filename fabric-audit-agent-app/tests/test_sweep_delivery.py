@@ -146,6 +146,9 @@ def test_investigate_query_anchors_to_the_fire_time():
                          chat_writer=lambda m, t: "c9", now_iso="2026-08-06T03:17:00Z")
     blob = urllib.parse.unquote(json.dumps(posts[0]))
     assert "2026-08-06T03:17:00Z" in blob and "TIME WINDOW" in blob
+    # Part 6: an empty ±30-min window must not just be widened — it pivots to the named user's own
+    # broad history.
+    assert "PIVOT" in blob and "7-30 days" in blob
 
 
 def test_dedups_against_already_active_incidents():

@@ -1,9 +1,13 @@
 """Tier-2 alert orchestration — the dedup/48h/escalate/resolve state machine (injected fakes)."""
 from datetime import datetime, timezone, timedelta
 
-from fabric_audit_agent.automation.tier2_check import process_alerts
+from fabric_audit_agent.automation.tier2_check import (
+    process_alerts, _facts_for, _check_concentration, _check_same_item_cross_user,
+    _investigate_query,
+)
 from fabric_audit_agent.automation.materiality import load_cfg
 from fabric_audit_agent.context_alerts import create_alerts_store_memory
+from fabric_audit_agent.timefmt import to_display
 
 T0 = datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -419,3 +423,85 @@ def test_hysteresis_resets_when_the_signal_lapses():
     a = process_alerts([xu], now_dt=T0 + timedelta(minutes=15), **kw)
     assert a["pending"] == [key] and store["query_active"]() == {} and posts == []
     assert store["query_pending"]()[key]["presenceCount"] == 1
+
+
+# ---- Part 5/15: cards carry capacity + attribution as SEPARATE facts, and a "When" timestamp ----
+
+def test_throttle_card_carries_when_fact_from_first_alerted_at():
+    """Every alert card (here a throttle, a _TEAMS_CHECKS type so it actually posts) gets a "When"
+    fact sourced from the incident row's firstAlertedAt, run through the canonical display-time
+    helper — never a hand-rolled tz string."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    w, _ = _writer()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink}, reasoner=r, chat_writer=w,
+              app_url="https://app")
+    thr = {"check": "throttle", "throttleMinutes": 8, "peakCuPct": 132}
+
+    process_alerts([thr], now_dt=T0, **kw)
+    facts = {f["title"]: f["value"] for f in _card(posts)["body"][1]["facts"]}
+    assert "When" in facts
+    first_alerted = store["query_active"]()["throttle::capacity"]["firstAlertedAt"]
+    assert facts["When"] == (to_display(first_alerted) or first_alerted)
+
+
+def test_facts_for_attribution_includes_separate_capacity_fact_not_derived_from_share():
+    """Part 5: for attribution checks (concentration / cross_user), when this window's true CU% was
+    collected, ``_facts_for`` surfaces it as its OWN fact — distinct from (never computed from) the
+    attribution share fact."""
+    concentration_triggers = _check_concentration(
+        {"items": [{"name": "DTC", "workspace": "Ent", "sharePct": 46, "owner": "Alice"}],
+         "capacity": {"peakCuPct": 87.3}})
+    assert len(concentration_triggers) == 1
+    trig = concentration_triggers[0]
+    assert trig["capacityPeakCuPct"] == 87.3
+
+    facts = dict(_facts_for(trig))
+    assert facts["Share"] == "46.0%"                          # attribution fact, unchanged
+    assert facts["Capacity this window"] == "87.3% (no throttle)"  # separate fact
+    # never derived FROM the attribution share
+    assert facts["Capacity this window"] != facts["Share"]
+
+    cross_user_triggers = _check_same_item_cross_user(
+        {"items": [{"name": "Sales", "workspace": "Fin", "cuSeconds": 100, "sharePct": 30,
+                    "topUsers": [{"user": "a", "cuSeconds": 20}, {"user": "b", "cuSeconds": 20},
+                                 {"user": "c", "cuSeconds": 20}]}],
+         "capacity": {"peakCuPct": 55.0}})
+    assert len(cross_user_triggers) == 1
+    xu = cross_user_triggers[0]
+    xu_facts = dict(_facts_for(xu))
+    assert xu_facts["Item share"] == "30.0%"
+    assert xu_facts["Capacity this window"] == "55.0% (no throttle)"
+
+
+def test_facts_for_attribution_omits_capacity_fact_when_unavailable():
+    """When the run's collector had no capacity reading at all, the capacity fact is OMITTED, not
+    fabricated as 0% or None."""
+    triggers = _check_concentration(
+        {"items": [{"name": "DTC", "workspace": "Ent", "sharePct": 46}]})  # no "capacity" key at all
+    assert "capacityPeakCuPct" not in triggers[0]
+    facts = dict(_facts_for(triggers[0]))
+    assert "Capacity this window" not in facts
+
+
+# ---- Part 6: investigation pivot when the anchored window is empty ----
+
+def test_investigate_query_includes_pivot_fallback_when_anchored():
+    """When the deep-link prompt anchors to a fire time, it must also carry the PIVOT fallback: if
+    the ±30-min window doesn't corroborate the named user/finding, search their own broad history
+    instead of just widening the same window."""
+    trig = {"check": "throttle", "throttleMinutes": 8, "peakCuPct": 132}
+    q = _investigate_query(trig, when="2026-08-06T03:17:00Z")
+    assert "±30 min" in q
+    assert "PIVOT" in q
+    assert "7-30 days" in q
+    assert "do NOT just widen the same" in q
+
+
+def test_investigate_query_no_pivot_text_without_a_fire_time():
+    """No ``when`` -> no anchor at all -> the pivot fallback (which only makes sense relative to the
+    anchor) is correctly absent too."""
+    trig = {"check": "pressure", "peakCuPct": 130}
+    q = _investigate_query(trig)
+    assert "PIVOT" not in q

@@ -185,3 +185,13 @@ def test_sp7_query_provenance_rule_present():
     assert "sp7" in low
     assert "verbatim" in low
     assert "_provenance" in low or "provenance" in low
+
+
+def test_investigation_pivot_rule_present():
+    """Part 6: a durable rule (governs freely-typed investigation questions too, not just the
+    deep-link's own anchored prompt) — if the anchored ±30-min window doesn't corroborate the named
+    user/finding, pivot to searching their own broad history rather than widening the same window."""
+    low = build_system_prompt().lower()
+    assert "pivot" in low
+    assert "7-30 days" in low or "7–30 days" in low
+    assert "does not corroborate" in low or "does not hold up" in low or "didn't hold up" in low
