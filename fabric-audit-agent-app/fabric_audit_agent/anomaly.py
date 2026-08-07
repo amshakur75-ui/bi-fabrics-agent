@@ -1,5 +1,12 @@
-"""Statistical anomaly detection on the peak-CU series. Port of ``core/anomaly.js``. Pure."""
+"""Statistical anomaly detection on the peak-CU series. Port of ``core/anomaly.js``. Pure.
+
+Phase 4.2: each emitted anomaly now carries a ``severity`` grade from the shared
+``stats.spike_severity`` (z≥3 or Δ≥100% → severe; z≥2 → moderate; else mild) and an ``isSpikeMad``
+flag from the outlier-robust ``stats.is_spike`` (median+4×MAD) — added ALONGSIDE the existing
+mean/stddev z-gate so the trigger contract is unchanged and consumers keep working."""
 import math
+
+from . import stats
 
 
 def _is_num(v):
@@ -41,6 +48,8 @@ def detect_anomalies(facts=None, history=None, z=2, min_points=4):
                 "stddev": _r1(stddev),
                 "sigma": sigma,
                 "direction": direction,
+                "severity": stats.spike_severity(current, series),
+                "isSpikeMad": stats.is_spike(current, series),
                 "message": f"Peak CU {_fmt(current)}% is anomalous vs baseline (mean {int(math.floor(mean + 0.5))}%, {_fmt(abs(sigma))}σ {direction}).",
             })
     return anomalies

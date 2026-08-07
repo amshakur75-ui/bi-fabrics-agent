@@ -1,5 +1,15 @@
-"""Forecast the peak-CU trend from the run-metric series. Port of ``core/forecast.js``. Pure."""
+"""Forecast the peak-CU trend from the run-metric series. Port of ``core/forecast.js``. Pure.
+
+Phase 4.1: the OLS slope now comes from the shared ``stats.linear_trend`` (single source of truth
+with anomaly.py / analysis.ts) and the result carries an ``r2`` fit-quality figure plus a
+``weakFit`` flag (R² < 0.3 on a non-flat trend) so a caller can caveat a poorly-fitted trend rather
+than assert direction off any slope. The stricter ≥6-point / ±15%-band classification is available
+via ``stats.trend_direction`` (surfaced here as ``directionStrict``); the legacy slope-threshold
+``trend`` vocabulary is preserved so existing consumers (diagnose.py / forecast_throttle.py /
+pipeline.py) are unaffected."""
 import math
+
+from . import stats
 
 
 def _is_num(v):
@@ -10,36 +20,29 @@ def _fmt(x):
     return str(int(x)) if x == int(x) else str(x)
 
 
-def _slope_of(ys):
-    """Least-squares slope of y over index 0..n-1."""
-    n = len(ys)
-    if n < 2:
-        return 0
-    mx = (n - 1) / 2
-    my = sum(ys) / n
-    num = den = 0.0
-    for i in range(n):
-        num += (i - mx) * (ys[i] - my)
-        den += (i - mx) ** 2
-    return 0 if den == 0 else num / den
-
-
 def forecast_capacity(history=None, ceiling=100, min_points=3):
     history = history or []
     series = [v for v in ((h.get("metrics") or {}).get("peakCuPct") for h in history if isinstance(h, dict)) if _is_num(v)]
     if len(series) < min_points:
         return {"trend": "insufficient-data", "points": len(series)}
 
-    slope = _slope_of(series)
+    fit = stats.linear_trend(series)
+    slope = fit["slope"]
+    r2 = fit["r2"]
     current = series[-1]
     trend = "rising" if slope > 0.5 else ("falling" if slope < -0.5 else "flat")
     runs_to_ceiling = math.ceil((ceiling - current) / slope) if (slope > 0 and current < ceiling) else None
     slope_per_run = math.floor(slope * 10 + 0.5) / 10
+    weak_fit = trend != "flat" and r2 < stats.WEAK_FIT_R2
+    caveat = " (weak fit, treat with caution)" if weak_fit else ""
     if runs_to_ceiling is not None:
-        message = f"At current trend (+{_fmt(slope_per_run)}%/run), peak CU reaches {ceiling}% in ~{runs_to_ceiling} run(s)."
+        message = f"At current trend (+{_fmt(slope_per_run)}%/run), peak CU reaches {ceiling}% in ~{runs_to_ceiling} run(s){caveat}."
     else:
         message = f"Peak CU trend is {trend}; no ceiling breach projected."
-    return {"trend": trend, "points": len(series), "current": current, "slopePerRun": slope_per_run, "runsToCeiling": runs_to_ceiling, "message": message}
+    return {"trend": trend, "points": len(series), "current": current,
+            "slopePerRun": slope_per_run, "runsToCeiling": runs_to_ceiling,
+            "r2": round(r2, 3), "weakFit": weak_fit,
+            "directionStrict": stats.trend_direction(series)["direction"], "message": message}
 
 
 def bucket_monthly_summary(history):

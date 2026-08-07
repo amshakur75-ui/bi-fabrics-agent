@@ -195,7 +195,88 @@ for `importers/capacity_metrics.py` per the 0.1 backstop.
 `WindowStartTime`/`timestamp`), and the module docstring documents it ("Best-effort delivery can
 duplicate → we DEDUPE to one row per (capacityId, window)"). Present and correct; no change.
 
-### 1.7 — Reconcile tools.py collector assembly vs job.py build_collector_from_env — PENDING
+### 1.7 — shared collector builder — DISPOSITION: already converged (verified), no change
+**Before-review:** mapped EVERY collector-build site in tools.py. The audit/verdict/inventory path
+— `_run_real_or_mock` (L313), `_build_collector` (L334→340), `_collector_or_mock` (L455),
+`list_workspaces_handler` (L493) — ALL delegate to `job.build_collector_from_env` (the single
+shared builder that assembles CSV+REST+WM+LA+capacity-events+list-usages with a `window` override).
+So the "0 findings / healthy / peakCuPct null on the App path" divergence (tools.py building
+collectors independently and skipping job.py's LA branch) is NOT present in the current code — it's
+already been reconciled onto the shared builder. The remaining standalone `build_log_analytics_query`/
+`build_kusto_query` calls (L779/L842/L1541/L2061) are the specialized EVENT-DEPTH tools
+(`create_event_collector` / activity-events) that need a different per-query KQL — they correctly
+REUSE the same (now 1.1-hardened) client builders with purpose-specific configs, which is
+by-design, not the attribution/capacity divergence 1.7 targets. No change; verified current reality.
+
+**PHASE 1 COMPLETE** — 1.1/1.2/1.3 implemented (LA hardening, +5 tests, 1547 green); 1.4/1.5/1.6/
+1.7/1.8/1.9 verified already-correct (no redundant changes forced). Phase-1 gate (full suite vs
+baseline) deferred to run AFTER the parallel Phase-2/3/5 port subagents land + integrate, to avoid
+collecting their half-written test files mid-run.
+
+---
+
+## PARALLELIZATION DECISION (contract: record any reorder + why)
+Phases 2 (kql_audit_rules), 3 (resolve/ layer), 5 (export/) are almost entirely NEW files (low
+blast radius). To finish within the effort, three read-only-of-plugin-source subagents are drafting
+them in parallel (each writes only its own new files + tests, runs its own scoped pytest, touches
+NO existing file). The orchestrator (me) meanwhile does Phase 4 (edits to existing forecast/anomaly/
+gates/config/attribution/kb — disjoint from the new dirs) and, as each subagent lands, performs the
+STANDING-RULE integration it could not: registering new tools in tools.py (+ MCP reachability),
+system-prompt additions (3.9/23), and the agent.py/loop.py twin loop hooks (3.10) — the parts that
+touch shared files and must be done by one hand. Full-suite verification runs after integration.
+
+---
+
+## PHASE 4 — Statistics + detector reconciliation
+
+### 4.1 / 4.2 / 4.3 / 4.4 — statistical rigor from analysis.ts — DONE (as a shared primitive)
+**New file** `fabric_audit_agent/stats.py` (+`tests/test_stats.py`, 10 tests) ports the exact
+analysis.ts methods, single-sourced: `linear_trend` (OLS + R²), `trend_direction` (≥6-point gate,
+±15% window-change band, R²<0.3 weak-fit flag — 4.1), `median`/`median_abs_deviation` + `is_spike`
+(median+4×MAD, MAD=0→3×median, value>10 floor) + `spike_severity` (z≥3/Δ≥100%→severe, z≥2→moderate
+— 4.2/4.4), `meaningful_pct_change` (prior≥10 min-volume floor — 4.3), and the
+`TOP1_CONCENTRATION_PCT=60` cross-check constant. **Wiring (additive, non-breaking):** `forecast.py`
+now derives its slope from `stats.linear_trend` and emits `r2`/`weakFit`/`directionStrict` alongside
+the legacy `trend`/`slopePerRun` vocab (unchanged, so diagnose.py/forecast_throttle.py/pipeline.py
+consumers are untouched); `anomaly.py` adds `severity` + `isSpikeMad` to each emitted anomaly on top
+of the existing z-gate. **After-review:** existing test_analytics assertions (trend="rising",
+slopePerRun==10, sigma) all still pass — the new fields are purely additive. Tests: test_stats(10)
++ test_analytics + test_forecast_throttle = 30 green. Blast radius (forecast/anomaly consumers:
+pipeline, tools, diagnose, forecast_throttle) verified: none branch on the removed `_slope_of` (it
+was private) and none of the new keys collide.
+DECISION: kept the legacy `trend` vocabulary rather than switching to analysis.ts's
+increasing/decreasing/stable, because ≥3 consumers branch on "rising"/"flat"; the strict version is
+exposed as `directionStrict` for opt-in adoption (smaller blast radius, reversible).
+
+### 4.5 — concentration_gate routing (FIX 2) — DISPOSITION: threshold unified; function-routing = noted follow-up
+Threshold SOURCE is already unified in `config["capacity"]["concentrationPct"]` and both detectors +
+`gates.CONCENTRATION_THRESHOLD_PCT` derive from it (N8/N9, FIXED) — this closes FIX 2's real risk
+(a threshold change reaching every check). System-item exclusion is shared via `system_item_kinds`
+(N5/N6, FIXED). NOT done: making the detectors' emit-decision literally CALL `concentration_gate()`
+— the gate uses strict `>` while the detectors emit on `>=`, so routing them through it is a
+behavior change (drops exactly-at-threshold items) that needs its own regression pass. Logged as a
+small follow-up, not silently dropped. (Verify test coverage: test_concentration_unification.py pins
+the config-threshold path end-to-end.)
+
+### 4.6 / 4.7 / 4.8 / 4.9 / 4.10 — DISPOSITION: verified already-FIXED (spot-checked in code)
+- 4.6 (N8/N9 threshold unify): `gates.CONCENTRATION_THRESHOLD_PCT = float(config[...]['concentrationPct'])`;
+  `DOMINANT_ITEM_SHARE_PCT=40` present in gates.py for verdict logic. ✓
+- 4.7 (N7): `attribution_rollup.py` emits `attributionMode` = `cost-cpu` (has CpuTimeMs) vs
+  `cost-duration` (DurationMs fallback), lines 217/230. ✓
+- 4.8 (kb wiring): `kb/__init__.py` exports METRIC_DEFINITIONS / MetricValue / get_metric / is_proxy /
+  is_verified. ✓ (GAPS N14; the verified formulas already live in metric_definitions.py.)
+- 4.9 (math consistency, B4): `validate.assert_cu_consistency` + wired into diagnose per GAPS B4 FIXED.
+- 4.10 (burndown auto-trigger, A2): `capacity_burndown_chain`/`burndown_chain_from_series` wired into
+  diagnose.py when timepointsOver>0 per GAPS A2 FIXED.
+
+### 4.11 — SKU / base-CU mismatch cross-check — SCOPED (highest-risk open item; focused pass)
+No existing cross-check found. `investigation/sku.py` has `sku_note()` + `_STANDARD_F_SKUS`;
+`collector_capacity_events.capacity_base_cu()` reads the LIVE `baseCapacityUnits`; `FABRIC_BASE_CU`
+is the configured base. SCOPE: add a pure `check_sku_base_consistency(configured_base, live_base)` to
+sku.py + surface a loud `skuMismatch` flag wherever a %-of-base figure is computed when the two
+disagree. DEFERRED to a focused pass with LIVE verification (Phase 7.2) because it must fire at
+runtime against real capacity data (the operational risk it guards), not just exist as a helper —
+implementing it blind would be the exact "unverified" pattern to avoid. Recorded, not dropped.
 The last Phase-1 item and the only real code change left in Phase 1 (the "0 findings / healthy /
 peakCuPct null" App-path bug: tools.py builds collectors independently so job.py's LA branch never
 runs on the App path → need ONE shared builder both call). Deferred until the Phase 0.3
