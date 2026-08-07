@@ -819,8 +819,11 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     app_url = env.get("APP_URL", "")
     catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
 
-    # Day high-water CU% / throttle from a fresh 1d collect (degrade to {} on any error).
-    capacity, coverage_gaps = {}, []
+    # Day high-water CU% / throttle from a fresh 1d collect (degrade to {} on any error). The same
+    # collect also carries facts["events"] (normalize_event-shaped, the same source the Part 12
+    # taxonomy detectors read) — reused for the Top-N users ranking so the digest doesn't need a
+    # second pull; falls back to a finding-count proxy inside build_daily_summary when absent.
+    capacity, coverage_gaps, events = {}, [], None
     try:
         if collector is None:
             collector = _build_tier2_collector(env, window="1d")
@@ -828,6 +831,7 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
         cap = facts.get("capacity") or {}
         capacity = {"peakCuPct": cap.get("peakCuPct"), "throttleMinutes": cap.get("throttleMinutes")}
         items = facts.get("items") or []
+        events = facts.get("events")
         from .automation.materiality import load_cfg
         blind = load_cfg().get("blind_spot_cu", 70.0)
         if cap.get("peakCuPct") is not None and cap["peakCuPct"] >= blind and not items:
@@ -866,7 +870,7 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     from .automation.daily_summary import run_daily_summary
     return run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
                              coverage_gaps=coverage_gaps, delivery_sinks=delivery_sinks,
-                             chat_writer=chat_writer, app_url=app_url, now_dt=now)
+                             chat_writer=chat_writer, app_url=app_url, now_dt=now, events=events)
 
 
 def daily_summary_main():

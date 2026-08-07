@@ -1,4 +1,10 @@
-"""Step 10 — daily capacity digest: pure card builder + the delivery/reconcile orchestrator."""
+"""Step 10 — daily capacity digest: pure card builder + the delivery/reconcile orchestrator.
+
+Redesigned around the Part 12 BAD-activity taxonomy (tightening.md Part 13/14, Sub-plan 3): CU is
+demoted to a one-line cross-reference, the body is the taxonomy (refresh / query performance /
+slow operations / xmla), refreshes get their own section, a Top-N users ranking is added, and an
+empty taxonomy prints a plain "no significant issues" message instead of falling back to CU.
+"""
 import json
 from datetime import datetime, timezone
 
@@ -15,55 +21,154 @@ def _sink():
     return posts, {"deliver": lambda b: (posts.append(b), {"delivered": True, "status": 202})[1]}
 
 
+def _ticket(finding_type, resource, *, severity="warn", **extra):
+    row = {"incidentKey": f"{finding_type}::{resource}", "status": "active",
+           "severity": severity, "checkType": finding_type.split(".")[0],
+           "resource": resource, "currentlyActive": True}
+    row.update(extra)
+    return row
+
+
 # ---- pure builder ----
 
-def test_build_all_clear_digest_has_ack_action():
-    md, card, summary = build_daily_summary(open_tickets=[], capacity={}, coverage_gaps=[],
-                                            date_str="2026-08-05", app_url="https://app")
-    assert "all clear" in md.lower()
+def test_build_no_issues_prints_plain_message_and_no_cu_metrics():
+    md, card, summary = build_daily_summary(
+        open_tickets=[], capacity={"peakCuPct": 91.0, "throttleMinutes": 12.0}, coverage_gaps=[],
+        date_str="2026-08-05", app_url="https://app")
+    assert "No significant issues found in today's activity." in md
+    assert "CU" not in md and "%" not in md      # no CU fallback when the taxonomy is empty
+    blob = json.dumps(card)
+    assert "CU" not in blob and "Capacity context" not in blob
     content = card["content"]
     assert content["version"] == "1.2"  # mobile Teams
     assert content["actions"][0]["title"] == "Review & acknowledge"
-    # App has no /alerts route -> default target is the app root (callers pass the digest chat link).
     assert content["actions"][0]["url"] == "https://app/"
-    assert "0 open ticket" in summary
+    assert "no significant issues" in summary
 
 
 def test_build_uses_explicit_ack_url_deep_link():
-    # run_daily_summary passes the digest chat deep-link so the action opens the digest, not a 404.
     _, card, _ = build_daily_summary(open_tickets=[], capacity={}, coverage_gaps=[],
                                      date_str="2026-08-05", app_url="https://app",
                                      ack_url="https://app/chat/abc-123")
     assert card["content"]["actions"][0]["url"] == "https://app/chat/abc-123"
 
 
-def test_build_lists_tickets_capacity_and_unacked_banner():
-    tickets = [
-        {"checkType": "throttle", "resource": "capacity", "severity": "warn",
-         "materialityReason": "throttle 8m", "currentlyActive": True},
-        {"checkType": "cross_user", "resource": "Fin/Sales", "severity": "info",
-         "currentlyActive": False},
-    ]
+def test_build_headline_is_taxonomy_not_cu():
+    tickets = [_ticket("activity.slow-operation", "alice@x.com")]
     md, card, summary = build_daily_summary(
         open_tickets=tickets, capacity={"peakCuPct": 132.0, "throttleMinutes": 8.0},
-        coverage_gaps=["true CU% reached 82% with zero monitored activity"],
+        coverage_gaps=[], date_str="2026-08-05", app_url="https://app")
+    # headline: findings count, not CU
+    headline = md.splitlines()[2]
+    assert "Findings today" in headline
+    assert "Peak" not in headline and "CU" not in headline
+    assert "132" not in headline
+    # CU demoted to a single cross-reference line near the bottom
+    assert "Capacity context" in md
+    assert md.count("132%") == 1
+    assert "1 finding(s)" in summary
+
+
+def test_refresh_findings_get_their_own_section():
+    tickets = [
+        _ticket("refresh.credential", "WS/Dataset1"),
+        _ticket("activity.slow-operation", "bob@x.com"),
+    ]
+    md, card, _ = build_daily_summary(open_tickets=tickets, capacity={}, coverage_gaps=[],
+                                      date_str="2026-08-05", app_url="https://app")
+    assert "## Refresh failures" in md
+    assert "## Slow operations" in md
+    refresh_idx = md.index("## Refresh failures")
+    slow_idx = md.index("## Slow operations")
+    # the refresh ticket line sits under the refresh heading, before the slow-ops heading
+    assert refresh_idx < md.index("WS/Dataset1") < slow_idx
+    assert refresh_idx < md.index("bob@x.com")
+    blob = json.dumps(card)
+    assert "Refresh failures" in blob and "Slow operations" in blob
+
+
+def test_recurring_shape_is_query_performance_not_lumped_with_slow_ops():
+    tickets = [
+        _ticket("activity.recurring-shape", "Report/Sales"),
+        _ticket("query.mdx-crossjoin", "Report/Matrix"),
+        _ticket("activity.slow-operation", "carol@x.com"),
+    ]
+    md, _, _ = build_daily_summary(open_tickets=tickets, capacity={}, coverage_gaps=[],
+                                   date_str="2026-08-05", app_url="https://app")
+    assert "## Query performance" in md
+    assert "### Recurring shape (design issue)" in md
+    qp_idx = md.index("## Query performance")
+    recurring_idx = md.index("### Recurring shape (design issue)")
+    slow_idx = md.index("## Slow operations")
+    assert qp_idx < recurring_idx < md.index("Report/Sales") < slow_idx
+    assert qp_idx < md.index("Report/Matrix") < slow_idx
+    # the slow-operation ticket is NOT under query performance
+    assert md.index("carol@x.com") > slow_idx
+
+
+def test_xmla_findings_get_their_own_section():
+    tickets = [_ticket("xmla.timeout", "WS/Model1")]
+    md, card, _ = build_daily_summary(open_tickets=tickets, capacity={}, coverage_gaps=[],
+                                      date_str="2026-08-05", app_url="https://app")
+    assert "## XMLA / connection errors" in md
+    assert "WS/Model1" in md
+
+
+def test_top_users_from_events_is_plain_ranking_no_percent():
+    events = [
+        {"user": "alice@x.com", "cuSeconds": 40.0, "operation": "Query"},
+        {"user": "alice@x.com", "cuSeconds": 20.0, "operation": "Query"},
+        {"user": "bob@x.com", "cuSeconds": 10.0, "operation": "Query"},
+    ]
+    md, card, _ = build_daily_summary(
+        open_tickets=[_ticket("activity.slow-operation", "alice@x.com")],
+        capacity={}, coverage_gaps=[], date_str="2026-08-05", app_url="https://app",
+        events=events)
+    assert "## Top users today" in md
+    top_section = md[md.index("## Top users today"):]
+    assert "1. alice@x.com — 60.0 CU-s (2 operation(s))" in top_section
+    assert "2. bob@x.com — 10.0 CU-s (1 operation(s))" in top_section
+    assert "%" not in top_section
+    assert "of capacity" not in top_section
+    blob = json.dumps(card)
+    assert "Top users today" in blob and "% of capacity" not in blob
+
+
+def test_top_users_falls_back_to_finding_count_and_notes_limitation():
+    # only activity.slow-operation's resource is actually a user login (recurring-shape /
+    # long-running-cluster key by ITEM, not user — must not be miscounted into the ranking).
+    tickets = [
+        _ticket("activity.slow-operation", "dana@x.com"),
+        _ticket("activity.slow-operation", "dana@x.com"),
+        _ticket("activity.recurring-shape", "Report/Sales"),
+        _ticket("activity.long-running-cluster", "Report/Ops"),
+    ]
+    md, _, _ = build_daily_summary(open_tickets=tickets, capacity={}, coverage_gaps=[],
+                                   date_str="2026-08-05", app_url="https://app")
+    assert "## Top users today" in md
+    top_section = md[md.index("## Top users today"):]
+    assert "No per-event CU-seconds data" in top_section
+    assert "1. dana@x.com — 2 finding(s)" in top_section
+    assert "Report/Sales" not in top_section        # item-keyed findings never enter the ranking
+    assert "%" not in top_section
+
+
+def test_build_unacked_banner_still_shown():
+    md, card, summary = build_daily_summary(
+        open_tickets=[], capacity={}, coverage_gaps=["true CU% reached 82% with zero monitored activity"],
         date_str="2026-08-05", app_url="https://app", unacked_prior=2)
     blob = json.dumps(card)
     assert "2 earlier daily summaries still awaiting acknowledgement" in md
     assert "awaiting acknowledgement" in blob
-    assert "132%" in md and "Peak true CU% today" in blob
-    assert "(currently inactive)" in blob          # the inactive ticket is flagged, still listed
-    assert "1 warning, 1 info" in blob
-    assert "2 open ticket" in summary and "2 prior unacknowledged" in summary
+    assert "2 prior unacknowledged" in summary
 
 
 # ---- orchestrator ----
 
 def test_run_delivers_records_and_excludes_digest_rows():
     store = create_alerts_store_memory()
-    # an attribution ticket (the class the digest DOES roll up — capacity is excluded by Fix B)
-    store["upsert"]({"incidentKey": "cross_user::Fin/Sales", "status": "active", "severity": "warn",
-                     "checkType": "cross_user", "resource": "Sales", "currentlyActive": True})
+    # a taxonomy ticket (the class the digest DOES roll up — capacity is excluded by Fix B)
+    store["upsert"](_ticket("activity.slow-operation", "alice@x.com"))
     # yesterday's digest, NOT acknowledged -> must re-surface and be counted
     store["upsert"]({"incidentKey": digest_key("2026-08-04"), "status": "active", "severity": "info",
                      "checkType": "daily_summary", "resource": "capacity",
@@ -110,17 +215,16 @@ def test_run_resolves_acknowledged_prior_digest():
 def test_fixB_capacity_tickets_excluded_from_digest():
     """Fix B: capacity incidents (throttle/pressure/overage) have their own real-time alert +
     auto-resolve lifecycle and must NOT appear in the daily digest's open tickets — only the
-    attribution/coverage issues the digest exists to roll up."""
+    taxonomy issues the digest exists to roll up."""
     store = create_alerts_store_memory()
     store["upsert"]({"incidentKey": "throttle::capacity", "status": "active",
                      "checkType": "throttle", "resource": "capacity", "currentlyActive": True})
     store["upsert"]({"incidentKey": "pressure::capacity", "status": "active",
                      "checkType": "pressure", "resource": "capacity", "currentlyActive": True})
-    store["upsert"]({"incidentKey": "cross_user::Fin/Sales", "status": "active",
-                     "checkType": "cross_user", "resource": "Sales", "currentlyActive": True})
+    store["upsert"](_ticket("activity.slow-operation", "alice@x.com"))
     res = run_daily_summary(alerts_store=store, ack_store=None, delivery_sinks=None,
                             chat_writer=lambda m, t: "c1", app_url="https://app", now_dt=NOW)
-    assert res["openTickets"] == 1                       # only the cross_user ticket, not capacity
+    assert res["openTickets"] == 1                       # only the activity ticket, not capacity
 
 
 def test_run_without_delivery_still_records_digest():
@@ -131,3 +235,15 @@ def test_run_without_delivery_still_records_digest():
                             chat_writer=lambda m, t: "c1", app_url="https://app", now_dt=NOW)
     assert res["delivered"] is False
     assert digest_key("2026-08-05") in store["query_active"]()
+
+
+def test_run_passes_events_through_for_top_users():
+    store = create_alerts_store_memory()
+    store["upsert"](_ticket("activity.slow-operation", "alice@x.com"))
+    events = [{"user": "alice@x.com", "cuSeconds": 99.0}]
+    writes = []
+    res = run_daily_summary(alerts_store=store, ack_store=None, delivery_sinks=None,
+                            chat_writer=lambda m, t: (writes.append(m), "c1")[1],
+                            app_url="https://app", now_dt=NOW, events=events)
+    assert res["delivered"] is False
+    assert "99.0 CU-s" in writes[0]
