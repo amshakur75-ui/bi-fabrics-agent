@@ -227,6 +227,40 @@ touch shared files and must be done by one hand. Full-suite verification runs af
 
 ---
 
+## PHASE 2 / PHASE 5 — PORTS DONE (committed 8d9e73b), INTEGRATION PENDING
+- **Phase 2 module** `query/kql_audit_rules.py` DONE + verified (45 tests, kql_guard.py untouched).
+  PENDING integration: 2.2 wire the error-severity `blocking` gate + `preflight_limits` into
+  `query/firewall.py`'s agent-authored-KQL path; 2.6 route `parse_kusto_error` into the collector
+  error path (`clients.build_log_analytics_query` / kusto). Both touch safety-critical shared files —
+  do with a full caller pass.
+- **Phase 5 modules** `export/` (html_utils/html_report/xlsx_report) DONE + verified (26 tests;
+  openpyxl added to deps). PENDING integration: 5.4 `agent_server/export_tool.py` (two direct tools
+  following chart_tool.py's dual-registration pattern; NEVER re-execute — reuse in-context rows, 26p)
+  + a `/api/exports/{id}` download route (allowlisted dir, no traversal); 5.5 `kql-viewer.tsx`
+  (read-only KQL highlight for U4); 5.6 chart.tsx Newell-token parity check.
+
+## PHASE 6 — partial findings (in-order items still owned by their phase)
+- **6.6 (N15):** `fabric_audit_agent/agent/tools_anthropic.py` EXISTS — a third tool-loop-adjacent
+  file beyond the sanctioned `agent_server/agent.py`↔`loop.py` twin. Needs a read to classify
+  (duplicate loop vs. a thin anthropic shim) before consolidating. NOT yet done.
+- **6.7:** the dead Node reference app `../fabric-audit-agent` does NOT exist (already removed) — the
+  "delete after build" half is moot. The stale-claim half remains: `CLAUDE.md` + `STATUS.md` carry
+  "byte-identical-to-Node" / "841 passed" claims to correct. Safe to fix now; queued.
+
+## INTEGRATION SEQUENCE ON RESUME (dependency-ordered)
+1. P3 resolve subagent lands → verify its tests, commit resolve/ modules.
+2. tools.py: register the 7 resolve tools + 2 export tools (closure + dict pattern per
+   BLAST-RADIUS-CORE.md; input_schema properties load-bearing for MCP).
+3. agent_server/system_prompt.py (3.9/23/24): tool-sequencing + never-hand-author-EventText +
+   xmSQL + identity-display rules (single-sourced; no MCP copy).
+4. agent_server/agent.py + loop.py (3.10): THREE loop hooks at the two seams in BOTH twins
+   (auto-analysis nudge; ExecutingUser identity normalization; PBI-usage redirect — the critical one).
+5. Phase 2 firewall/collector wiring (2.2/2.6). Phase 5 export_tool + route (5.4) + kql-viewer (5.5).
+6. FULL suite vs baseline (1547) — first run with ALL new modules present. Fix any collection/regress.
+7. Phase 6 remainder + Phase 7 (GAPS close, tightening dispositions, live-check checklist).
+
+---
+
 ## PHASE 4 — Statistics + detector reconciliation
 
 ### 4.1 / 4.2 / 4.3 / 4.4 — statistical rigor from analysis.ts — DONE (as a shared primitive)
