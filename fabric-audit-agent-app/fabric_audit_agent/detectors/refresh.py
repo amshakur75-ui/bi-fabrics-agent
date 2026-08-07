@@ -37,6 +37,49 @@ def _minutes_between(start, end):
     return (end_dt - start_dt).total_seconds() / 60
 
 
+_SUBCAUSE_WHAT = {
+    "credential": "an expired or invalid credential",
+    "gateway": "a gateway that is offline, unreachable, or overloaded",
+    "timeout": "the source query timing out",
+    "concurrency": "a refresh concurrency/capacity limit being exceeded",
+    "constraint": "a data/constraint violation (e.g. duplicate key)",
+}
+
+
+def classify_refresh_failure(record):
+    """tightening.md Part 12 Cat 1: map a failed refresh record's error code/text to a sub-cause
+    category, so the finding names the actual root cause instead of a generic failure. Matches
+    tolerantly (errorCode and/or case-insensitive message substrings — real payloads vary). Returns
+    one of "credential"/"gateway"/"timeout"/"concurrency"/"constraint", or None when nothing matches
+    (including malformed records — fail-open). Pure."""
+    try:
+        if not isinstance(record, dict) or record.get("status") != "Failed":
+            return None
+        code = _error_code(record)
+        text = _error_text(record) or ""
+        raw = record.get("serviceExceptionJson") or ""
+        blob = f"{code} {text} {raw}".lower()
+    except Exception:
+        return None
+
+    if any(k in blob for k in (
+        "credential", "aadsts", "oauth token", "access token has expired", "token has expired",
+        "token is expired", "account is disabled", "account has been disabled",
+        "expired account", "invalid credentials",
+    )):
+        return "credential"
+    if "gateway" in blob or "dmgatewayerror" in blob:
+        return "gateway"
+    if "execution timeout expired" in blob or "-2147467259" in blob or "timeout expired" in blob:
+        return "timeout"
+    if ("exceeded the maximum" in blob or "concurren" in blob
+            or ("capacity" in blob and "limit" in blob)):
+        return "concurrency"
+    if "duplicate key" in blob or "constraint" in blob or "cannot insert" in blob:
+        return "constraint"
+    return None
+
+
 def refresh_failure_pattern(refreshes):
     """B3: group failures by (dataset, errorCode) to distinguish a CHRONIC pattern (the same error
     repeating) from a one-off transient blip. Returns a list of
@@ -78,6 +121,20 @@ def detect_refreshes(facts, config=None):
                              "refreshType": r.get("refreshType"), "attempts": len(attempts)},
                 "what": f"Refresh of \"{r.get('datasetName')}\" failed with {error_code}{_detail}.",
             })
+
+            # tightening.md Part 12 Cat 1: per-failure sub-cause, distinct from the aggregate
+            # refresh.chronic pattern above — both can coexist (a chronic timeout is still a timeout).
+            cause = classify_refresh_failure(r)
+            if cause:
+                sample = (error_text or "")[:200]
+                flags.append({
+                    "type": f"refresh.{cause}", "resource": where, "when": when,
+                    "evidence": {"item": r.get("datasetName"), "workspace": r.get("workspace"),
+                                 "errorCode": error_code, "cause": cause, "sampleMessage": sample},
+                    "what": (f"Refresh of \"{r.get('datasetName')}\" failed due to "
+                             f"{_SUBCAUSE_WHAT.get(cause, cause)}"
+                             + (f": {sample}" if sample else "") + "."),
+                })
 
         if len(attempts) >= thr["retryStormAttempts"]:
             flags.append({
