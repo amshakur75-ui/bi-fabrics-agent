@@ -2,14 +2,14 @@
 
 Durable resume point for the 6-sub-plan program. Spec: `docs/superpowers/specs/2026-08-07-alerting-redesign-and-plugin-parity-design.md`. Baseline suite: 1775 passed.
 
-## Sub-plan 1 — Alerting redesign (IN PROGRESS)
-- [x] **Phase 0** — verify query text captured. DONE: `EventText`→`queryText` exists (collector_events_la.py:71, events.py:17/29, threaded through spike/raw_events, ~400-char truncation). Shape detector unblocked.
-- [x] **1a** — absolute-cost detector `detectors/absolute_cost.py` (`activity.slow-operation`). DONE, commit `23ecf2e`, suite 1785. **KNOWN GAP:** detector reads `facts["events"]` but the pipeline never attaches events to facts → dormant until the wiring task below.
-- [ ] **1b** — query-shape fingerprint (`investigation/query_fingerprint.py`) + `detectors/query_shape.py` (`activity.recurring-shape`). Pure/new. Uses `queryText`.
-- [ ] **1-WIRE** — attach raw per-operation events onto `facts["events"]` in the collection path (collector_merge/pipeline/tier2+sweep) so 1a AND 1b actually run in production. (Discovered during 1a — REQUIRED, not optional.)
-- [ ] **1c/1d** — retire the CU-blended `user_concentration.metric()` + its `capacity.user-concentration` finding + Tier-2 per-user branch; reframe item-level concentration to config threshold (default 60).
-- [ ] **FIX 0** — verdict "optimize" unreachable: nest merged refreshes under `capacity` (collector_merge vs detectors/capacity.py).
-- [ ] **FIX 3** — sla.py + accountability.py: exclude throttle/pressure/overage from "no-resolution" SLA language.
+## Sub-plan 1 — Alerting redesign (DONE — suite 1803)
+- [x] **Phase 0** — query text captured (EventText→queryText). Shape detector unblocked.
+- [x] **1a** — absolute-cost detector `detectors/absolute_cost.py` (`activity.slow-operation`). `23ecf2e`.
+- [x] **1b** — query fingerprint + `detectors/query_shape.py` (`activity.recurring-shape`). `5a637e4`.
+- [x] **1-WIRE** — `job._build_events_collector` attaches bounded (5000, costliest-first, fail-open) `facts["events"]`; both detectors now fire in the sweep. `2d01337`.
+- [x] **1c/1d** — retired CU-blended `user_concentration` + `capacity.user-concentration`; item-level concentration KEPT intact; concentrationPct value unchanged (low-stakes knob). `2c58d76`.
+- [x] **FIX 0** — `detectors/capacity.py::_capacity_refreshes` falls back to top-level `facts["refreshes"]` on the merge path → optimize verdict reachable. `944926c`.
+- [x] **FIX 3** — `accountability.AUTO_RESOLVING_TYPES` (throttle/pressure/overage) excluded from "no-resolution"/SLA-breach language. `944926c`.
 
 ## Sub-plan 2 — Bad-activity taxonomy detectors (NOT STARTED)
 refresh sub-causes; MDX shape/fact-FILTER/high-SE anti-patterns; XMLA Category-3 + "session moved" suppression; long-running-cluster + per-user baseline detector; multi-visual suppression.
