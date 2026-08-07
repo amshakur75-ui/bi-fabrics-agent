@@ -17,9 +17,24 @@ Events with no usable ``queryText`` are skipped (fingerprint returns ``None`` fo
 WIRED (TASK 1-WIRE, 2026-08-07): see ``detectors/absolute_cost.py``'s header -- same
 ``facts["events"]`` wiring via ``job.build_collector_from_env`` / ``job._build_events_collector`` /
 ``adapters/collector_merge.py``, both detectors share the source. See ``tests/test_events_wiring.py``.
+
+FALSE-POSITIVE GUARD (TASK 2d, tightening.md Part 12 "explicitly NOT bad"): a normal dashboard
+load fires many FAST queries -- e.g. one visual's query re-issued as the user pans/filters --
+in a tight burst, which is a recurring shape by definition but must never be reported as a
+problem. Only flag a recurring shape when at least one occurrence is actually expensive (its
+``durationMs`` >= ``config["activity"]["slowOperationSeconds"] * 1000``); a shape where EVERY
+occurrence is fast is suppressed. This keeps the expensive-recurring-shape signal (Category 4)
+while suppressing the benign multi-visual-dashboard burst.
 """
+import math
+
 from ..config import DEFAULT_CONFIG
 from ..investigation.query_fingerprint import fingerprint, normalize_shape
+
+
+def _num(v):
+    """Reject bool + non-finite (repo numeric-guard convention); else the numeric value."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
 def detect_query_shape(facts, config=None):
@@ -29,6 +44,7 @@ def detect_query_shape(facts, config=None):
     thr = (config.get("activity") or DEFAULT_CONFIG["activity"])
     min_count = thr["recurringShapeMinCount"] if thr.get("recurringShapeMinCount") is not None else DEFAULT_CONFIG["activity"]["recurringShapeMinCount"]
     min_users = thr["recurringShapeMinUsers"] if thr.get("recurringShapeMinUsers") is not None else DEFAULT_CONFIG["activity"]["recurringShapeMinUsers"]
+    slow_seconds = thr["slowOperationSeconds"] if thr.get("slowOperationSeconds") is not None else DEFAULT_CONFIG["activity"]["slowOperationSeconds"]
 
     groups = {}   # shapeHash -> list[event]
     for ev in events:
@@ -46,6 +62,16 @@ def detect_query_shape(facts, config=None):
         users = sorted({ev.get("user") for ev in group_events if ev.get("user")})
         distinct_users = len(users)
         if occurrences < min_count or distinct_users < min_users:
+            continue
+
+        # Suppress a multi-visual-dashboard-style burst: fire only if at least one occurrence
+        # is actually expensive (a recurring shape that is entirely fast is normal, not a
+        # design problem).
+        has_slow_occurrence = any(
+            (dur := _num(ev.get("durationMs"))) is not None and dur / 1000.0 >= slow_seconds
+            for ev in group_events
+        )
+        if not has_slow_occurrence:
             continue
 
         sample = group_events[0]

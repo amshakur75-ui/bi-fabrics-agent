@@ -21,9 +21,17 @@ DEFAULT_CONFIG = {
     # fact, independent of any share-of-capacity. Part 1b: recurring-shape thresholds — a query
     # SHAPE recurring across >= minCount events from >= minUsers distinct users points at a
     # model/report design problem, not a person problem.
+    # Part 12 Category 4: long-running-cluster thresholds -- the SAME item accumulating
+    # >= minCount independently-long (>= longRunningSeconds) operations points at the item's
+    # design, not any one user. Distinct from the single-operation "activity.slow-operation".
     "activity": {
         "slowOperationSeconds": 300, "highCuSeconds": 100,
         "recurringShapeMinCount": 3, "recurringShapeMinUsers": 2,
+        "longRunningSeconds": 300, "longRunningClusterMin": 3,
+        # baselineMinHistory: minimum per-user historical rows before a baseline is trusted
+        # enough to flag against (detectors/user_baseline.py -- not wired into detect_all, see
+        # that module's docstring for why).
+        "baselineMinHistory": 5,
     },
 }
 

@@ -5,20 +5,23 @@ _OTHER_QUERY = "EVALUATE FILTER(Sales, Sales[Region] = \"East\")"
 
 
 def _event(**overrides):
+    # durationMs defaults to a SLOW operation (>= the 300s default threshold) so the existing
+    # shape-recurrence tests below exercise recurrence logic independent of the fast/slow
+    # suppression guard (tested explicitly in the suppression tests further down).
     ev = {"ts": "2026-08-07T06:00:00Z", "user": "alice@corp.com", "item": "Sales Model",
-          "operation": "QueryEnd", "durationMs": 1000, "cuSeconds": 1.0, "queryText": _SHAPE_QUERY}
+          "operation": "QueryEnd", "durationMs": 310_000, "cuSeconds": 1.0, "queryText": _SHAPE_QUERY}
     ev.update(overrides)
     return ev
 
 
-def _varied(query_text, n, users, item="Sales Model"):
+def _varied(query_text, n, users, item="Sales Model", duration_ms=310_000):
     """n events with the same *shape* but different literals, spread across the given users."""
     events = []
     for i in range(n):
         user = users[i % len(users)]
         # Vary a literal (the numeric total label) so shape-equivalence is actually exercised.
         varied_text = query_text.replace("Total", f"Total{i}")
-        events.append(_event(queryText=varied_text, user=user, item=item))
+        events.append(_event(queryText=varied_text, user=user, item=item, durationMs=duration_ms))
     return events
 
 
@@ -86,3 +89,30 @@ def test_users_list_capped_at_five_in_evidence():
     f = detect_query_shape({"events": events})[0]
     assert f["evidence"]["distinctUsers"] == 7
     assert len(f["evidence"]["users"]) == 5
+
+
+# --- Multi-visual-dashboard suppression (tightening.md Part 12 "explicitly NOT bad") ---
+
+def test_recurring_all_fast_shape_is_suppressed():
+    # A normal dashboard load: the same visual's query re-issued fast, many times, several users.
+    events = _varied(_SHAPE_QUERY, 5, ["alice@corp.com", "bob@corp.com", "carol@corp.com"],
+                      duration_ms=1_000)
+    assert detect_query_shape({"events": events}) == []
+
+
+def test_recurring_shape_with_one_slow_occurrence_still_fires():
+    events = _varied(_SHAPE_QUERY, 5, ["alice@corp.com", "bob@corp.com", "carol@corp.com"],
+                      duration_ms=1_000)
+    # Make exactly one occurrence expensive.
+    events[0] = {**events[0], "durationMs": 310_000}
+    flags = detect_query_shape({"events": events})
+    assert len(flags) == 1
+    assert flags[0]["evidence"]["occurrences"] == 5
+
+
+def test_all_fast_suppression_respects_custom_threshold():
+    events = _varied(_SHAPE_QUERY, 3, ["alice@corp.com", "bob@corp.com", "carol@corp.com"],
+                      duration_ms=10_000)   # 10s
+    config = {"activity": {"slowOperationSeconds": 5}}   # lowers the bar below 10s -> now "slow"
+    flags = detect_query_shape({"events": events}, config)
+    assert len(flags) == 1

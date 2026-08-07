@@ -16,12 +16,13 @@ from .absolute_cost import detect_absolute_cost
 from .query_shape import detect_query_shape
 from .query_antipatterns import detect_query_antipatterns
 from .xmla_errors import detect_xmla_errors
+from .long_running import detect_long_running_cluster
 
 _DETECTORS = [
     detect_capacity, detect_concentration, detect_models,
     detect_reports, detect_pipelines, detect_blast_radius, detect_security, detect_cost,
     detect_refreshes, detect_absolute_cost, detect_query_shape, detect_query_antipatterns,
-    detect_xmla_errors,
+    detect_xmla_errors, detect_long_running_cluster,
 ]
 
 
