@@ -5,11 +5,13 @@
   (``config["capacity"]["concentrationPct"]``) -- gates.py + diagnose.py inline literals
   both derive from it, so a single edit propagates.
 
-N6 (user_concentration.py item-kind filter) and the N8 item-kind half of
-``diagnose_slowness``'s hot-item computation are DEFERRED: neither the per-user rollup
-(``rollup_attribution.users``) nor the raw event stream carries a Fabric item kind today, so
-those detectors can't tell an ``EventStream`` from a ``Dataset`` by construction. Fixing them
-requires enriching the rollup + events with kind data first (separate ticket)."""
+The N8 item-kind half of ``diagnose_slowness``'s hot-item computation is DEFERRED: neither the
+per-user rollup (``rollup_attribution.users``) nor the raw event stream carries a Fabric item kind
+today, so it can't tell an ``EventStream`` from a ``Dataset`` by construction. Fixing it requires
+enriching the rollup + events with kind data first (separate ticket).
+
+(N6, the item-kind filter on the per-user CU-blended concentration detector, is moot -- that
+detector was retired; see tasks/tightening.md Part 1c/1d.)"""
 
 from fabric_audit_agent.config import DEFAULT_CONFIG, merge_config
 from fabric_audit_agent.detectors.concentration import detect_concentration

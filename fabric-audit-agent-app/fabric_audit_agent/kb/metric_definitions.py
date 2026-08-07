@@ -335,11 +335,12 @@ CONCENTRATION_THRESHOLD_PCT = {
     "smoothing_window": "N/A",
     "verified": True,
     "notes": (
-        "Currently duplicated in 3-4 places (gates.py CONCENTRATION_THRESHOLD_PCT=30.0, "
-        "diagnose.py inline > 30.0, concentration.py via config, user_concentration.py via config). "
+        "Currently duplicated in 2-3 places (gates.py CONCENTRATION_THRESHOLD_PCT=30.0, "
+        "diagnose.py inline > 30.0, concentration.py via config). "
         "All should read from config['capacity']['concentrationPct'] -- see N9. "
         "Must exclude system item kinds (EventStream, Activator, FabricEvents-...) before "
-        "computing shares -- see N5/N6/N8."
+        "computing shares -- see N5/N8. (The per-user CU-blended concentration detector that N6 "
+        "targeted was retired -- see tasks/tightening.md Part 1c/1d.)"
     ),
 }
 

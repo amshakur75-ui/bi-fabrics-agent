@@ -2,8 +2,9 @@
 
 Both the Log Analytics and Workspace Monitoring collectors feed their query rows through this so
 they emit an identical shape — ``items[]`` (the input for the item ``concentration`` detector) and
-``users[]`` (the input for the per-user ``user_concentration`` detector). Keeping one rollup means
-the two sources can't drift, and it's the single place that has to be source-tolerant.
+``users[]`` (per-user rollup used by attribution / diagnosis, e.g. the hot-user step in
+``investigation/diagnose.py``). Keeping one rollup means the two sources can't drift, and it's the
+single place that has to be source-tolerant.
 
 Tolerance (why this exists):
   * column spelling differs by source — Log Analytics names the item ``ArtifactName`` and the

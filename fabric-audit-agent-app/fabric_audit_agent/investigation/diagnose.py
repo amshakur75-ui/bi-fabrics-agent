@@ -14,8 +14,8 @@ from .workload import refresh_collisions
 
 def _concentration_threshold(config):
     """Read the concentration threshold from a config or ``DEFAULT_CONFIG``. Single source of
-    truth per N9 (Task 8, 2026-07-29): the same value ``concentration.py``, ``user_concentration.py``,
-    and ``gates.CONCENTRATION_THRESHOLD_PCT`` all resolve to."""
+    truth per N9 (Task 8, 2026-07-29): the same value ``concentration.py`` and
+    ``gates.CONCENTRATION_THRESHOLD_PCT`` both resolve to."""
     cfg = config or DEFAULT_CONFIG
     return float(cfg["capacity"]["concentrationPct"])
 
@@ -276,10 +276,9 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system
         hot_share = hot_cu / grand_total * 100.0
 
     # N9 fix (Task 8): threshold now reads from ``config["capacity"]["concentrationPct"]`` --
-    # the same value ``concentration.py``, ``user_concentration.py``, and
-    # ``gates.CONCENTRATION_THRESHOLD_PCT`` all resolve to. Previously hardcoded ``> 30.0`` in
-    # two places here, so an admin bumping the config value tenant-wide would silently NOT
-    # affect this inline check.
+    # the same value ``concentration.py`` and ``gates.CONCENTRATION_THRESHOLD_PCT`` both resolve
+    # to. Previously hardcoded ``> 30.0`` in two places here, so an admin bumping the config value
+    # tenant-wide would silently NOT affect this inline check.
     threshold = _concentration_threshold(config)
     hot_step_hypothesis = "One item dominates workload share"
     hot_step_name = f"single hot item >{int(threshold) if threshold == int(threshold) else threshold}% share?"

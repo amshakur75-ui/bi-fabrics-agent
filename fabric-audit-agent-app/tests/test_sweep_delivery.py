@@ -72,28 +72,17 @@ def test_sweep_findings_write_notification_center_tickets():
     assert m["resource"] == "Finance / Sales" and "bidirectional" in m["detail"]
 
 
-def test_per_user_concentration_suppressed_on_healthy_capacity():
-    # a 35% share on a HEALTHY capacity is normal usage, not a user-addressable problem -> not alerted
+def test_user_ranking_finding_delivered_as_actionable_concentration_checktype():
+    # a "capacity.user-ranking" key (the top-consumers info flag) surfaces as the actionable
+    # 'concentration' checkType (not the bare 'capacity' family the notification center filters out)
     store = create_alerts_store_memory()
     posts, sink = _sink()
-    f = [_f("capacity.user-concentration::Ann", "Warning", what="Ann is driving ~35% of capacity")]
+    f = [_f("capacity.user-ranking::top-users", "Warning", what="No single user is over 30%...",
+            where="top-users")]
     out = deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink},
-                               app_url="https://app", capacity={"peakCuPct": 62.0, "throttleMinutes": 0})
-    assert out["delivered"] == [] and out["skipped_healthy"] == 1 and posts == []
-
-
-def test_per_user_concentration_delivered_and_actionable_when_stressed():
-    # same finding on a STRESSED capacity IS delivered, and surfaces as the actionable 'concentration'
-    # checkType (not the bare 'capacity' family the notification center filters out)
-    store = create_alerts_store_memory()
-    posts, sink = _sink()
-    f = [_f("capacity.user-concentration::Ann", "Warning", what="Ann is driving ~35% of capacity",
-            where="Ann")]
-    out = deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink},
-                               app_url="https://app", chat_writer=lambda m, t: "c1",
-                               capacity={"peakCuPct": 118.0, "throttleMinutes": 6.0})
-    assert out["delivered"] == ["capacity.user-concentration::Ann"]
-    assert store["query_active"]()["capacity.user-concentration::Ann"]["checkType"] == "concentration"
+                               app_url="https://app", chat_writer=lambda m, t: "c1")
+    assert out["delivered"] == ["capacity.user-ranking::top-users"]
+    assert store["query_active"]()["capacity.user-ranking::top-users"]["checkType"] == "concentration"
 
 
 def test_investigate_query_anchors_to_the_fire_time():

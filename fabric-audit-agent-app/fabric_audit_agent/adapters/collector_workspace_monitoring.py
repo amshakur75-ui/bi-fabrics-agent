@@ -3,7 +3,7 @@
 Queries the workspace's monitoring Eventhouse (``SemanticModelLogs``) for per-item, per-user
 engine time and feeds the rows through the shared ``attribution_rollup`` so it emits the SAME shape
 as the Log Analytics collector — ``items[]`` (the item ``concentration`` detector's input) AND
-``users[]`` (the per-user ``user_concentration`` detector's input). Real-time, workspace-level
+``users[]`` (per-user rollup used by attribution / diagnosis). Real-time, workspace-level
 permission (Contributor) — no tenant admin.
 
 CPU/duration time is a **proxy** for CU (different unit + AS-only scope): it ranks the driving users
