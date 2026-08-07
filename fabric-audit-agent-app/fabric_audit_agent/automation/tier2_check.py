@@ -521,11 +521,14 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
 
     def _write_ticket(row, trigger):
         """Step 9: mirror this ticket's descriptive metadata into the app-readable store (Lakebase
-        ``alert_ticket``) keyed by chat_id, so the Alerts sidebar can show what/where/when/active.
-        Lifecycle (open/investigating/resolved) is derived app-side from the ack map — not stored
-        here. Failure-isolated: a metadata write must never drop or fail a real alert."""
+        ``alert_ticket``) keyed by the stable incidentKey (chat_id is carried along but nullable),
+        so the Alerts sidebar can show what/where/when/active. ALWAYS written — even when chat_id is
+        None (chat creation failed) — so a real incident is never silently dropped from the
+        notification center just because the chat write failed (Part 7). Lifecycle
+        (open/investigating/resolved) is derived app-side from the ack map — not stored here.
+        Failure-isolated: a metadata write must never drop or fail a real alert."""
         cid = row.get("chatId")
-        if not (ticket_writer and cid):
+        if not ticket_writer:
             return
         # workspace comes from the trigger when firing; on the inactive tick there is no trigger, so
         # fall back to the incident key ("cross_user::Fin/Sales" -> "Fin") to avoid nulling it.
@@ -660,8 +663,9 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             try:
                 chat_id = chat_writer(markdown, _title_for(t))
             except Exception as exc:  # a chat-write failure must not drop the alert or the link
-                print(f"[tier2] alert chat write failed ({type(exc).__name__}: {exc}); "
-                      "deep-link will open a fresh auto-investigating chat")
+                print(f"[tier2] WARN: alert chat write failed ({type(exc).__name__}: {exc}); "
+                      "deep-link will open a fresh auto-investigating chat; the ticket is still "
+                      "written (keyed by incidentKey, not chat_id)")
         # chat_id may be None (writer absent or failed) -> _send falls back to a root ?query link
         # that opens a fresh auto-investigating chat. No fake /chat/<uuid> (that 404s).
         row = {"incidentKey": key, "status": "active", "severity": sev, "checkType": t.get("check"),

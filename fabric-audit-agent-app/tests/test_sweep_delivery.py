@@ -72,6 +72,58 @@ def test_sweep_findings_write_notification_center_tickets():
     assert m["resource"] == "Finance / Sales" and "bidirectional" in m["detail"]
 
 
+def test_ticket_still_written_when_chat_creation_fails():
+    """Part 7 (tightening.md): if chat_writer RAISES, chat_id stays None — but the finding's ticket
+    must STILL be written (keyed by incidentKey) so it shows in the notification center. Before the
+    fix this was gated ``if ticket_writer and chat_id`` and silently skipped every time chat write
+    failed, even though the finding was "delivered" and the daily digest count looked correct."""
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    tickets = {}
+
+    def failing_chat_writer(md, title):
+        raise RuntimeError("lakebase unavailable")
+
+    def ticket_writer(chat_id, meta):
+        tickets[meta["incidentKey"]] = (chat_id, dict(meta))
+
+    out = deliver_new_findings([_f("model.bidirectional::Sales Model", "Warning",
+                                   what="Model has 6 bidirectional relationships", where="Finance / Sales")],
+                               alerts_store=store, delivery_sinks={"webhook": sink},
+                               app_url="https://app", chat_writer=failing_chat_writer,
+                               ticket_writer=ticket_writer)
+    # the finding is still delivered (not dropped) even though the chat write blew up
+    assert out["delivered"] == ["model.bidirectional::Sales Model"]
+    # the ticket landed, keyed by the stable incidentKey, with chat_id=None
+    assert "model.bidirectional::Sales Model" in tickets
+    cid, m = tickets["model.bidirectional::Sales Model"]
+    assert cid is None
+    assert m["checkType"] == "model" and m["currentlyActive"] is True
+    assert m["resource"] == "Finance / Sales"
+    # the deep-link degrades to the root ?query= auto-investigation link, never dropped
+    blob = json.dumps(posts[0])
+    assert "/?query=" in blob and "/chat/" not in blob
+
+
+def test_ticket_still_written_when_chat_writer_returns_none():
+    """Same failure mode, different shape: chat_writer returns None instead of raising (no chat
+    write configured / a soft failure) — the ticket must still be written."""
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    tickets = {}
+
+    def ticket_writer(chat_id, meta):
+        tickets[meta["incidentKey"]] = chat_id
+
+    out = deliver_new_findings([_f("refresh.contention::WS", "Critical")],
+                               alerts_store=store, delivery_sinks={"webhook": sink},
+                               app_url="https://app", chat_writer=lambda m, t: None,
+                               ticket_writer=ticket_writer)
+    assert out["delivered"] == ["refresh.contention::WS"]
+    assert tickets.get("refresh.contention::WS") is None
+    assert "refresh.contention::WS" in tickets
+
+
 def test_user_ranking_finding_delivered_as_actionable_concentration_checktype():
     # a "capacity.user-ranking" key (the top-consumers info flag) surfaces as the actionable
     # 'concentration' checkType (not the bare 'capacity' family the notification center filters out)

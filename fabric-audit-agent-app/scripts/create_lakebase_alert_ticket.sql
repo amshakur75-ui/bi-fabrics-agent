@@ -6,6 +6,12 @@
 -- boundary (app writes ack, job reads it). Lifecycle (open/investigating/resolved) is DERIVED in the
 -- app from the ack map, so it is NOT stored here.
 --
+-- Part 7 fix (tightening.md): keyed by incident_key, NOT chat_id. When chat creation fails upstream
+-- (chat_writer raises), the finding still needs a row here so it doesn't vanish from the
+-- notification center — but a table keyed by chat_id can't hold a row with no chat_id. incident_key
+-- (the finding/incident's own stable key, e.g. "model.bidirectional::Sales") is always present, so
+-- it is the identity; chat_id is now a nullable attribute.
+--
 -- Run once at deploy as the Lakebase project owner (the user the tier2 job connects as), e.g.:
 --   EP=projects/fabrics-audit-agent-memory/branches/production/endpoints/primary
 --   HOST=$(databricks postgres get-endpoint $EP --profile fabric-test -o json | jq -r .status.hosts.host)
@@ -17,8 +23,8 @@
 --   GRANT SELECT ON ai_chatbot.alert_ticket TO "<APP_SP_CLIENT_ID>";
 
 CREATE TABLE IF NOT EXISTS ai_chatbot.alert_ticket (
-  chat_id          text PRIMARY KEY,
-  incident_key     text,
+  incident_key     text PRIMARY KEY,
+  chat_id          text,
   check_type       text,
   severity         text,
   resource         text,
@@ -28,6 +34,26 @@ CREATE TABLE IF NOT EXISTS ai_chatbot.alert_ticket (
   currently_active boolean,
   updated_at       timestamptz DEFAULT now()
 );
+
+-- Idempotent migration for a table created BEFORE the Part-7 fix (PK was chat_id, incident_key was
+-- a plain nullable column). Safe to re-run: only acts if the legacy chat_id PK is still present.
+DO $mig$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.key_column_usage
+    WHERE table_schema = 'ai_chatbot' AND table_name = 'alert_ticket'
+      AND constraint_name = 'alert_ticket_pkey' AND column_name = 'chat_id'
+  ) THEN
+    -- backfill incident_key for any legacy row that somehow lacks one, so the new PK can be set
+    UPDATE ai_chatbot.alert_ticket SET incident_key = 'legacy::' || chat_id
+      WHERE incident_key IS NULL;
+    ALTER TABLE ai_chatbot.alert_ticket DROP CONSTRAINT alert_ticket_pkey;
+    ALTER TABLE ai_chatbot.alert_ticket ALTER COLUMN incident_key SET NOT NULL;
+    ALTER TABLE ai_chatbot.alert_ticket ADD CONSTRAINT alert_ticket_pkey PRIMARY KEY (incident_key);
+    ALTER TABLE ai_chatbot.alert_ticket ALTER COLUMN chat_id DROP NOT NULL;
+  END IF;
+END
+$mig$;
 
 -- App SP needs read access (it does not own this table). Uncomment + fill in at deploy:
 -- GRANT SELECT ON ai_chatbot.alert_ticket TO "<APP_SP_CLIENT_ID>";

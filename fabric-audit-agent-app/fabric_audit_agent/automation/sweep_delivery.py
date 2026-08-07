@@ -130,7 +130,9 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
             try:
                 chat_id = chat_writer(markdown, title)
             except Exception as exc:  # a chat-write failure must not drop the alert or the link
-                print(f"[sweep] alert chat write failed ({type(exc).__name__}: {exc})")
+                print(f"[sweep] WARN: alert chat write failed ({type(exc).__name__}: {exc}) — "
+                      f"continuing with chat_id=None (ticket is still written, deep-link degrades "
+                      f"to a root ?query= auto-investigation link)")
 
         chat_url = None
         if app_url:
@@ -156,8 +158,11 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
             "currentlyActive": True,
         })
         # Write the app-readable ticket row so this estate-wide finding appears in the notification
-        # center (not just Teams). Failure-isolated: metadata must never drop the delivery.
-        if ticket_writer and chat_id:
+        # center (not just Teams). ALWAYS written (even when chat_id is None, i.e. chat creation
+        # failed above) — the ticket is keyed by the stable incidentKey, not chat_id, so a finding
+        # is never silently dropped from the notification center just because the chat write failed
+        # (Part 7). Failure-isolated: metadata must never drop the delivery.
+        if ticket_writer:
             try:
                 ticket_writer(chat_id, {
                     "incidentKey": key, "checkType": family, "severity": sev,

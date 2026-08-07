@@ -226,6 +226,39 @@ def test_ticket_writer_gets_detail_metadata_on_new_and_inactive():
     assert tickets[cid]["workspace"] == "Fin"
 
 
+def test_ticket_still_written_when_chat_creation_fails():
+    """Part 7 (tightening.md): _write_ticket used to gate on ``ticket_writer and cid`` — if
+    chat_writer raised (chat_id stays None), the ticket metadata write was skipped entirely and the
+    incident never showed in the app notification center, even though it was fully alerted
+    otherwise. The ticket must now be written regardless, keyed by incidentKey (chat_id is nullable
+    metadata)."""
+    store = create_alerts_store_memory()
+    r, _ = _reasoner()
+    posts, sink = _sink()
+    tickets = {}
+
+    def failing_writer(md, title):
+        raise RuntimeError("lakebase unavailable")
+
+    def ticket_writer(chat_id, meta):
+        tickets[meta["incidentKey"]] = (chat_id, dict(meta))
+
+    xu = {"check": "cross_user", "item": "Sales", "workspace": "Fin", "userCount": 4,
+          "users": ["a", "b", "c", "d"], "sharePct": 30}
+    a = process_alerts([xu], now_dt=T0, alerts_store=store, delivery_sinks={"webhook": sink},
+                       reasoner=r, chat_writer=failing_writer, app_url="https://app",
+                       ticket_writer=ticket_writer, cfg=_cfg_no_hysteresis())
+
+    assert a["new"] == ["cross_user::Fin/Sales"]
+    row = store["query_active"]()["cross_user::Fin/Sales"]
+    assert row["chatId"] is None                       # chat write really did fail
+    # the ticket landed anyway, keyed by incidentKey, with chat_id=None
+    assert "cross_user::Fin/Sales" in tickets
+    cid, m = tickets["cross_user::Fin/Sales"]
+    assert cid is None
+    assert m["checkType"] == "cross_user" and m["resource"] == "Sales"
+
+
 def _recurring(t):
     return {**t, "recurrence": {"isRecurring": True}}
 

@@ -101,11 +101,15 @@ def create_ticket_writer(*, conn=None):
     (Step 9). The Tier-2 job WRITES this; the chat app READS it to show ticket detail (what / where /
     since when / currently active) in the Alerts sidebar — the reverse of the ``alert_ack`` boundary.
 
-    ``meta`` keys: incidentKey, checkType, severity, resource, workspace, detail, firstDetected
-    (ISO text), currentlyActive. One connection is opened lazily and reused for the whole run (the
-    tier2 wheel task exits after one run). ``conn`` injectable for tests. Raises on the FIRST connect
-    so the caller can fail-open; per-write errors surface to the caller, which swallows them (ticket
-    metadata is best-effort — never a reason to drop a real alert)."""
+    Keyed by ``meta["incidentKey"]`` (the PRIMARY KEY), NOT ``chat_id`` — ``chat_id`` is a nullable
+    column. This is the Part-7 fix: when chat creation upstream fails, callers still invoke this
+    writer with ``chat_id=None`` so the finding's ticket lands in the table (a None chat_id can't be
+    a row's identity, since a table keyed by chat_id would silently drop it — see tightening.md
+    Part 7). ``meta`` keys: incidentKey, checkType, severity, resource, workspace, detail,
+    firstDetected (ISO text), currentlyActive. One connection is opened lazily and reused for the
+    whole run (the tier2 wheel task exits after one run). ``conn`` injectable for tests. Raises on
+    the FIRST connect so the caller can fail-open; per-write errors surface to the caller, which
+    swallows them (ticket metadata is best-effort — never a reason to drop a real alert)."""
     state = {"conn": conn}
 
     def _conn():
@@ -114,20 +118,21 @@ def create_ticket_writer(*, conn=None):
         return state["conn"]
 
     def write(chat_id, meta):
+        incident_key = meta.get("incidentKey") or chat_id  # defensive: always need SOME stable key
         c = _conn()
         cur = c.cursor()
         cur.execute(
             "INSERT INTO ai_chatbot.alert_ticket "
-            "(chat_id, incident_key, check_type, severity, resource, workspace, detail, "
+            "(incident_key, chat_id, check_type, severity, resource, workspace, detail, "
             "first_detected, currently_active, updated_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
-            "ON CONFLICT (chat_id) DO UPDATE SET "
-            "incident_key = excluded.incident_key, check_type = excluded.check_type, "
+            "ON CONFLICT (incident_key) DO UPDATE SET "
+            "chat_id = excluded.chat_id, check_type = excluded.check_type, "
             "severity = excluded.severity, resource = excluded.resource, "
             "workspace = excluded.workspace, detail = excluded.detail, "
             "first_detected = excluded.first_detected, "
             "currently_active = excluded.currently_active, updated_at = now()",
-            (chat_id, meta.get("incidentKey"), meta.get("checkType"), meta.get("severity"),
+            (incident_key, chat_id, meta.get("checkType"), meta.get("severity"),
              meta.get("resource"), meta.get("workspace"), meta.get("detail"),
              meta.get("firstDetected"), meta.get("currentlyActive")),
         )
