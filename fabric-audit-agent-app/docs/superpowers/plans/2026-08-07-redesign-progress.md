@@ -17,8 +17,10 @@ Durable resume point for the 6-sub-plan program. Spec: `docs/superpowers/specs/2
 - [x] **2c** XMLA/connection error classifier + detector (uses EventText/queryText) + "session moved" suppression. `c557918`
 - [x] **2d** long-running-cluster detector (wired); per-user baseline helper built-but-DEFERRED (no per-user history store); multi-visual suppression in query_shape (all-fast recurring shapes suppressed). `fb1fa01`
 
-## Sub-plan 3 — Daily-summary + card/notification redesign (NOT STARTED)
-Part-7 chat_id swallow bug FIRST; daily-summary taxonomy rebuild + top-10 users + refresh section + no-CU-fallback; card separate capacity/attribution facts + When/first-noticed; investigation pivot.
+## Sub-plan 3 — Daily-summary + card/notification redesign (DONE — suite 1868)
+- [x] **3a** Part-7 fix (Python): ticket keyed by `incident_key` (nullable chat_id), gate decoupled, migration SQL, both sweep+tier2. `1f41fcf`. **CARRY-FORWARD → Sub-plan 6:** app-side `/api/alerts` is chat-driven, so chat-less tickets still need a TS read-path change (independent alert_ticket query keyed by incident_key + ack + UI deep-link fallback) to actually surface.
+- [x] **3b** daily-summary rebuilt around taxonomy: refresh isolated, recurring-shape vs slow-ops, top-users from `facts["events"]` (no %), CU one-liner, no-issues fallback. suite 1862.
+- [x] **3c/3d** cards carry separate `Capacity this window` fact + `When`/first-noticed; investigation PIVOT in both `_investigate_query` builders + system_prompt. `013b967`.
 
 ## Sub-plan 4 — Infra, health & wiring integrity (NOT STARTED)
 health report + FAIL-OPEN classification + WIRING-MAP.md; Lakebase auth identity + retry; webhook URLError; error-conflation (25e); egress on ticketing/conversation; wire assert_model_map_invariant at startup.
