@@ -44,6 +44,60 @@ def test_capacity_healthy_and_missing():
     assert detect_capacity({}) == []
 
 
+# ---------------- capacity FIX 0: merged/estate-wide path (top-level facts["refreshes"]) ----------------
+def _cap_merged(**over):
+    """Mirrors what ``adapters/collector_merge.py`` produces on the merged/App path: the capacity
+    object has NO nested ``refreshes`` (no REST/mapper source contributed it), while a standalone
+    refresh-shaped collector's rows land at TOP-LEVEL ``facts["refreshes"]``."""
+    capacity = {
+        "tenant": "Contoso", "capacityId": "F64", "sku": "F64", "memoryGB": 64,
+        "peakCuPct": 96, "peakAt": "2026-06-08T06:05:00.000Z", "throttleMinutes": 42,
+    }
+    refreshes = [
+        {"workspace": "Finance", "dataset": "Sales", "scheduledAt": "06:00", "durationMin": 47, "sizeGB": 4.2},
+        {"workspace": "Finance", "dataset": "Forecast", "scheduledAt": "06:00", "durationMin": 31, "sizeGB": 2.1},
+        {"workspace": "Ops", "dataset": "Logistics", "scheduledAt": "06:00", "durationMin": 22, "sizeGB": 1.4},
+    ]
+    facts = {"capacity": capacity, "refreshes": refreshes}
+    facts.update(over)
+    return facts
+
+
+def test_capacity_falls_back_to_top_level_refreshes_when_nested_absent():
+    # Before FIX 0, detect_capacity only read facts["capacity"]["refreshes"]; on the merged path
+    # that key is absent (empty) so contention/oversized-model could never fire.
+    types = sorted(f["type"] for f in detect_capacity(_cap_merged()))
+    assert types == ["capacity.contention", "capacity.oversized-model", "capacity.throttle"]
+
+
+def test_capacity_prefers_nested_refreshes_over_top_level_when_both_present():
+    # No double-counting: when the REST path's nested refreshes ARE present, top-level
+    # facts["refreshes"] (a different domain — refresh-history failures, B3) must be ignored.
+    facts = _cap_merged()
+    facts["capacity"]["refreshes"] = [
+        {"workspace": "Finance", "dataset": "Sales", "scheduledAt": "06:00", "durationMin": 47, "sizeGB": 4.2},
+    ]
+    contention = [f for f in detect_capacity(facts) if f["type"] == "capacity.contention"]
+    assert contention == []   # only 1 nested refresh at 06:00 — no collision, and top-level 3 are ignored
+
+
+def test_capacity_verdict_optimize_fires_on_merged_refresh_fixture():
+    from fabric_audit_agent.verdict import build_capacity_verdict
+    facts = _cap_merged()
+    flags = detect_capacity(facts)
+    verdict = build_capacity_verdict(facts, flags)
+    assert verdict["decision"] == "optimize"
+    assert "capacity.contention" in verdict["evidence"]["optimizations"]
+
+
+def test_capacity_rest_single_source_path_unaffected():
+    # REST path (mappers/capacity.py): refreshes always arrive nested, no top-level facts["refreshes"].
+    facts = _cap()
+    assert "refreshes" not in facts
+    assert sorted(f["type"] for f in detect_capacity(facts)) == \
+        ["capacity.contention", "capacity.oversized-model", "capacity.throttle"]
+
+
 # ---------------- concentration ----------------
 def test_concentration_flags_over_threshold_skips_under():
     facts = {"items": [

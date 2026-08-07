@@ -44,6 +44,38 @@ def test_assess_sla_skips_without_now():
     assert "sla" not in out[0]
 
 
+# ---- FIX 3: capacity throttle/pressure/overage auto-resolve, never "no resolution" / SLA-breach ----
+def test_annotate_accountability_excludes_auto_resolving_capacity_types():
+    findings = [
+        {"key": "capacity.throttle::cap F64", "recurringRuns": 5, "lifecycle": {"state": "open"}},
+        {"key": "capacity.pressure::cap F64", "recurringRuns": 5, "lifecycle": {"state": "open"}},
+        {"key": "capacity.overage::cap F64", "recurringRuns": 5, "lifecycle": {"state": "open"}},
+        {"key": "refresh.failing::Finance/Sales", "recurringRuns": 5, "lifecycle": {"state": "open"}},
+    ]
+    out = annotate_accountability(findings, [])
+    by = {f["key"]: f for f in out}
+    assert "accountability" not in by["capacity.throttle::cap F64"]
+    assert "accountability" not in by["capacity.pressure::cap F64"]
+    assert "accountability" not in by["capacity.overage::cap F64"]
+    # a normal (non-capacity-physical-state) finding still gets the "no resolution" language
+    assert by["refresh.failing::Finance/Sales"]["accountability"]["message"] == \
+        "Open for 5 consecutive run(s) with no resolution."
+    assert summarize_accountability(out)["ignoredCount"] == 1
+
+
+def test_assess_sla_excludes_auto_resolving_capacity_types():
+    findings = [
+        {"key": "capacity.throttle::cap F64", "score": {"level": "Critical"}},
+        {"key": "activity.slow-operation::Finance/Sales", "score": {"level": "Critical"}},
+    ]
+    hist = [{"runAt": "2026-06-01T00:00:00Z", "findings": [{"key": "capacity.throttle::cap F64"}, {"key": "activity.slow-operation::Finance/Sales"}]}]
+    out = assess_sla(findings, hist, _ms("2026-06-05T00:00:00Z"))   # 4 days; Critical target 1
+    by = {f["key"]: f for f in out}
+    assert "sla" not in by["capacity.throttle::cap F64"]            # auto-resolving — never breached
+    assert by["activity.slow-operation::Finance/Sales"]["sla"]["breached"] is True   # normal finding unaffected
+    assert summarize_sla(out)["breachedCount"] == 1
+
+
 # ---- routing ----
 def test_route_findings_by_domain():
     r = route_findings([{"key": "security.admin-grant::a"}, {"key": "capacity.throttle::b"}, {"key": "weird::c"}])

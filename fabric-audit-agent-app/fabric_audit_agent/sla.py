@@ -1,7 +1,7 @@
 """SLA age vs target per finding. Port of ``core/sla.js``. Pure (time injected)."""
 import math
 from datetime import datetime, timezone
-from .accountability import first_seen_map
+from .accountability import first_seen_map, type_of, AUTO_RESOLVING_TYPES
 
 _SLA_DAYS = {"Critical": 1, "Warning": 7, "Info": 30}
 _DAY_MS = 86_400_000
@@ -26,6 +26,11 @@ def assess_sla(findings=None, history=None, now_ms=0, sla_days=None):
     first_seen = first_seen_map(history)
     out = []
     for f in findings:
+        # FIX 3: throttle/pressure/overage are physical capacity states that auto-resolve — never
+        # apply SLA-breach ("no resolution") language to them (see accountability.py).
+        if type_of(f.get("key")) in AUTO_RESOLVING_TYPES:
+            out.append(f)
+            continue
         fs = first_seen.get(f.get("key"))
         target = sla_days.get((f.get("score") or {}).get("level"))
         if not fs or target is None or now_ms <= 0:
