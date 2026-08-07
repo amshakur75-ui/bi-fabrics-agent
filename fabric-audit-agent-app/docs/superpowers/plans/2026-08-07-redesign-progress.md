@@ -28,8 +28,10 @@ Durable resume point for the 6-sub-plan program. Spec: `docs/superpowers/specs/2
 - [x] **4a/4b** `automation/health.py` HealthReport + digest banner + startup invariant wired + `docs/WIRING-MAP.md`. `b307201`. (Future work noted in WIRING-MAP: per-detector isolation, sweep-path health threading, full 107-except census.)
 - [x] **4e** egress: ticketing + conversation route through `apply_egress_controls`. `e55a9d3`.
 
-## Sub-plan 5 — Plugin query-audit depth + safety rails (NOT STARTED)
-domain-subset audit rules (BEST/HINT/relevant PERF+CORRECT, skip App-Insights TELEMETRY); perf-tuner patterns; large-result display gate (>50 rows); kql_format; SessionStart preflight; audit-before-execute prompt rule.
+## Sub-plan 5 — Plugin query-audit depth + safety rails (DONE — suite 1994)
+- [x] **5a** ported 22 domain-relevant audit rules (now 27 total; TELEMETRY skipped) + perf-tuner patterns; +59 tests. `3f6c923`.
+- [x] **5b** large-result display gate on run_kql (>50 rows → `largeResult` + 4 options + 100-row cap) + prompt rule. suite 1974.
+- [x] **5c/5d/5e** `query/kql_format.py` (wired to display queryKql) + `automation/preflight.py` (startup snapshot → health) + audit-before-execute prompt rule. `e25dcc1`.
 
 ## Sub-plan 6 — Frontend UX (NOT STARTED)
 U1 structured investigation card; U3 per-number CU-vs-proxy marker. (U2/U4 already shipped.)
