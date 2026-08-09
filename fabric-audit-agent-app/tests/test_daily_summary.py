@@ -126,8 +126,8 @@ def test_top_users_from_events_is_plain_ranking_no_percent():
         events=events)
     assert "## Top users today" in md
     top_section = md[md.index("## Top users today"):]
-    assert "1. alice@x.com — 60.0 CU-s (2 operation(s))" in top_section
-    assert "2. bob@x.com — 10.0 CU-s (1 operation(s))" in top_section
+    assert "1. alice@x.com — 60.0 CPU-s (2 operation(s))" in top_section
+    assert "2. bob@x.com — 10.0 CPU-s (1 operation(s))" in top_section
     assert "%" not in top_section
     assert "of capacity" not in top_section
     blob = json.dumps(card)
@@ -166,11 +166,11 @@ def test_top_users_with_events_but_no_usable_cu_seconds_does_not_claim_zero_cost
         events=events)
     assert "## Top users today" in md
     top_section = md[md.index("## Top users today"):]
-    assert "0.0 CU-s" not in top_section
+    assert "0.0 CPU-s" not in top_section and "0.0 CU-s" not in top_section
     assert "erin@x.com — 2 operation(s) (cost unknown)" in top_section
     assert "cost unknown" in top_section.lower() or "no usable cu-seconds" in top_section.lower()
     blob = json.dumps(card)
-    assert "0.0 CU-s" not in blob
+    assert "0.0 CPU-s" not in blob and "0.0 CU-s" not in blob
 
 
 def test_stale_open_backlog_banner_and_run_excludes_them_from_headline():
@@ -295,4 +295,4 @@ def test_run_passes_events_through_for_top_users():
                             chat_writer=lambda m, t: (writes.append(m), "c1")[1],
                             app_url="https://app", now_dt=NOW, events=events)
     assert res["delivered"] is False
-    assert "99.0 CU-s" in writes[0]
+    assert "99.0 CPU-s" in writes[0]

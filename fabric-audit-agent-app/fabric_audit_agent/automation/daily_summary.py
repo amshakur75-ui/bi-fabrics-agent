@@ -193,7 +193,7 @@ def _top_users_lines(ranked, source):
     for i, r in enumerate(ranked, 1):
         if source == "events":
             cu = r["cuSeconds"]
-            lines.append(f"{i}. {r['user']} — {cu:.1f} CU-s ({r['operations']} operation(s))")
+            lines.append(f"{i}. {r['user']} — {cu:.1f} CPU-s ({r['operations']} operation(s))")
         elif source == "costUnknown":
             lines.append(f"{i}. {r['user']} — {r['operations']} operation(s) (cost unknown)")
         else:

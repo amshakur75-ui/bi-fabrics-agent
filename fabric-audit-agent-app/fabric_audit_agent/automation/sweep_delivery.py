@@ -161,7 +161,14 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                                      ("Finding", key)) if v]
         card = build_card("new", title=title, severity=sev, facts=facts, summary=what,
                           chat_url=chat_url)
-        res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
+        # Teams is reserved for TIER-2 real-time capacity emergencies (throttle/pressure/overage).
+        # Every sweep-family finding (model/report/refresh/security/pipeline/cost/blast_radius/
+        # pattern/activity/query/xmla/...) goes to the app notification center ONLY — pushing every
+        # sweep finding to Teams was the noise source found 2026-08-09 (Evelien 6.7s / 107 CPU-s,
+        # Madhan 18.2s / 207 CPU-s, Jessica 173s / 148 CPU-s — none capacity emergencies). The
+        # audit_alerts row + ticket_writer + chat_writer paths below still run, so the finding is
+        # tracked, ticketed, and investigable — just not on your phone.
+        res = {"delivered": False, "status": None, "skipped": "sweep-not-in-teams-channel"}
         alerts_store["upsert"]({
             "incidentKey": key, "status": "active", "severity": sev, "checkType": family,
             "resource": f.get("where") or key, "chatId": chat_id,

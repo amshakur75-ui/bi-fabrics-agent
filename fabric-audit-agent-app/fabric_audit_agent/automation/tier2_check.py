@@ -754,10 +754,11 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         if key in seen:
             continue
         if prior.get("checkType") in _CAPACITY_CHECKS:
-            # Genuine physical capacity state that comes and goes -> auto-resolve + notify.
-            title = f"{prior.get('checkType', 'incident')} ({prior.get('resource', 'capacity')})"
-            card = build_card("resolved", title=title)
-            dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
+            # Genuine physical capacity state that comes and goes -> auto-resolve internally, but do
+            # NOT push a "resolved" card to Teams. Resolution isn't actionable — the state cleared
+            # on its own, nothing for a human to do. Broadcasting the auto-close doubled Teams
+            # volume without adding signal (found 2026-08-09). Notification-center + audit_alerts
+            # still record the resolve state so the ticket lifecycle stays intact.
             alerts_store["resolve"](key, now_iso)
             actions["resolved"].append(key)
         else:

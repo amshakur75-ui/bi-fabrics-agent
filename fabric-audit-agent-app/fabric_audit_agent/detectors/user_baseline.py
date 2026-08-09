@@ -93,8 +93,8 @@ def detect_user_baseline_deviation(events, user_history, config=None):
                 "baselineP95": baseline.get("p95"), "baselineCount": baseline.get("count"),
                 "deltaVsP50Pct": comparison.get("deltaVsP50Pct"),
             },
-            "what": (f"{user} ran \"{operation}\" on \"{item}\" costing {cu_out} CU-s — "
-                     f"above their own baseline p95 of {p95} CU-s "
+            "what": (f"{user} ran \"{operation}\" on \"{item}\" costing {cu_out} CPU-s — "
+                     f"above their own baseline p95 of {p95} CPU-s "
                      f"(from {baseline.get('count')} historical operations)."),
         })
     return flags

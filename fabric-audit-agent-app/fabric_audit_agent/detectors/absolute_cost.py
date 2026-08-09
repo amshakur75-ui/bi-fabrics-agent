@@ -43,9 +43,14 @@ def detect_absolute_cost(facts, config=None):
         cu_seconds = _num(ev.get("cuSeconds"))
         duration_seconds = duration_ms / 1000.0 if duration_ms is not None else None
 
+        # INTERIM (2026-08-09): a query must be BOTH slow AND heavy to fire — the original `slow OR
+        # costly` gate flooded on short-but-CPU-intense queries (Evelien 6.7s/107 CPU-s, Madhan
+        # 18.2s/207 CPU-s) that are normal for busy users. Only queries that are simultaneously
+        # long-running AND expensive get flagged. C2 (per-user rolling p95) replaces this entire
+        # gate with a personalized threshold in ~2 weeks once the baseline data has been collected.
         slow = duration_seconds is not None and duration_seconds >= slow_seconds
         costly = cu_seconds is not None and cu_seconds >= high_cu
-        if not (slow or costly):
+        if not (slow and costly):
             continue
 
         user = ev.get("user") or "unknown user"
@@ -53,6 +58,13 @@ def detect_absolute_cost(facts, config=None):
         operation = ev.get("operation") or "operation"
         dur_out = round(duration_seconds, 1) if duration_seconds is not None else None
         cu_out = round(cu_seconds, 1) if cu_seconds is not None else None
+        # Intensity = CPU-seconds per wall-second (how hard the query was working, average). A
+        # value near 1 means single-core steady work; > 1 means multi-core; << 1 means mostly
+        # waiting on I/O. Honest label on the card: "CPU-s" (this IS CpuTimeMs/1000 from Log
+        # Analytics), not "CU-s" (which historically implied billed capacity CU — a proxy relation).
+        intensity = round(cu_seconds / duration_seconds, 2) if (
+            duration_seconds is not None and duration_seconds > 0 and cu_seconds is not None
+        ) else None
 
         flags.append({
             "type": "activity.slow-operation",
@@ -60,11 +72,17 @@ def detect_absolute_cost(facts, config=None):
             "when": ev.get("ts") or "",
             "evidence": {
                 "user": ev.get("user"), "item": ev.get("item"), "operation": ev.get("operation"),
-                "durationMs": ev.get("durationMs"), "cuSeconds": ev.get("cuSeconds"),
-                "durationSeconds": dur_out,
+                "durationMs": ev.get("durationMs"),
+                "cuSeconds": ev.get("cuSeconds"),        # kept for downstream code compatibility
+                "cpuSeconds": cu_out,                     # honest label: this is CpuTimeMs / 1000
+                "wallSeconds": dur_out,
+                "intensityCpuPerSec": intensity,
+                "durationSeconds": dur_out,               # legacy alias, unchanged
             },
-            "what": (f"{user} ran an operation on \"{item}\" that took "
-                     f"{dur_out if dur_out is not None else '?'}s "
-                     f"({cu_out if cu_out is not None else '?'} CU-s) — {operation}."),
+            "what": (f"{user} ran an operation on \"{item}\" — "
+                     f"wall-clock {dur_out if dur_out is not None else '?'}s, "
+                     f"CPU-time {cu_out if cu_out is not None else '?'} CPU-s"
+                     f"{f' (intensity {intensity} CPU-s/wall-s)' if intensity is not None else ''}"
+                     f" — {operation}."),
         })
     return flags

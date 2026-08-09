@@ -9,7 +9,10 @@ def detect_cost(facts, config=None):
     flags = []
 
     for r in (u.get("reports") or []):
-        if (r.get("views30d") or 0) == 0:
+        # Only flag CONFIRMED zero — not missing data. The old `(views30d or 0) == 0` treated
+        # both a genuine 0 view count and a None (no data collected) as "unused," flagging reports
+        # we simply lack telemetry for as if they were confirmed orphans (2026-08-09 audit).
+        if r.get("views30d") == 0:
             flags.append({
                 "type": "cost.unused-report",
                 "resource": f"{r.get('workspace')} / {r.get('name')}",

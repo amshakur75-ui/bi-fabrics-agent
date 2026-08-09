@@ -42,12 +42,14 @@ def test_delivers_new_material_non_tier2_findings_only():
                                app_url="https://app")
     assert set(out["delivered"]) == {"model.bidirectional::Sales", "refresh.contention::WS"}
     assert out["skipped_tier2"] == 1 and out["skipped_minor"] == 1
-    assert len(posts) == 2
-    # each delivered finding becomes an active incident (checkType = the finding family) + a deep-link
+    # 2026-08-09: sweep NEVER pushes to Teams anymore — those channels are reserved for tier-2 real
+    # capacity emergencies (throttle/pressure/overage). Sweep findings still get delivered via the
+    # notification-center path (audit_alerts + ticket_writer + chat_writer), just not on your phone.
+    assert posts == []
+    # each delivered finding becomes an active incident (checkType = the finding family)
     active = store["query_active"]()
     assert "refresh.contention::WS" in active and active["refresh.contention::WS"]["checkType"] == "refresh"
     assert active["model.bidirectional::Sales"]["checkType"] == "model"
-    assert "/?query=" in json.dumps(posts[0]) or "/chat/" in json.dumps(posts[0])
 
 
 def test_sweep_findings_write_notification_center_tickets():
@@ -102,9 +104,9 @@ def test_ticket_still_written_when_chat_creation_fails():
     assert cid is None
     assert m["checkType"] == "model" and m["currentlyActive"] is True
     assert m["resource"] == "Finance / Sales"
-    # the deep-link degrades to the root ?query= auto-investigation link, never dropped
-    blob = json.dumps(posts[0])
-    assert "/?query=" in blob and "/chat/" not in blob
+    # 2026-08-09: sweep doesn't push to Teams anymore, so no Teams post to inspect. The
+    # notification-center still gets its ticket (verified above) with the audit_alerts row.
+    assert posts == []
     # Part 4: the swallowed chat-write failure is now also recorded on the HealthReport.
     assert health.degraded is True
     assert "lakebase unavailable" in health.summary
@@ -145,17 +147,16 @@ def test_user_ranking_finding_delivered_as_actionable_concentration_checktype():
 
 
 def test_investigate_query_anchors_to_the_fire_time():
-    import urllib.parse
-    store = create_alerts_store_memory()
-    posts, sink = _sink()
-    f = [_f("model.bidirectional::Sales", "Warning", what="6 bidirectional relationships")]
-    deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink}, app_url="https://app",
-                         chat_writer=lambda m, t: "c9", now_iso="2026-08-06T03:17:00Z")
-    blob = urllib.parse.unquote(json.dumps(posts[0]))
-    assert "2026-08-06T03:17:00Z" in blob and "TIME WINDOW" in blob
+    # 2026-08-09: sweep doesn't push to Teams anymore, so we can't read the anchor from posts[0].
+    # Test the _investigate_query helper directly — it's still called internally to build the
+    # notification-center's chat deep-link URL (the tickets and chats path still runs), so the
+    # anchor still matters, just isn't inspectable via a Teams post.
+    from fabric_audit_agent.automation.sweep_delivery import _investigate_query
+    q = _investigate_query("6 bidirectional relationships", when="2026-08-06T03:17:00Z")
+    assert "2026-08-06T03:17:00Z" in q and "TIME WINDOW" in q
     # Part 6: an empty ±30-min window must not just be widened — it pivots to the named user's own
     # broad history.
-    assert "PIVOT" in blob and "7-30 days" in blob
+    assert "PIVOT" in q and "7-30 days" in q
 
 
 def test_dedups_against_already_active_incidents():

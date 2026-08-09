@@ -1,4 +1,5 @@
 """Tier-2 alert orchestration — the dedup/48h/escalate/resolve state machine (injected fakes)."""
+import json
 from datetime import datetime, timezone, timedelta
 
 from fabric_audit_agent.automation.tier2_check import (
@@ -83,11 +84,13 @@ def test_full_state_machine():
     assert a["escalation"] == ["pressure::capacity"] and rc["n"] == 2
     assert store["query_active"]()["pressure::capacity"]["escalationCount"] == 1
 
-    # run 5: trigger gone -> resolved card + row resolved
+    # run 5: trigger gone -> row resolved (internal), but NO Teams "Resolved" card posted (2026-08-09
+    # decision: resolution isn't actionable — the state cleared on its own, nothing for a human
+    # to do). Broadcasting the auto-close doubled Teams volume without adding signal.
     a = process_alerts([], now_dt=T0 + timedelta(hours=51), **kw)
     assert a["resolved"] == ["pressure::capacity"]
     assert store["query_active"]() == {}
-    assert "Resolved" in _card(posts)["body"][0]["text"]
+    assert not any("Resolved" in json.dumps(p) for p in posts)
 
 
 def test_chat_write_failure_falls_back_to_root_autoinvestigate_link():
@@ -158,8 +161,10 @@ def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():
     active = store["query_active"]()
     assert "pressure::capacity" not in active               # capacity resolved (gone from active)
     assert active["cross_user::Fin/Sales"]["currentlyActive"] is False  # attribution still open
+    # 2026-08-09: resolved capacity states no longer send a Teams card (auto-close isn't
+    # actionable — nothing for a human to do). The row is still resolved internally, verified above.
     resolved_cards = [p for p in posts if "Resolved" in json.dumps(p)]
-    assert len(resolved_cards) == 1                          # ONLY the capacity resolved card
+    assert len(resolved_cards) == 0
 
 
 def test_resolved_incident_reopens_on_recurrence():
