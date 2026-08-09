@@ -53,7 +53,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["fabric_audit_agent*", "agent_server*"]
+# `scripts` is included because [project.scripts]'s `start-app` entry point resolves to
+# ``scripts.start_app:main``. Without this, the wheel installs the entry-point shim but not the
+# ``scripts`` module, and ``uv run start-app`` crashes on boot with
+# ``ModuleNotFoundError: No module named 'scripts'`` (Databricks App crash, 2026-08-09 22:13 UTC).
+include = ["fabric_audit_agent*", "agent_server*", "scripts"]
 
 # Ship the grounded KQL template catalog INSIDE the wheel. Without this, setuptools excludes
 # the non-.py file and `_load_query_library` finds nothing in the installed package (prod), so
