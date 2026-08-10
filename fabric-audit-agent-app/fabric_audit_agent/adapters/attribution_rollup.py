@@ -177,8 +177,16 @@ def rollup_attribution(rows, top_n=3, ws_label="",
         # as cuSeconds, ~1000x off from the event path). ``cuSeconds`` input is already seconds.
         # N7: track whether THIS row's cost came from true CpuTimeMs or the DurationMs fallback,
         # so the group-level mode can reflect what actually backed the numbers.
-        cpu_time_ms = _row(r, "CpuTimeMs")
-        raw_ms = cpu_time_ms if cpu_time_ms is not None else _row(r, "cpuMs", "DurationMs")
+        # ``cpuMs`` is TRUE CPU TIME, not a duration proxy: the deployed default LA query
+        # (collector_log_analytics._build_default_kql) ends with
+        # ``| summarize cpuMs=sum(CpuTimeMs) by ...``, i.e. cpuMs IS sum(CpuTimeMs) under an alias.
+        # Grouping it with DurationMs in the fallback meant is_true_cpu was False for EVERY row in
+        # production, so every item and user shipped attributionMode="cost-duration" while the
+        # numbers were genuine CPU time. The mislabel erred safe (it under-claimed), but the
+        # proxy/true-CU indicator, the confidence badge and the card copy all read it, so the
+        # product understated its own evidence on every sweep.
+        cpu_time_ms = _row(r, "CpuTimeMs", "cpuMs")
+        raw_ms = cpu_time_ms if cpu_time_ms is not None else _row(r, "DurationMs")
         cs = r.get("cuSeconds")
         cpu = (raw_ms / 1000.0) if raw_ms is not None else (cs if cs is not None else 0)
         is_true_cpu = cpu_time_ms is not None

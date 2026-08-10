@@ -30,11 +30,17 @@ def score_severity(flag, config=None):
 
     if t == "capacity.concentration":
         level = "Critical" if e.get("sharePct", 0) >= config["capacity"]["concentrationCritPct"] else "Warning"
-        share_label = "monitored CU" if e.get("attributionMode") == "cost" else "capacity CU"
+        # No producer has EVER emitted the literal "cost": attribution_rollup emits "cost-cpu" /
+        # "cost-duration" (the N7 split) and a "frequency" mode also exists. So this comparison was
+        # always false and every live concentration finding's severity reason read
+        # "48% of capacity CU in one item" for what is a CpuTimeMs/DurationMs PROXY -- the exact
+        # claim gates.true_cu_per_user_gate marks PERMANENTLY BLOCKED. Mirrors the form already
+        # fixed in detectors/concentration.py: only a MISSING mode may claim true capacity CU.
+        share_label = "capacity CU" if e.get("attributionMode") is None else "monitored CU"
         return {"level": level, "reason": f"{e.get('sharePct')}% of {share_label} in one item"}
 
     if t == "capacity.user-ranking":
-        return {"level": "Info", "reason": "top CU consumers (none over threshold)"}
+        return {"level": "Info", "reason": "top monitored-CU consumers (none over threshold)"}
 
     if t == "model.bidirectional":
         level = "Critical" if e.get("count", 0) >= config["model"]["bidirectionalCritMin"] else "Warning"

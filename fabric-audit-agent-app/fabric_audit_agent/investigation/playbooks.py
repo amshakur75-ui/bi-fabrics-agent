@@ -137,7 +137,9 @@ def investigate_capacity_spike(collector, reasoner, when=None, events=None, capa
                         f"capacity peaked {cap['peakCuPct']}% ({cap.get('throttleMinutes', 0)} min throttled)",
                         cap)]
     if top:
-        label = "monitored CU" if top.get("attributionMode") == "cost" else "capacity CU"
+        # See severity.py: no producer emits the bare "cost", so this always chose the most
+        # authoritative label for proxy data. Only a MISSING mode may claim true capacity CU.
+        label = "capacity CU" if top.get("attributionMode") is None else "monitored CU"
         tu = (top.get("topUsers") or [{}])[0].get("user")
         ev.append(evidence_item("concentration",
                                 f"\"{top.get('name')}\" = {round(top.get('sharePct', 0), 1)}% of {label}"

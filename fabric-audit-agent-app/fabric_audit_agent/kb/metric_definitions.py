@@ -168,10 +168,15 @@ INTERACTIVE_DELAY_THRESHOLD_PCT = {
     "health_state_smoothing_window": "10 minutes",
     "verified": True,
     "notes": (
-        "Raw API field is a fraction (e.g. 1.2371); must be scaled x100 before passing to "
-        "throttle.py's `max(vals) > 100.0` check (which expects percentage points, e.g. 123.71). "
-        "Confirmed constant = 1 (i.e. 100%) across all windows in the validation session -- "
-        "throttle fires when CU% exceeds 100% of base. "
+        "Raw API field is a fraction (e.g. 1.2371) scaled x100 by the collector to 123.71. "
+        "RETIRED as a throttling signal (2026-08-10): this is the capacity's threshold SETTING, "
+        "not its utilization against that threshold, and it is CONSTANT (confirmed = 1 across "
+        "all windows in the validation session). The previous wording here instructed feeding it "
+        "to throttle.py's `max(vals) > 100.0` check, which -- given the constant 123.71 -- was "
+        "true on every window and made the stage-2 honesty gate conclude 'throttling-confirmed' "
+        "for any burst over 100% CU. Do NOT reintroduce that comparison; stage 2 now reports the "
+        "value but cannot fire on it. Same misread retired _check_throttle_imminent in "
+        "automation/tier2_check.py. "
         "IMPORTANT: do not confuse this field with the raw [CU_limit] or "
         "[Interactive_delay_threshold] export columns, which are boolean flags (value = 1), "
         "NOT scale values. "

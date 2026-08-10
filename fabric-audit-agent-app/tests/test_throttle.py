@@ -24,11 +24,31 @@ def test_stage2_unavailable_gives_unconfirmed_not_confirmed():
     assert out["stage2"]["available"] is False
     assert "CU%>100 alone" in out["stage2"]["note"]
 
-def test_stage2_signal_fired_confirms_throttling():
-    hot = [{**p, "interactiveDelayPct": 120.0} for p in _SERIES_HOT]
+def test_the_threshold_signal_is_retired_and_can_no_longer_confirm_throttling():
+    """The three *Pct fields stage 2 reads are the capacity's threshold SETTINGS (constant), not
+    utilization against them. kb/metric_definitions.py classifies them metric_type "reference" and
+    confirms constant = 1; the live value 1.237113 is scaled x100 by the collector to 123.71, so
+    the old ``max(vals) > 100.0`` test was TRUE ON EVERY WINDOW. That made the stage-2 honesty gate
+    -- whose entire purpose is that CU%>100 alone never concludes throttling -- a rubber stamp:
+    every burst over 100% concluded "throttling-confirmed" citing "maxPct 123.71%", on the chat
+    surface a human actually asks. tier2_check._check_throttle_imminent was retired for this exact
+    misread; the retirement had never propagated here."""
+    hot = [{**p, "interactiveDelayPct": 123.71} for p in _SERIES_HOT]
     out = decompose_throttle(hot, _EVENTS)
-    assert out["conclusion"] == "throttling-confirmed"
-    assert out["stage2"]["interactiveDelay"] == {"fired": True, "maxPct": 120.0}
+    assert out["conclusion"] == "over-utilized-unconfirmed"
+    assert out["stage2"]["interactiveDelay"]["fired"] is False
+    assert out["stage2"]["interactiveDelay"]["retired"] is True
+    # The value is still reported (it IS a real setting) -- it just cannot answer the question.
+    assert out["stage2"]["interactiveDelay"]["maxPct"] == 123.71
+    # And the gate must not claim to have run: that would be the same lie in a quieter voice.
+    assert out["stage2"]["available"] is False
+
+
+def test_no_series_value_of_the_retired_signal_can_confirm_throttling():
+    """Belt and braces: sweep the plausible range, including the live constant."""
+    for v in (0.5, 80.0, 100.0, 100.1, 123.71, 500.0):
+        out = decompose_throttle([{**p, "interactiveDelayPct": v} for p in _SERIES_HOT], _EVENTS)
+        assert out["conclusion"] == "over-utilized-unconfirmed", v
 
 def test_stage3_ranks_only_events_inside_over_windows():
     out = decompose_throttle(_SERIES_HOT, _EVENTS)

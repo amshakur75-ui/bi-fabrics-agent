@@ -211,8 +211,11 @@ def test_series_threshold_fields_accepted_via_data_envelope():
     assert abs(pt["interactiveDelayPct"] - 105.0) < 0.01
 
 
-def test_threshold_fields_unblock_throttle_stage2():
-    """End-to-end: after the A1 fix, decompose_throttle stage-2 fires when threshold > 100."""
+def test_threshold_fields_cannot_unblock_throttle_stage2():
+    """These fields are threshold SETTINGS, not utilization -- they can never confirm throttling.
+    This test asserted the opposite, which is why the misread survived its own retirement in
+    tier2_check. Note production cannot even reach it: the deployed FABRIC_CAPACITY_EVENTS_KQL
+    projects all three columns away, so stage 2 is unavailable there for a second reason."""
     from fabric_audit_agent.investigation.throttle import decompose_throttle
     rows = [{
         "capacityId": "c", "windowStartTime": "t1",
@@ -223,13 +226,14 @@ def test_threshold_fields_unblock_throttle_stage2():
     }]
     series = capacity_series(lambda kql: rows)
     result = decompose_throttle(series, [])
-    assert result["stage2"]["available"] is True
-    assert result["stage2"]["interactiveDelay"]["fired"] is True
-    assert result["conclusion"] == "throttling-confirmed"
+    assert result["stage2"]["available"] is False
+    assert result["stage2"]["interactiveDelay"]["fired"] is False
+    assert result["conclusion"] == "over-utilized-unconfirmed"
 
 
-def test_threshold_below_100_does_not_fire_stage2():
-    """Threshold < 100% (raw fraction < 1.0) after scaling should NOT fire the gate."""
+def test_threshold_below_100_also_does_not_fire_stage2():
+    """Kept as the other half of the pair: the outcome is now the same either way, because the
+    signal is retired rather than merely under its bar."""
     from fabric_audit_agent.investigation.throttle import decompose_throttle
     rows = [{
         "capacityId": "c", "windowStartTime": "t1",
