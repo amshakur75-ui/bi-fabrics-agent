@@ -91,11 +91,25 @@ alertsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
       },
     }));
 
-    const chats = [...chatBacked, ...chatless].sort((a, b) => {
-      const at = a.ticket?.firstDetected ?? a.createdAt ?? '';
-      const bt = b.ticket?.firstDetected ?? b.createdAt ?? '';
-      return bt.localeCompare(at);
-    });
+    // Compare EPOCH MILLIS, not strings. `ticket.firstDetected` is a text column but `createdAt` is
+    // a Drizzle Date, so the previous `bt.localeCompare(at)` threw TypeError the moment a
+    // ticket-less alert chat landed in the `b` slot -- 500ing the whole route, which blanks the
+    // notification center AND the bell badge. That was reachable on every poll: getAlertTicketMap
+    // swallows its errors and returns {}, so a single missing GRANT on ai_chatbot.alert_ticket makes
+    // EVERY alert ticket-less. An unparseable value sorts last rather than crashing the route.
+    const sortKey = (v: unknown): number => {
+      if (v instanceof Date) return v.getTime();
+      if (typeof v === 'string') {
+        const t = Date.parse(v);
+        return Number.isNaN(t) ? -Infinity : t;
+      }
+      return -Infinity;
+    };
+    const chats = [...chatBacked, ...chatless].sort(
+      (a, b) =>
+        sortKey(b.ticket?.firstDetected ?? b.createdAt) -
+        sortKey(a.ticket?.firstDetected ?? a.createdAt),
+    );
 
     res.json({ ...result, chats });
   } catch (error) {

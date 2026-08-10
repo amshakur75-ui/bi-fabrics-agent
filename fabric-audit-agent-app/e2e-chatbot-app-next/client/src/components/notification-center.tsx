@@ -117,7 +117,7 @@ export function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'open' | 'resolved'>('open');
   const [detail, setDetail] = useState<AlertChat | null>(null);
-  const { data, mutate } = useSWR<AlertsData>('/api/alerts?limit=50', fetcher, {
+  const { data, error, mutate } = useSWR<AlertsData>('/api/alerts?limit=50', fetcher, {
     fallbackData: { chats: [] },
     refreshInterval: 60000,
   });
@@ -336,9 +336,16 @@ export function NotificationCenter() {
             ) : null}
             {shown.length === 0 ? (
               <div className="px-4 py-10 text-center text-muted-foreground text-sm">
-                {tab === 'open'
-                  ? 'No open issues right now. 🎉'
-                  : 'Nothing resolved or paused right now.'}
+                {/* "No open issues" is a CLAIM about the estate, and it must not be made when we
+                    simply could not read the alert store. SWR's `error` was never inspected and the
+                    fetcher turns a 204 into {chats: []}, so an unreachable store -- Lakebase scales
+                    to zero after 5 idle minutes, and the route used to 500 on every poll -- rendered
+                    a reassuring green checkmark DURING a live incident. */}
+                {error
+                  ? 'Could not load alerts — the alert store is unreachable, so this list may be incomplete. Retrying…'
+                  : tab === 'open'
+                    ? 'No open issues right now. 🎉'
+                    : 'Nothing resolved or paused right now.'}
               </div>
             ) : (
               shown.map((t) => {
