@@ -29,7 +29,7 @@ from ..investigation.gates import (
 from .incident import (incident_key, severity_of, primary_metric, signal_set,
                        _num as _num_guard)
 from .materiality import classify, is_escalation, load_cfg
-from ..timefmt import to_display
+from ..timefmt import to_display, parse_iso_utc
 
 
 def _now_iso():
@@ -290,6 +290,31 @@ def _peak(reading):
         return None
 
 
+_MAX_READING_GAP_MIN = 7.5   # 5-min cadence + 50% slack; anything larger is a run gap
+
+
+def _readings_contiguous(readings, n, max_gap_min=_MAX_READING_GAP_MIN):
+    """True if the newest ``n`` readings are consecutive sweeps (no run gap).
+
+    ``readings`` is newest-first. Returns False when any adjacent pair is further apart than
+    ``max_gap_min``, or when a timestamp is missing/unparseable — the stateful gates state
+    DURATIONS derived from the reading count, so without this they assert time spans that never
+    occurred (verified: after the 2026-08-09/10 outage they would have reported "climbed 20 points
+    in 5 minutes" for a 5h30m gap).
+    """
+    window = readings[:n]
+    if len(window) < n:
+        return False
+    stamps = [parse_iso_utc((r or {}).get("runAt")) for r in window]
+    if any(t is None for t in stamps):
+        return False
+    for newer, older in zip(stamps, stamps[1:]):
+        gap_min = (newer - older).total_seconds() / 60.0
+        if not (0 <= gap_min <= max_gap_min):
+            return False
+    return True
+
+
 def _check_sustained_band(readings, mcfg=None):
     """Sustained-but-under-threshold (Step 2, TRUE-CU): CU% held inside the [low, high] band for
     >= min_minutes of consecutive 5-min windows. An early-warning that pressure is building — NOT a
@@ -300,6 +325,11 @@ def _check_sustained_band(readings, mcfg=None):
     high = float(mcfg.get("sustained_band_high", 90.0))
     k = max(2, int(math.ceil(float(mcfg.get("sustained_min_minutes", 20.0)) / 5.0)))
     if len(readings) < k:
+        return []
+    # The claim below is "for {k*5}+ minutes", which is only true if these k readings are
+    # actually consecutive sweeps. Without this the gate reported a 20-minute band over a
+    # multi-DAY span after a run gap.
+    if not _readings_contiguous(readings, k):
         return []
     vals = [_peak(r) for r in readings[:k]]
     if any(v is None for v in vals):
@@ -321,16 +351,23 @@ def _check_rate_of_change(readings, mcfg=None):
     delta = float(mcfg.get("roc_delta", 15.0))
     if len(readings) < 2:
         return []
+    # "climbed N points in 5 minutes" is only true for two ADJACENT sweeps. Across a run gap the
+    # same comparison described a 5.5-hour drift as a 5-minute spike.
+    if not _readings_contiguous(readings, 2):
+        return []
     cur, prev = _peak(readings[0]), _peak(readings[1])
     if cur is None or prev is None:
         return []
     rise = cur - prev
     if rise >= delta:
+        _t0 = parse_iso_utc((readings[1] or {}).get("runAt"))
+        _t1 = parse_iso_utc((readings[0] or {}).get("runAt"))
+        _mins = round((_t1 - _t0).total_seconds() / 60.0) if (_t0 and _t1) else 5
         return [{"check": "rate_change", "peakCuPct": round(cur, 1), "prevCuPct": round(prev, 1),
-                 "risePts": round(rise, 1),
-                 "normalityHint": (f"CU% climbed {rise:.0f} points in 5 minutes ({prev:.0f}% -> "
-                                   f"{cur:.0f}%) — a sharp rise; if the trend holds it may cross 100% "
-                                   "soon.")}]
+                 "risePts": round(rise, 1), "overMinutes": _mins,
+                 "normalityHint": (f"CU% climbed {rise:.0f} points in {_mins} minutes "
+                                   f"({prev:.0f}% -> {cur:.0f}%) — a sharp rise; if the trend holds "
+                                   "it may cross 100% soon.")}]
     return []
 
 

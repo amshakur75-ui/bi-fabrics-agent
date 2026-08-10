@@ -1,10 +1,28 @@
 """Step 2 stateful gates + the tier2_readings rolling store."""
+from datetime import datetime, timedelta, timezone
+
 from fabric_audit_agent.context_readings import create_readings_store_memory
 from fabric_audit_agent.automation.tier2_check import (
     _check_sustained_band, _check_rate_of_change, _check_silent_failure, run_tier2_check)
 
+_BASE = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+
 
 def _r(run_at, peak, ok=True):
+    """One readings row. ``run_at`` may be an ISO string OR a bare index/label.
+
+    FIXTURE REALISM: these fixtures used to pass placeholder labels ("t0", "t1") for runAt, but
+    production ALWAYS writes ISO-8601 (`_record_reading` stamps `_now_iso()`). The stateful gates
+    now require contiguous, parseable timestamps to avoid asserting durations that never happened
+    (see tests/test_stateful_gate_continuity.py), so a label-shaped fixture is no longer a valid
+    stand-in for a real reading. A bare "t<N>" label is therefore translated into a realistic
+    timestamp N sweeps back from a fixed base — preserving each test's intent (index 0 = newest)
+    while matching the shape production emits.
+    """
+    # Label convention, uniform across this file: "t<N>" is N sweeps OLD, so t0 is the newest
+    # row and a newest-first list reads t0, t1, t2 ... (matching what ``recent()`` returns).
+    if isinstance(run_at, str) and run_at.startswith("t") and run_at[1:].isdigit():
+        run_at = (_BASE - timedelta(minutes=5 * int(run_at[1:]))).isoformat().replace("+00:00", "Z")
     return {"runAt": run_at, "peakCuPct": peak, "collectorOk": ok}
 
 
@@ -38,24 +56,24 @@ def test_sustained_silent_without_enough_history():
 # ---- rate of change (default +15 pts) ----
 
 def test_rate_of_change_fires_on_sharp_climb():
-    trigs = _check_rate_of_change([_r("t1", 60), _r("t0", 40)])   # newest 60, prev 40 -> +20
+    trigs = _check_rate_of_change([_r("t0", 60), _r("t1", 40)])   # newest 60, prev 40 -> +20
     assert len(trigs) == 1 and trigs[0]["risePts"] == 20.0 and trigs[0]["check"] == "rate_change"
 
 
 def test_rate_of_change_silent_on_gentle_move():
-    assert _check_rate_of_change([_r("t1", 45), _r("t0", 40)]) == []   # +5 < 15
+    assert _check_rate_of_change([_r("t0", 45), _r("t1", 40)]) == []   # +5 < 15
 
 
 # ---- silent failure (default 3 runs) ----
 
 def test_silent_failure_fires_after_three_blind_runs():
-    readings = [_r("t2", None, ok=False), _r("t1", None, ok=False), _r("t0", None, ok=False)]
+    readings = [_r("t0", None, ok=False), _r("t1", None, ok=False), _r("t2", None, ok=False)]
     trigs = _check_silent_failure(readings)
     assert len(trigs) == 1 and trigs[0]["check"] == "silent_failure" and trigs[0]["runs"] == 3
 
 
 def test_silent_failure_silent_if_any_recent_run_ok():
-    readings = [_r("t2", None, ok=False), _r("t1", 50, ok=True), _r("t0", None, ok=False)]
+    readings = [_r("t0", None, ok=False), _r("t1", 50, ok=True), _r("t2", None, ok=False)]
     assert _check_silent_failure(readings) == []
 
 
