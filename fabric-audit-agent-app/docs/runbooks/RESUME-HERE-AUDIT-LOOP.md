@@ -13,11 +13,13 @@ silent logical wrongness.
 
 ## Current state
 
-- **Clean-sweep counter: 0 of 3.** Round 3 found ~60 items across five parallel agents, including
-  6 P0s. Rounds 1 and 2 found ~30 each. **The rate is not converging.**
-- **Production: wheel `0.2.22`**, deployed and live-verified (tier2 `TERMINATED SUCCESS`,
-  `preflight: ok`, `peakCuPct=59.9`, no Degraded line).
-- Suite **2245 passing**. Repo `main` clean.
+- **Clean-sweep counter: 0 of 3.** Round 4 found ~10 more, including a shipping blocker (stale chat
+  core) and a defect inside a fix written the same day. Rounds 1-3 found ~30/~30/~60. **The rate is
+  not converging.**
+- **Production: wheel `0.2.25`** on all four jobs AND on the MCP app, deployed and live-verified
+  (tier2 `TERMINATED SUCCESS`, `preflight: ok`, `peakCuPct=86.2`, `windowCuSeconds=12983.6`, no
+  Degraded line; daily digest `delivered=True`).
+- Suite **2267 passing**. Repo `main` clean.
 
 ## Round 3's single most important finding
 
@@ -58,7 +60,42 @@ in the following commit and now guarded by a test. **Never `git add -A` while a 
 mutation-testing the same tree** — give it a worktree. The audit round whose purpose was finding
 silently-wrong code was itself the vector.
 
-## KNOWN-OPEN, NOT YET FIXED (carry into round 4, ranked)
+## ROUND 4 — CLOSED (all deployed + live-verified on 0.2.25)
+
+- **THE BLOCKER: the chat agent ran 6-day-old core.** The MCP app is the App's ONLY tool source
+  (tools come over HTTP via `FABRIC_MCP_URL`; the App does not run `tools.py` in-process) and it
+  pinned wheel `0.2.14` from 2026-08-04. So every answer a human got came from core code predating
+  the alerts `_FIELDS` P0 fix, the multi-capacity fix and the throttle retirement, while the jobs ran
+  current. Structural cause: jobs get the wheel as a bundle ARTIFACT (automatic); the app names ONE
+  FILENAME (manual). Re-pinned to 0.2.25 + marker bumped; build log confirms
+  `Successfully installed fabric-audit-agent-0.2.25 fabric-audit-mcp-1.9.18`, no import errors.
+  **Whenever you deploy a job wheel, re-upload it to the Volume and bump the marker.**
+- The capacity card now NAMES WHO (`_likely_drivers` -> all four capacity checks -> composite ->
+  both card paths), labelled "monitored CPU-time, not billed CU" + proxy disclosure.
+- Concentration has a minimum-activity floor (`min_window_cu`, 60 CU-s), CALIBRATED against a live
+  busy window of ~12,980 CU-s and applied only when the window is measurable, so a missing cost
+  column can never become silence.
+- Overage-only incidents carry `peakCuPct`, so their peak-escalation axis works and surfaces show a
+  utilisation figure.
+- Informational rows SETTLE: the upsert now carries `presenceCount`, so an established pattern stops
+  cycling pending/pending/informational every three sweeps.
+- `_parse_ts` delegates to `timefmt.parse_iso_utc`. It hand-rolled `fromisoformat`, which on the
+  **Python 3.10 job compute** rejects the SEVEN fractional digits real LA `TimeGenerated` values
+  carry -- so the activity cross-reference silently no-op'd in production while passing on local 3.12
+  and the App's 3.11.
+- **ALL 38 mutation-audit survivors are now killed** (17 originally survived the full suite). The two
+  batches live in `test_mutation_guards_state.py`, `test_capacity_collector_deployed_shape.py` and
+  `test_mutation_guards_round4.py`.
+- Docs corrected: the 30% alert advertised "User -> Item -> **Owner**". Owner is NOT shipped -- see
+  the item below -- and README also called a CPU-time proxy "capacity CU".
+- REFUTED, do not re-chase: the App's `requirements.txt` omitting `msal`/`azure-kusto-data` is
+  harmless. The App does not execute `tools.py` in-process; the MCP app does and has those deps.
+  Build/runtime logs show zero related import errors. `openpyxl` was genuinely missing from both and
+  is now added to the MCP app.
+- REFUTED: the `base <= 0` guard in the capacity collector is an EQUIVALENT MUTANT (`budget <= 0` two
+  lines later is logically identical), so it is unkillable by construction. The code is right.
+
+## KNOWN-OPEN, NOT YET FIXED (carry into round 5, ranked)
 
 1. **The digest says "No significant issues found ✅" while a capacity incident is open and
    firing.** `daily_summary._EXCLUDE` drops the capacity family from BOTH `open_tickets` and
