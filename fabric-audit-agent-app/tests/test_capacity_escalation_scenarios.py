@@ -130,21 +130,28 @@ def test_a_thirty_minute_throttle_after_a_huge_peak_is_not_silent():
 
 # --- S3: burndown collapse is the fourth axis --------------------------------------------
 
-def test_burndown_collapse_fires_once_when_it_halves():
-    """Peak flat, throttle flat, signal set already the union -> the other three axes are blind.
-    Overage draining 50min -> 2min is an imminent worsening and must break through."""
+def test_a_draining_overage_escalates_once_when_it_becomes_urgent_not_once_per_halving():
+    """Peak flat, throttle flat, signal set already the union -> the other three axes are blind, so
+    a collapsing burndown must be able to break through. But a HALVING ALONE is not news: because
+    the still-firing branch deliberately does not upsert, prior.minutesToBurndown only advances when
+    a card is sent, so one overage draining 50 -> 2 halved repeatedly and carded at 50, 25, 12, 6 and
+    3 -- five Teams cards with the same title, the same two fact names and the same "When". The axis
+    now also requires crossing under an absolute urgency floor (burndown_urgent, 15 min): 50 -> 25
+    tells a human nothing actionable, 19 -> 2 does."""
     store = create_delta_faithful_store()
     posts, sink = _sink()
     acts = _run(store, sink, [
         [_overage(50.0)],    # new incident -> card 1
         [_overage(45.0)],    # -10%, not a halving -> silent
-        [_overage(20.0)],    # <= 45/2 -> card 2
-        [_overage(19.0)],    # not <= 20/2 -> silent
-        [_overage(2.0)],     # <= 19/2 -> card 3
+        [_overage(20.0)],    # a halving, but 20 min is not yet urgent -> silent
+        [_overage(19.0)],    # not a halving of the last CARDED value (45) -> silent
+        [_overage(2.0)],     # halving AND under the urgency floor -> card 2
     ])
-    assert len(posts) == 3
+    assert len(posts) == 2, "a single drain must not card at every halving"
     assert acts[1]["silent"] == ["capacity::capacity"]
+    assert acts[2]["silent"] == ["capacity::capacity"]
     assert acts[3]["silent"] == ["capacity::capacity"]
+    assert acts[4]["escalation"] == ["capacity::capacity"]
 
 
 # --- S4: a narrowing then re-widening set must not re-fire -------------------------------

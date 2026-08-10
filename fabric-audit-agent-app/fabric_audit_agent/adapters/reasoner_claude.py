@@ -67,8 +67,17 @@ def create_claude_reasoner(client, model=DEFAULT_MODEL, config=None, max_flags=5
             # Capture token usage from the API response when available.
             _capture_usage(resp, reasoner)
             enriched = json.loads(_extract_json_array(_first_text(resp)))
-        except Exception:
+        except Exception as exc:
             # Network error, API error, or JSON parse failure — fall back to KB below.
+            # SAY SO. The KB fallback is deliberate and correct (a findings report must not fail
+            # because an LLM is unreachable), but it was completely silent: the only trace was the
+            # ABSENCE of finding["reasonedBy"] == "claude", which nothing inspects. A rotated key, a
+            # deleted serving endpoint or a persistent 429 therefore looked identical to a working
+            # reasoner writing generic prose -- every finding still rendered fully populated, with
+            # `why` from the KB and `impact` as the literal "Impact not assessed." A permanently
+            # broken reasoner is indistinguishable from a working one, forever, with no counter.
+            print(f"[reasoner] Claude call FAILED, falling back to KB text for "
+                  f"{len(flags)} finding(s): {type(exc).__name__}: {exc}")
             enriched = []
 
         by_id = {}

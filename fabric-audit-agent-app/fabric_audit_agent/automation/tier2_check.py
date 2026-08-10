@@ -368,11 +368,25 @@ def _check_cross_source_blind_spot(facts, mcfg=None):
     except (TypeError, ValueError):
         return []
     threshold = float(mcfg.get("blind_spot_cu", 70.0))
-    if peak >= threshold and not items:
+    if peak < threshold:
+        return []
+    if not items:
         return [{"check": "blind_spot", "peakCuPct": round(peak, 1),
                  "normalityHint": ("Capacity shows real load but no monitored activity came back this "
                                    "window — attribution (Log Analytics) may be lagging, filtered, or "
                                    "unconfigured, so WHO is driving this load is not visible.")}]
+    # Items PRESENT but no share computable is the same blindness wearing a disguise: rows came
+    # back, so `not items` is False and the check above passes, yet not one of them resolved a cost
+    # column so nothing can be ranked or attributed. Before sharePct became None on that path it was
+    # 0, which made this state indistinguishable from "every item is responsible for nothing" -- a
+    # confident answer built from no evidence, and the reason the concentration feature could go
+    # permanently quiet without any surface noticing.
+    if not any(i.get("sharePct") is not None for i in items):
+        return [{"check": "blind_spot", "peakCuPct": round(peak, 1), "itemsSeen": len(items),
+                 "normalityHint": (f"Capacity shows real load and {len(items)} monitored item(s) came "
+                                   "back, but NONE carried a usable cost signal, so no share or "
+                                   "ranking can be computed — WHO is driving this load is not "
+                                   "visible. Check the attribution query's cost column.")}]
     return []
 
 
@@ -479,6 +493,21 @@ def _check_silent_failure(readings, mcfg=None):
                  "normalityHint": (f"The collector returned no usable data for {n} runs in a row — "
                                    "the source may be down, unauthorized, or misconfigured; alerts "
                                    "cannot be trusted until this clears.")}]
+    # CAPACITY-SPECIFIC blindness. collectorOk is an OR across sources, so an Eventhouse that
+    # returns zero rows WITHOUT raising -- while Log Analytics attribution keeps flowing -- left
+    # collectorOk True forever. Every capacity threshold and both CU-based stateful gates then had
+    # nothing to reason from, no capacity alert could ever fire again, and the detector whose entire
+    # job is to notice that saw a healthy collector. Only fires when capacity is known-absent across
+    # the window (None means the field predates this check, so it is not treated as a failure).
+    window = readings[:n]
+    if (all(r.get("capacityOk") is False for r in window)
+            and not all(r.get("collectorOk") is False for r in window)):
+        return [{"check": "silent_failure", "runs": n, "blindSource": "capacity",
+                 "normalityHint": (f"Other sources are reporting, but the CAPACITY source returned "
+                                   f"no reading for {n} runs in a row — every CU threshold and both "
+                                   "CU-based trend gates are blind, so no capacity alert can fire "
+                                   "until this clears. Check the Eventhouse / Capacity Events "
+                                   "stream.")}]
     return []
 
 
@@ -1414,7 +1443,8 @@ def _record_reading(readings_store, *, run_at, facts=None, collector_ok, health=
     items = (facts or {}).get("items") or []
     reading = {"runAt": run_at, "peakCuPct": cap.get("peakCuPct"),
                "throttleMinutes": cap.get("throttleMinutes"), "itemCount": len(items),
-               "collectorOk": bool(collector_ok)}
+               "collectorOk": bool(collector_ok),
+               "capacityOk": cap.get("peakCuPct") is not None}
     try:
         readings_store["append"](reading)
         return readings_store["recent"](12)

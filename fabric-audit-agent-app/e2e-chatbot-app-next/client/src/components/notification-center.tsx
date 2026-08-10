@@ -137,6 +137,11 @@ export function NotificationCenter() {
   const resolvedTickets = tickets.filter(
     (c) => c.ack?.status === 'resolved' || !isFiringNow(c),
   );
+  // Held-open-but-quiet is NOT resolved. Counted separately so the tab can say so rather than
+  // implying a human dealt with it.
+  const pausedCount = tickets.filter(
+    (c) => c.ack?.status !== 'resolved' && !isFiringNow(c),
+  ).length;
   const shown = tab === 'open' ? openTickets : resolvedTickets;
 
   // Chat-backed tickets keep hitting /api/alerts/:chatId/*; chat-less tickets (Part-7 read-path —
@@ -311,16 +316,29 @@ export function NotificationCenter() {
               onClick={() => setTab('resolved')}
               className={`rounded-full px-3 py-1 font-medium ${tab === 'resolved' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'text-muted-foreground hover:bg-muted'}`}
             >
-              Resolved ({resolvedTickets.length})
+              {/* NOT "Resolved". This bucket holds two different things: tickets a human actually
+                  resolved, AND still-open tickets that merely are not firing this tick. A capacity
+                  incident is marked currentlyActive=false on EVERY absent tick for up to 55
+                  minutes while being deliberately held open, so a live, ongoing, unresolved
+                  incident spent most of its life filed under a tab asserting it was resolved --
+                  and flapping in and out of it every 5 minutes. Keeping them out of Open is right
+                  (160 stale legacy rows once flooded it); claiming they are resolved is not. */}
+              Resolved / not firing ({resolvedTickets.length})
             </button>
           </div>
 
           <div className="flex-1 overflow-y-auto">
+            {tab === 'resolved' && pausedCount > 0 ? (
+              <div className="border-border border-b bg-muted/40 px-4 py-2 text-muted-foreground text-xs">
+                {pausedCount} of these {pausedCount === 1 ? 'is' : 'are'} still open — not firing
+                right now, but nobody has resolved {pausedCount === 1 ? 'it' : 'them'} yet.
+              </div>
+            ) : null}
             {shown.length === 0 ? (
               <div className="px-4 py-10 text-center text-muted-foreground text-sm">
                 {tab === 'open'
                   ? 'No open issues right now. 🎉'
-                  : 'Nothing resolved yet.'}
+                  : 'Nothing resolved or paused right now.'}
               </div>
             ) : (
               shown.map((t) => {

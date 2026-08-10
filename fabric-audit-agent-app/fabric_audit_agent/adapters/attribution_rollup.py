@@ -213,6 +213,14 @@ def rollup_attribution(rows, top_n=3, ws_label="",
             u["source"] = _stronger_source(attr_source, u["source"])
 
     total = sum(g["cpu"] for g in groups.values())
+    # A share needs a denominator. When NO row resolved a cost column -- a schema rename, a
+    # frequency-only source, a query whose cost alias changed -- every group's cpu is 0, total is 0,
+    # and `(cpu / total * 100) if total else 0` handed every item a confident sharePct of 0. The
+    # headline 30% concentration feature then went PERMANENTLY QUIET while reporting a normal-looking
+    # payload, and the cross-source blind-spot detector could not see it either because the items DO
+    # exist (they are just all zero-cost). `None` means "unknown", which downstream can detect;
+    # 0 means "this item is responsible for none of the load", which is a claim we cannot make.
+    _share_known = total > 0
 
     items = []
     for g in groups.values():
@@ -224,7 +232,8 @@ def rollup_attribution(rows, top_n=3, ws_label="",
         user_count = len(ranked)
         items.append({
             "workspace": g["workspace"], "name": g["name"], "cuSeconds": round(g["cpu"], 3),
-            "sharePct": (g["cpu"] / total * 100) if total else 0,
+            "sharePct": (g["cpu"] / total * 100) if _share_known else None,
+            "shareBasis": "cost" if _share_known else "unavailable",
             "topUsers": ranked[:top_n], "userCount": user_count,
             "attributionMode": "cost-cpu" if g["hasCpuTime"] else "cost-duration",
             "truncated": user_count > top_n,
@@ -237,7 +246,8 @@ def rollup_attribution(rows, top_n=3, ws_label="",
         item_count = len(top_items)
         users.append({
             "user": u["user"], "cuSeconds": round(u["cpu"], 3),
-            "sharePct": (u["cpu"] / total * 100) if total else 0,
+            "sharePct": (u["cpu"] / total * 100) if _share_known else None,
+            "shareBasis": "cost" if _share_known else "unavailable",
             "topItems": top_items[:top_n], "itemCount": item_count,
             "attributionMode": "cost-cpu" if u["hasCpuTime"] else "cost-duration",
             "truncated": item_count > top_n,

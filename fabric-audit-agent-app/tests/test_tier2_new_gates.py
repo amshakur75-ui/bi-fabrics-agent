@@ -42,9 +42,36 @@ def test_blind_spot_fires_on_high_cu_zero_items():
 
 
 def test_blind_spot_silent_when_activity_present_or_cu_low():
-    assert _check_cross_source_blind_spot({"capacity": {"peakCuPct": 82.0},
-                                           "items": [{"name": "x"}]}) == []
+    # FIXTURE REALISM: a real item ALWAYS carries sharePct (a number, or None when no cost column
+    # resolved). A bare {"name": "x"} cannot occur, and reading it as "activity present" hid the
+    # zero-cost blindness below — rows came back, so `not items` was False, while nothing in them
+    # was actually attributable.
+    assert _check_cross_source_blind_spot(
+        {"capacity": {"peakCuPct": 82.0},
+         "items": [{"name": "x", "sharePct": 44.0, "cuSeconds": 900.0}]}) == []
     assert _check_cross_source_blind_spot({"capacity": {"peakCuPct": 20.0}, "items": []}) == []
+
+
+def test_blind_spot_fires_when_items_return_but_none_carries_a_cost():
+    """The same blindness wearing a disguise. Rows come back so `not items` is False, but no row
+    resolved a cost column, so `total` is 0 and no share or ranking is computable. Before sharePct
+    became None on that path it was 0, making this indistinguishable from "every item is responsible
+    for nothing" — a confident answer from no evidence, and the reason the 30% concentration feature
+    could go permanently quiet with no surface noticing."""
+    trigs = _check_cross_source_blind_spot({
+        "capacity": {"peakCuPct": 82.0},
+        "items": [{"name": "Ent-Reporting-DTC", "sharePct": None, "shareBasis": "unavailable"},
+                  {"name": "Ent-Reporting-Sales", "sharePct": None, "shareBasis": "unavailable"}]})
+    assert len(trigs) == 1 and trigs[0]["check"] == "blind_spot"
+    assert trigs[0]["itemsSeen"] == 2
+    assert "cost signal" in trigs[0]["normalityHint"]
+
+
+def test_blind_spot_silent_when_at_least_one_item_has_a_share():
+    """Partial cost coverage is not blindness — we can still rank what we can see."""
+    assert _check_cross_source_blind_spot({
+        "capacity": {"peakCuPct": 82.0},
+        "items": [{"name": "a", "sharePct": None}, {"name": "b", "sharePct": 61.0}]}) == []
 
 
 def test_new_gates_have_titles_facts_keys_and_severity():

@@ -61,6 +61,10 @@ _DEFAULTS = {
     # suppress a window that is genuinely dead, never a real quiet-hour incident. Raise it only with
     # observed windowCuSeconds values in hand.
     "min_window_cu": 60.0,
+    # Absolute floor on the burndown-collapse escalation axis: a halving only earns a card
+    # once the burndown is short enough to act on. Without it one draining overage emitted a
+    # card at every halving (50/25/12/6/3 min = 5 near-identical cards).
+    "burndown_urgent": 15.0,
 }
 
 
@@ -245,10 +249,19 @@ def is_escalation(trigger, prior, cfg=None):
         #    worsening the other three axes cannot see (peak flat, throttle flat, set already
         #    the union). Without this, a warn incident whose minutesToBurndown goes 50 -> 2
         #    produces nothing at all.
+        #    HALVING ALONE IS NOT ENOUGH. The still-firing branch deliberately does not upsert, so
+        #    prior.minutesToBurndown only advances when a card is actually sent -- which means a
+        #    single overage draining 50 -> 2 over ~50 minutes halved repeatedly and carded at
+        #    50, 25, 12, 6 and 3: FIVE Teams cards, same title, same two fact names, same "When".
+        #    That is precisely the "repeated things that are the same" this redesign exists to stop.
+        #    A halving only matters once the burndown is actually short enough to act on, so the axis
+        #    now also requires crossing under an absolute urgency floor. 50 -> 25 tells a human
+        #    nothing they can use; 12 -> 6 does.
         cur_mtb = _num(trigger.get("minutesToBurndown"))
         pri_mtb = _num((prior or {}).get("minutesToBurndown"))
         if (cur_mtb is not None and pri_mtb is not None and pri_mtb > 0
-                and cur_mtb <= pri_mtb / 2.0):
+                and cur_mtb <= pri_mtb / 2.0
+                and cur_mtb <= float(cfg.get("burndown_urgent", 15.0))):
             return True
         return False
     cur = primary_metric(trigger)

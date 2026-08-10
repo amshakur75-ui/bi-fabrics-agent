@@ -107,20 +107,22 @@ def test_partial_improvement_never_walks_the_incident_state_backwards():
     Tick 2 reaches the escalation branch (the only branch that carries ``prior`` into
     ``_capacity_state``) purely via the burndown-collapse axis, so the reading is unambiguously
     BETTER on every axis the marks protect: severity warn -> info, peak 130 -> 99, set
-    {overage, pressure} -> {overage}.
+    {overage, pressure} -> {overage}. The burndown values must clear BOTH halves of that axis --
+    a halving AND crossing under the absolute urgency floor (burndown_urgent, 15 min) -- since the
+    floor was added to stop one draining overage carding at every halving.
     """
     store = create_delta_faithful_store()
     posts, sink = _sink()
     kw = _kw(store, sink)
 
-    process_alerts([_pressure(130.0), _overage(200.0, 130.0)], now_dt=T0, **kw)
+    process_alerts([_pressure(130.0), _overage(24.0, 130.0)], now_dt=T0, **kw)
     row = store["_data"]["capacity::capacity"]
     assert row["severity"] == "warn" and row["metric"] == 130.0
 
-    acts = process_alerts([_overage(90.0, 99.0)], now_dt=T0 + timedelta(minutes=5), **kw)
+    acts = process_alerts([_overage(6.0, 99.0)], now_dt=T0 + timedelta(minutes=5), **kw)
     assert acts["escalation"] == ["capacity::capacity"], (
-        "test setup: tick 2 must reach the escalation branch (burndown 200 -> 90 halving), "
-        "otherwise the high-water marks are never exercised")
+        "test setup: tick 2 must reach the escalation branch (burndown 24 -> 6 is both a halving "
+        "and under the 15-min urgency floor), otherwise the high-water marks are never exercised")
 
     row = store["_data"]["capacity::capacity"]
     assert row["severity"] == "warn", (
