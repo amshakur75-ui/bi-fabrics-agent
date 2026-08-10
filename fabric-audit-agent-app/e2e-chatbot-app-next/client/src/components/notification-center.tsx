@@ -64,7 +64,17 @@ const ACTIONABLE = new Set([
   'security',
   'pipeline',
   'cost',
+  // `blast_radius` is what the family was EXPECTED to be called; the detector actually emits
+  // `lineage.blast-radius`, and sweep_delivery._family takes the text before the first dot, so
+  // the real checkType is `lineage`. Without it the blast-radius finding was ticketed and then
+  // invisible in the app -- written, never shown. `blast_radius` is kept so any row already
+  // written under the old assumption still renders.
   'blast_radius',
+  'lineage',
+  // `meta.detector-error` -> family `meta`. A DETECTOR CRASH was likewise ticketed and invisible,
+  // which is the worst thing to hide: it means the estate sweep silently stopped covering
+  // something and the only surface said nothing.
+  'meta',
   'pattern', // cross-workspace systemic patterns (B4)
   'sweep', // generic fallback
   'manual', // user-flagged tickets created from a chat conversation

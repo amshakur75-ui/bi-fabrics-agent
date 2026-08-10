@@ -946,7 +946,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         if prior:
             prev = prior.get("signalTypes")
             if isinstance(prev, list):
-                sigs |= {s for s in prev if isinstance(s, str)}
+                pass
             prior_sev = prior.get("severity")
             if _SEV_RANK.get(prior_sev, -1) > _SEV_RANK.get(row.get("severity"), -1):
                 row["severity"] = prior_sev
