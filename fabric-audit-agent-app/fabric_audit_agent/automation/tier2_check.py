@@ -1256,6 +1256,15 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 "resource": t.get("item") or t.get("workspace") or "capacity",
                 "metric": metric, "materialityReason": reason,
                 "firstAlertedAt": (pending.get(key, {}).get("firstAlertedAt") or now_iso),
+                # Carry presenceCount forward. Without it the informational row is written with no
+                # streak, so on the NEXT tick the hysteresis block above computes count=1 and
+                # rewrites the row back to status='pending' -- the row cycles
+                # pending/pending/informational forever instead of settling. The merge of
+                # _informational into `pending` keeps firstAlertedAt honest through that cycle, but
+                # the cycling itself is the bug: an established stable pattern should stay stated as
+                # one, not be re-promoted through the persistence gate every three ticks.
+                "presenceCount": max(int((pending.get(key, {}) or {}).get("presenceCount") or 0),
+                                     hysteresis_ticks),
                 "runAt": now_iso, "delivered": False, "currentlyActive": True})
             actions["informational"].append(key)
             continue
@@ -1283,6 +1292,15 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 "resource": t.get("item") or t.get("workspace") or "capacity",
                 "metric": metric, "materialityReason": reason,
                 "firstAlertedAt": (pending.get(key, {}).get("firstAlertedAt") or now_iso),
+                # Carry presenceCount forward. Without it the informational row is written with no
+                # streak, so on the NEXT tick the hysteresis block above computes count=1 and
+                # rewrites the row back to status='pending' -- the row cycles
+                # pending/pending/informational forever instead of settling. The merge of
+                # _informational into `pending` keeps firstAlertedAt honest through that cycle, but
+                # the cycling itself is the bug: an established stable pattern should stay stated as
+                # one, not be re-promoted through the persistence gate every three ticks.
+                "presenceCount": max(int((pending.get(key, {}) or {}).get("presenceCount") or 0),
+                                     hysteresis_ticks),
                 "runAt": now_iso, "delivered": False, "currentlyActive": True})
             actions["informational"].append(key)
             continue
@@ -1481,9 +1499,15 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     # blind collector; a number => live data, and this is the live peak.)
     _cap = (facts or {}).get("capacity") or {}
     _items = (facts or {}).get("items") or []
+    # windowCuSeconds is the denominator every concentration SHARE is computed against, so it is
+    # the number needed to judge whether a share means anything and to calibrate the
+    # minimum-activity floor (min_window_cu). Without it the floor's suppress/allow decision was
+    # unobservable from the outside -- which is the property this codebase keeps getting wrong.
+    _win_cu = sum(v for v in (_num_guard(i.get("cuSeconds")) for i in _items) if v is not None)
     print(f"[tier2] pulled: peakCuPct={_cap.get('peakCuPct')} "
           f"throttleMinutes={_cap.get('throttleMinutes')} overageTotalMs={_cap.get('overageTotalMs')} "
-          f"items={len(_items)}")
+          f"items={len(_items)} windowCuSeconds={round(_win_cu, 1)} "
+          f"minWindowCu={load_cfg().get('min_window_cu')}")
 
     if health is not None:
         # Reuse collector_merge's own per-source failure list (adapters/collector_merge.py) rather
