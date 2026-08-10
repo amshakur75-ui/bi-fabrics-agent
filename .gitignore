@@ -20,3 +20,6 @@ dist/
 # Databricks App runtime config — managed only in the workspace (has env-var wiring
 # that the workspace UI edits directly; committing it here caused sync conflicts).
 fabric-audit-agent-app/app.yaml
+
+# Subagent git worktrees (isolated copies of this repo; never part of it)
+.claude/worktrees/
