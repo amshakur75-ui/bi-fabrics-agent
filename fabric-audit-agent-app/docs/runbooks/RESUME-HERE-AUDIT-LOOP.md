@@ -1,4 +1,4 @@
-# RESUME HERE — pre-ship audit loop (updated 2026-08-10, end of round 3)
+# RESUME HERE — pre-ship audit loop (updated 2026-08-10, end of round 4)
 
 Read this first, then `PRESHIP-AUDIT-LEDGER.md` for the full finding history.
 
@@ -21,16 +21,17 @@ silent logical wrongness.
   Degraded line; daily digest `delivered=True`).
 - Suite **2267 passing**. Repo `main` clean.
 
-## Round 3's single most important finding
+## The single most important finding so far
 
 An empirical mutation audit ran 38 mutations against the full suite. **17 SURVIVED.** Every
 survivor reverts a guard whose own comment documents a past production incident. The suite is a
 regression-*description* corpus, not a regression-*detection* one: the comments record the bugs, the
 tests do not re-check them. That fully explains rounds 0–2's defect rate.
 
-Two new test files close the worst of it (`test_mutation_guards_state.py`,
-`test_capacity_collector_deployed_shape.py`) — each mutation empirically verified killed. The
-remaining survivors from that report's list are still open (see below).
+ALL 38 are now killed across three test files (`test_mutation_guards_state.py`,
+`test_capacity_collector_deployed_shape.py`, `test_mutation_guards_round4.py`), each verified by
+applying the mutation and confirming exactly one test fails. Two of the 38 were REFUTED as equivalent
+mutants rather than papered over — see the round-4 section.
 
 ## FIXED AND DEPLOYED in round 3
 
@@ -97,52 +98,45 @@ silently-wrong code was itself the vector.
 
 ## KNOWN-OPEN, NOT YET FIXED (carry into round 5, ranked)
 
-1. **The digest says "No significant issues found ✅" while a capacity incident is open and
-   firing.** `daily_summary._EXCLUDE` drops the capacity family from BOTH `open_tickets` and
-   `stale_open`, and the mitigating "Capacity context" line is itself gated on `has_issues`. A
-   three-day incident produces one Teams card and two digests that deny it exists. **A false
-   statement to a human — highest remaining item.**
-2. **The card names NOBODY.** `_facts_for("capacity_incident")` never reads `facts["items"]` /
-   `topUsers`, though the LA attribution collector populates them on every sweep. This is the P4
-   product promise ("the card names who caused it"). With B2/B3 now ON, `correlatedUserSpikes` can
-   populate — but only for users with a baseline.
-3. **Concentration has no minimum-activity floor.** One overnight refresh in an idle 5-minute
-   window is ~100% share → warn → report. The "30% alert" fires on a near-empty denominator by
-   construction.
-4. **DQ-3: zero-cost rows collapse the share denominator**, so `sharePct: 0` for everything and the
-   headline concentration feature goes permanently quiet — and `_check_cross_source_blind_spot`
-   can't see it because the items DO exist, just all zero-cost.
-5. Overage-only incidents: `_check_overage` never copies `peakCuPct`, so `metric` is NULL forever
-   and the peak-escalation axis is dead for them; the card shows raw ms (`84600000.0 ms`).
-6. A draining overage emits ~5 near-identical cards (burndown halving axis has no absolute floor).
-7. An ongoing incident spends most of its life in the app's tab labelled **"Resolved"**
-   (`currentlyActive=False` on every absent tick for up to 55 min).
-8. Remaining surviving mutants: `severity_of` concentration boundary (`>= 50`), the correlation
-   window boundary (`<= window`), `_TRUE_CU_CHECKS` widening, `pending = {**_informational,...}`,
-   the suppress-resets-streak branch.
-9. `reasoner_claude` falls back to canned KB text on ANY error with no log and no counter — a
-   permanently broken reasoner looks like a working one with generic prose.
-10. `agent_server/loop_hooks.py` CORRECT007 guard fails **OPEN** (an exception means the query is
-    judged not-improvised and is executed).
-11. Silent Delta→local-JSON store downgrade (`except (ImportError, RuntimeError): pass`).
-12. Daily digest silently undelivered (`delivered=False`, no log, no health record, exit 0).
-13. `create_readings_store_delta` has no `_ensure_schema` (unlike the other three stores) — drift
-    silences all three stateful gates including the blindness detector.
-14. Blind capacity source reads as healthy: `_ok = peakCuPct is not None or len(items) > 0`.
-15. `run_history` is the one allowlist store NOT covered by the `_FIELDS` invariant test (it uses a
+Items 1-3, 5, 8, 16-18 of the previous list were closed in round 4 — see above. What remains:
+
+1. **Zero-cost rows collapse the share denominator.** If no item resolves a cost, every `sharePct`
+   is 0 and the headline concentration feature goes permanently quiet — and
+   `_check_cross_source_blind_spot` cannot see it, because the items DO exist, just all zero-cost.
+   Note the new `min_window_cu` floor deliberately does NOT fire here (an unmeasurable window falls
+   through rather than being silenced), so this remains its own gap.
+2. **A draining overage emits ~5 near-identical cards.** The burndown-halving escalation axis has no
+   absolute floor, so 50 -> 25 -> 12 -> 6 -> 3 min each cards. Literally "repeated things that are
+   the same".
+3. **An ongoing incident spends most of its life in the app's tab labelled "Resolved".**
+   `currentlyActive=False` on every absent tick for up to 55 min, and the tab's empty state reads
+   "Nothing resolved yet." The row text and detail modal say "open (inactive now)" — contradicted by
+   the tab containing them.
+4. `reasoner_claude` falls back to canned KB text on ANY error with no log and no counter — a
+   permanently broken reasoner is indistinguishable from a working one writing generic prose.
+5. `agent_server/loop_hooks.py`'s CORRECT007 guard fails **OPEN**: an exception means the query is
+   judged not-improvised and is EXECUTED. A guardrail that degrades to permissive.
+6. Silent Delta -> local-JSON store downgrade (`except (ImportError, RuntimeError): pass`), which
+   quietly resets every history-dependent consumer to first-run behaviour.
+7. Daily digest silently undelivered: `delivered=False`, no log, no health record, exit 0.
+8. `create_readings_store_delta` has no `_ensure_schema` (unlike the other three stores) — schema
+   drift silences all three stateful gates INCLUDING the blindness detector.
+9. Blind capacity source reads as healthy: `_ok = peakCuPct is not None or len(items) > 0`, so if the
+   Eventhouse returns zero rows (not an exception) while LA attribution still flows, `collectorOk`
+   stays True and no capacity alert can ever fire again.
+10. `run_history` is the one allowlist store NOT covered by the `_FIELDS` invariant test (it uses a
     hand-written mapper) — the original P0 can recur there verbatim.
-16. `requirements.txt` for the App omits `msal` / `azure-kusto-data` / `openpyxl`, which its live
-    paths lazy-import. If real, the entire live-data half of the chat app is inert. **Verify with
-    one command before shipping.**
-17. The MCP app pins core wheel `0.2.14` while jobs run `0.2.22` — six versions behind, i.e. before
-    the `_FIELDS` P0 fix. Decommission it or re-pin.
-18. `resolve_blank_user` (the User → Item → **Owner** tier of the headline promise) has no
-    production caller, and the default LA query filters out blank users anyway.
-19. `minHistory` writer default 20 vs `config.baselineMinHistory` 5: users with 5–19 samples never
-    get a row while the card says their baseline "isn't ready yet".
-20. 16 legacy `capacity.user-concentration` rows sit in `audit_alerts` from a since-deleted
-    detector, one under a tier2-owned checkType. **Needs a data cleanup — not done, it is a
-    production write and wants explicit sign-off.** `scripts/cleanup_stale_alerts.sql` exists.
+11. The **Owner** tier of the concentration promise is unshipped. Nothing in production produces
+    `configuredBy`/`owner`, so it needs a NEW authenticated metadata collector (Power BI Admin
+    `GET /admin/datasets`) plus SP permissions — a multi-day change, not plumbing. Docs now say so
+    instead of advertising it. Cheaper partial: dropping the two `isnotempty(ExecutingUser)` filters
+    and threading `activity_events` gets the activity-crossref identity (a real user instead of
+    blank) with no new API surface.
+12. `minHistory` writer default 20 vs `config.baselineMinHistory` 5: users with 5-19 samples never get
+    a row while the card says their baseline "isn't ready yet".
+13. 16 legacy `capacity.user-concentration` rows sit in `audit_alerts` from a since-deleted detector,
+    one under a tier2-owned checkType. **Needs a data cleanup — not done; it is a production write
+    and wants explicit sign-off.** `scripts/cleanup_stale_alerts.sql` exists.
 
 ## Working practices that earned their keep
 
