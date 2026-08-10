@@ -153,26 +153,37 @@ def test_a_genuine_worsening_still_breaks_through_after_round_trip():
     posts, sink = _sink()
     kw = _kw(store, sink)
 
-    process_alerts([{"check": "pressure", "peakCuPct": 110.0}], now_dt=T0, **kw)
+    # 125% is REPORT-tier (>= 120). 110% would be `ambiguous`, which is deliberately
+    # notification-center-only and cards nobody -- that is a materiality question, and this test is
+    # about whether a WORSENING breaks through, so it must start above the reporting bar.
+    process_alerts([{"check": "pressure", "peakCuPct": 125.0}], now_dt=T0, **kw)
     assert len(posts) == 1
     # same signal, unchanged -> silent
-    process_alerts([{"check": "pressure", "peakCuPct": 110.0}],
+    process_alerts([{"check": "pressure", "peakCuPct": 125.0}],
                    now_dt=T0 + timedelta(minutes=5), **kw)
     assert len(posts) == 1
     # throttling STARTS -> genuine worsening -> second card
-    process_alerts([{"check": "pressure", "peakCuPct": 112.0},
-                    {"check": "throttle", "throttleMinutes": 6.0, "peakCuPct": 112.0}],
+    process_alerts([{"check": "pressure", "peakCuPct": 127.0},
+                    {"check": "throttle", "throttleMinutes": 6.0, "peakCuPct": 127.0}],
                    now_dt=T0 + timedelta(minutes=10), **kw)
     assert len(posts) == 2
 
 
 def test_aug5_replay_matches_between_memory_and_delta_semantics():
     """End-to-end replay of the REAL 2026-08-05 capacity events (8 throttle events across the
-    afternoon, pulled from the live alerts table). Pinned at 2 cards: the initial incident
-    plus one genuine escalation when peak climbed 102% -> 121% and throttle 1.5 -> 4.5 min.
+    afternoon, pulled from the live alerts table).
 
-    Before the _FIELDS fix this replay produced 8 cards under Delta semantics — one per
-    event, i.e. identical to having no dedup at all."""
+    Pinned at ONE card. The 13:50 opener (102% peak, 1.5 min over budget) is `ambiguous` on both
+    axes -- 102 is under the 105 pressure bar and 1.5 min is under the 2.5-min throttle bar -- so
+    it is recorded informational rather than paged, and the first card is the 14:45 escalation
+    (121% / 4.5 min) that genuinely crossed the bar. Every later event is absorbed by the shared
+    capacity::<id> key and the monotonic high-water marks.
+
+    Two separate regressions are pinned here:
+      * before the _FIELDS fix this replay produced 8 cards under Delta semantics -- one per
+        event, i.e. identical to having no dedup at all;
+      * before the `judged` fix it produced 2, because production's v1 reasoner returned a
+        hardcoded report=True and so promoted the sub-threshold opener to a Teams card."""
     aug5 = [("13:50", 102.0, 1.5), ("14:45", 121.0, 4.5), ("15:30", 117.0, 1.0),
             ("15:45", 133.0, 2.5), ("16:15", 127.0, 1.5), ("16:55", 118.0, 3.0),
             ("17:25", 129.0, 2.5), ("18:25", 102.0, 0.5)]
@@ -197,5 +208,5 @@ def test_aug5_replay_matches_between_memory_and_delta_semantics():
         process_alerts(trigs, now_dt=t, **kw)
         t += timedelta(minutes=5)
 
-    assert len(posts) == 2, f"Aug-5 replay produced {len(posts)} cards, expected 2"
+    assert len(posts) == 1, f"Aug-5 replay produced {len(posts)} cards, expected 1"
     assert store["_data"]["capacity::capacity"]["status"] == "resolved"

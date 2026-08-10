@@ -103,10 +103,12 @@ def test_peak_jump_then_throttle_start_each_fire_once():
     store = create_delta_faithful_store()
     posts, sink = _sink()
     acts = _run(store, sink, [
-        [_pressure(110.0)],                          # new incident -> card 1
-        [_pressure(140.0)],                          # +30 peak -> card 2
-        [_pressure(140.0), _throttle(6.0, 140.0)],   # throttling STARTS -> card 3
-        [_pressure(140.0), _throttle(6.0, 140.0)],   # unchanged -> silent
+        # 125, not 110: 105-119.9 is the `ambiguous` band, which is deliberately recorded
+        # informational and cards nobody. This test is about escalation axes, not materiality.
+        [_pressure(125.0)],                          # new incident -> card 1
+        [_pressure(155.0)],                          # +30 peak -> card 2
+        [_pressure(155.0), _throttle(6.0, 155.0)],   # throttling STARTS -> card 3
+        [_pressure(155.0), _throttle(6.0, 155.0)],   # unchanged -> silent
     ])
     assert len(posts) == 3
     assert acts[1]["escalation"] == ["capacity::capacity"]
@@ -197,7 +199,8 @@ def test_incident_can_still_escalate_after_many_quiet_ticks_within_grace():
     exactly once, and the grace clock resets."""
     store = create_delta_faithful_store()
     posts, sink = _sink()
-    seq = [[_pressure(110.0)]] + [[] for _ in range(5)] + [[_pressure(160.0)]]
+    # 125 is report-tier; 110 is `ambiguous` and would never card in the first place.
+    seq = [[_pressure(125.0)]] + [[] for _ in range(5)] + [[_pressure(160.0)]]
     acts = _run(store, sink, seq, cfg={"quiet_ticks": 12})
     assert len(posts) == 2
     row = store["_data"]["capacity::capacity"]

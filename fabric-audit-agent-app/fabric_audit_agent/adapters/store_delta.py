@@ -95,7 +95,15 @@ def create_delta_store(catalog, schema, *, spark=None, keep=180):
                 .collect()
             )
             return [_from_delta_row(r.asDict()) for r in reversed(rows)]
-        except Exception:
+        except Exception as exc:
+            # A read failure (table missing, SELECT revoked, wrong catalog, Delta protocol
+            # mismatch) is byte-identical to a genuinely empty table once it returns []. Every
+            # consumer -- escalation, recurring-vs-new, firstDetected, the peak-CU trend, the
+            # digest's "changed since last run" -- then silently resets to first-ever-run
+            # behaviour on EVERY run, producing confident output that is uniformly wrong. Keep the
+            # fail-soft return (history is advisory; the sweep must still run) but make it audible.
+            print(f"[store] run_history read FAILED, treating as no history: "
+                  f"{type(exc).__name__}: {exc}")
             return []
 
     def append(run):

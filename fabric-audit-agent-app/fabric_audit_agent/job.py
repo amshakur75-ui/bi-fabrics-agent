@@ -950,6 +950,14 @@ def tier2_main():
     line = render_health_line(health)
     if line:
         print(f"[tier2] {line}")
+    # A degraded tier2 run used to report TERMINATED SUCCESS, so the health line existed only in
+    # stdout that nobody reads and email_notifications.on_failure could not fire. That is the exact
+    # shape of the 2026-08-09 incident: alerting was dead for 5.5 hours while every run showed
+    # green. Fail the run AFTER doing all the work and printing the diagnosis, so the alert pass
+    # still completes and the operator gets both the email and the reason.
+    # Escape hatch: FABRIC_FAIL_ON_DEGRADED=0 if a transient sub-source starts flapping the job red.
+    if health.degraded and str(env.get("FABRIC_FAIL_ON_DEGRADED", "1")).strip().lower()             in ("1", "true", "yes"):
+        raise RuntimeError(f"tier2 run degraded: {health.summary}")
     return result
 
 
@@ -1096,7 +1104,7 @@ def baseline_bootstrap_main():
 # ---- Step 10: daily 6pm capacity digest (once-a-day summary card + Acknowledge) ----
 
 def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_store=None,
-                          chat_writer=None, delivery_sinks=None, now=None):
+                          chat_writer=None, delivery_sinks=None, now=None, health=None):
     """Compose + deliver the daily capacity digest. Reuses the Tier-2 alert infra (audit_alerts +
     alert_ack + pre-created alert chats), so no new tables/UI. Ports injectable for tests; when run
     from the job they are built from ``env`` and every optional wire degrades gracefully."""
@@ -1105,7 +1113,9 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     catalog, schema = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
 
     from .automation.health import HealthReport
-    health = HealthReport()
+    # Accept a caller-supplied report so daily_summary_main can render + act on it. Built here when
+    # absent (tests, direct calls) rather than made mandatory.
+    health = health if health is not None else HealthReport()
     # Startup invariant (Sub-plan 4 Part 4): run once here rather than only in tests — a drifted
     # catalog degrades to a recorded health issue (surfaced in the digest banner below), never a
     # crashed job.
@@ -1146,7 +1156,11 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
             print(f"[daily] alerts store unavailable ({type(exc).__name__}: {exc})")
     if alerts_store is None:
         print("[daily] no alerts store (Delta not configured) — nothing to summarize")
-        return {"delivered": False, "openTickets": 0, "unackedPrior": 0, "skipped": True}
+        # Carry the report out. This early return already holds the startup-invariant + preflight +
+        # collector results, and the digest card (the ONLY other route to a human) is the thing
+        # we're skipping — so dropping it here made those findings unreachable by any surface.
+        return {"delivered": False, "openTickets": 0, "unackedPrior": 0, "skipped": True,
+                "health": health.to_dict()}
 
     enabled = str(env.get("DAILY_SUMMARY_ENABLED", "")).strip().lower() in ("1", "true", "yes")
     if delivery_sinks is None and enabled and env.get("POWER_AUTOMATE_ALERT_URL"):
@@ -1175,14 +1189,23 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
 def daily_summary_main():
     """The deployed Databricks wheel-task entry for the daily digest (pyproject: fabric-audit-daily)."""
     _merge_named_params_into_env()
+    from .automation.health import HealthReport, render_health_line
     env = os.environ
+    # This was the ONE entrypoint that never rendered its health line (job_main, tier2_main and
+    # baseline_bootstrap_main all do). The daily job's startup invariant, preflight and collector
+    # outcomes therefore had exactly one route to a human -- the digest card itself -- so if that
+    # card failed to deliver, they evaporated. Own the report here so it survives either way.
+    health = HealthReport()
     try:
-        result = run_daily_summary_job(env=env)
+        result = run_daily_summary_job(env=env, health=health)
     except Exception as exc:
         _alert_failure(exc, env)
         raise
     print(f"[daily] delivered={result.get('delivered')} open={result.get('openTickets')} "
           f"unackedPrior={result.get('unackedPrior')}")
+    line = render_health_line(health)
+    if line:
+        print(f"[daily] {line}")
     return result
 
 

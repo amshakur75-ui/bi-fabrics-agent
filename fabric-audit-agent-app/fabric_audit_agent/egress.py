@@ -179,8 +179,14 @@ def apply_egress_controls(payload, *, sink, max_chars=12000):
             safe = capped
             meta["truncated"] = cap_meta["truncated"]
             meta["rowsOmitted"] = cap_meta["originalRowCount"] - cap_meta["rowCount"]
-    except Exception:
-        pass
+    except Exception as exc:
+        # Fail CLOSED, like the sibling handler above. Swallowing this left the payload UNCAPPED
+        # while meta["truncated"] stayed False and rowsOmitted stayed 0 -- so disclosure_line()
+        # returned None and the outbound card positively asserted that nothing had been omitted.
+        # A gate that cannot run must not claim to have run.
+        meta["truncated"] = True
+        meta["capError"] = f"{type(exc).__name__}: {exc}"
+        print(f"[egress] size cap FAILED, disclosing as truncated: {type(exc).__name__}: {exc}")
 
     return safe, meta
 
@@ -197,6 +203,11 @@ def disclosure_line(meta):
     sensitive_dropped = meta.get("sensitiveDropped") or 0
 
     parts = []
+    if meta.get("capError"):
+        # The cap itself failed, so we do NOT know how much (if anything) was dropped. Saying
+        # nothing here is the one unacceptable answer: it is what let an uncapped payload ship
+        # under a card that implicitly asserted completeness. Disclose the uncertainty instead.
+        parts.append("length check failed — this payload may be incomplete")
     if rows_omitted:
         noun = "finding" if rows_omitted == 1 else "findings"
         parts.append(f"{rows_omitted} {noun} omitted for length")

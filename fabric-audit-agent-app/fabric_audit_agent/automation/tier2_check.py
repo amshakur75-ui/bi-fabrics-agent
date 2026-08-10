@@ -1134,8 +1134,33 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 "runAt": now_iso, "delivered": False, "currentlyActive": True})
             actions["informational"].append(key)
             continue
+        # AMBIGUOUS = "surface it, do not page anyone." The materiality gate has three tiers, but
+        # in production only two of them existed: the deployed v1 reasoner (job._build_tier2_reasoner)
+        # returns a hardcoded ``report: True``, so `report = decision == "report" or inv["report"]`
+        # made ambiguous IDENTICAL to report. Every sub-threshold blip therefore pushed a Teams card
+        # -- a 30-second window touching 100.4% CU cards as "Capacity incident (throttling + CU
+        # pressure)", which is exactly the noise the materiality tier was built to stop, and exactly
+        # the P0 the ledger recorded as fixed. Only a reasoner that declares itself CAPABLE of the
+        # judgement (``judged: True`` -- i.e. a real LLM verdict, not the deterministic v1 facts
+        # renderer) gets to promote ambiguous to a card. Absent that, the incident is recorded
+        # informational: it lands in audit_alerts + the notification center + the daily digest, so it
+        # is never lost, it just doesn't interrupt anyone.
         inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": decision == "report"}
-        report = True if decision == "report" else bool(inv.get("report"))
+        if decision == "report":
+            report = True
+        elif inv.get("judged"):
+            report = bool(inv.get("report"))
+        else:
+            report = False
+            alerts_store["upsert"]({
+                "incidentKey": key, "status": "informational", "severity": sev,
+                "checkType": t.get("check"),
+                "resource": t.get("item") or t.get("workspace") or "capacity",
+                "metric": metric, "materialityReason": reason,
+                "firstAlertedAt": (pending.get(key, {}).get("firstAlertedAt") or now_iso),
+                "runAt": now_iso, "delivered": False, "currentlyActive": True})
+            actions["informational"].append(key)
+            continue
         if not report:
             actions["silent"].append(key)
             continue

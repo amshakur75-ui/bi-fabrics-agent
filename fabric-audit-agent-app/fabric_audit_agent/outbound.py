@@ -51,6 +51,11 @@ def dispatch_outbound(action_type, payload, *, sinks):
     if line and isinstance(safe, dict):
         safe["summary"] = f"{(safe.get('summary') or '').rstrip()} {line}".strip()
     result = sink["deliver"](safe)
-    delivered = result.get("delivered", True) if isinstance(result, dict) else True
+    # Fail CLOSED on the delivery REPORT. Defaulting to True meant a sink that returned a
+    # non-dict (or a dict without the key) was recorded as a successful delivery, so an
+    # undelivered capacity card was indistinguishable from a delivered one -- and it defeated
+    # every caller that inspects `delivered` to decide whether to retry. "We do not know whether
+    # this reached a human" must read as NOT delivered, never as delivered.
+    delivered = result.get("delivered", False) if isinstance(result, dict) else False
     return {"dispatched": True, "delivered": bool(delivered), "actionType": action_type,
             "disclosure": line, "reason": None}

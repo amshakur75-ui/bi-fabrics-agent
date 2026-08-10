@@ -140,8 +140,15 @@ def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
             write_fn = (findings_store or {}).get("write")
             if write_fn:
                 write_fn(run_at, resolved_tenant, findings)
-        except Exception:
-            pass
+        except Exception as exc:
+            # audit_findings is what _cross_reference_recurrence reads. Losing writes silently
+            # means recurrence.isRecurring is never true, which (a) costs materiality.classify its
+            # "recurring condition -> report" short-circuit, demoting genuinely recurring triggers
+            # to `ambiguous`, and (b) flips recurring attribution patterns from `informational`
+            # back into live tickets. The sweep still printed "Audit complete: N findings" and
+            # exited 0. Stay fail-soft (the audit itself succeeded) but say so.
+            print(f"[audit] findings history write FAILED (recurrence detection will degrade): "
+                  f"{type(exc).__name__}: {exc}")
 
     health_score = build_health_score(findings)
     roadmap = build_roadmap(findings)

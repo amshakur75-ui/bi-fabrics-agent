@@ -355,7 +355,11 @@ def test_ambiguous_uses_llm_verdict():
     posts, sink = _sink()
 
     def reasoner_suppress(t):
-        return {"markdown": "m", "summary": "s", "report": False}
+        # ``judged: True`` is what marks this as a REAL verdict. The deployed v1 reasoner
+        # (job._build_tier2_reasoner) is a deterministic facts renderer that returns a hardcoded
+        # report=True and sets no `judged`, so without this marker every ambiguous trigger was
+        # promoted to a card in production and the materiality middle tier did not exist.
+        return {"markdown": "m", "summary": "s", "report": False, "judged": True}
 
     # concentration 36 -> ambiguous; LLM says suppress -> silent, no card. Hysteresis disabled so
     # the ambiguous->LLM path is exercised on the first tick (otherwise the signal would sit in
