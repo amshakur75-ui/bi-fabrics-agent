@@ -287,7 +287,14 @@ PCT_BASE_LIFETIME = {
     "formula": "cuSeconds / baseCu * 100",
     "source_table": "Capacity Overview Events (per-operation, via the capacity_peaks tool)",
     "source_columns": ["cuSeconds", "baseCu"],
-    "metric_type": "presentational",
+    # proxy_cpu, NOT "presentational". This is derived from cuSeconds, which is CpuTimeMs from
+    # monitored telemetry -- definitionally a proxy, never billed capacity CU. "presentational" made
+    # is_proxy() return False and display_caveat() emit the UNVERIFIED-FORMULA caveat instead of the
+    # proxy one, so the single mechanism the codebase relies on to stop a future tool forgetting the
+    # proxy label (documented as such in tools.py) forgot it on capacity_peaks' HEADLINE column. The
+    # only text that said "proxy" lived in `notes`, which _mv_dict_light pops before rendering.
+    # "presentational" is for things like a row index, not for a ratio of proxy data.
+    "metric_type": "proxy_cpu",
     "smoothing_window": "operation lifetime (not smoothed -- spans the operation's full duration)",
     "verified": False,
     "notes": (
@@ -313,7 +320,9 @@ PCT_BASE_CONVERTED = {
     "formula": "pctBaseLifetime / 10  (== cuSeconds / (baseCu * 10) * 100)",
     "source_table": "Capacity Overview Events (per-operation, via the capacity_peaks tool)",
     "source_columns": ["cuSeconds", "baseCu"],
-    "metric_type": "presentational",
+    # proxy_cpu for the same reason as pct_base_lifetime above -- this is just that value / 10, so it
+    # inherits the proxy nature exactly.
+    "metric_type": "proxy_cpu",
     "smoothing_window": "operation lifetime (not smoothed -- spans the operation's full duration)",
     "verified": False,
     "notes": (

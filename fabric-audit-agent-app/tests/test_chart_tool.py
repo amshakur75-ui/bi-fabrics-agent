@@ -66,9 +66,35 @@ def test_coerces_percent_and_number_strings_and_pairs():
     assert ys == [26.5, 25.8, 23.6]
 
 
-def test_missing_source_scope_defaults_to_capacity():
+def test_missing_source_scope_is_rejected_not_assumed_to_be_capacity():
+    """This asserted the lenient default, which was the middle link in a three-part failure.
+
+    tools.py's canonical handler already REJECTS a missing sourceScope, but agent.py strips the MCP
+    render_chart and registers this looser one, so the lenient default was the only behaviour that
+    ran in production. Combined with the frontend ignoring sourceScope entirely, the shipped "Item
+    concentration (donut)" suggested action produced a per-item CpuTimeMs donut carrying a green
+    "true CU" pill and no caveat — the claim gates.true_cu_per_user_gate marks permanently blocked.
+    """
     out = render_chart_spec({"chartType": "line", "title": "t", "series": _series()})
-    assert out["chart"]["sourceScope"] == "capacity" and out["chart"]["isProxy"] is False
+    assert "error" in out
+    assert "sourceScope is required" in out["error"]
+
+
+def test_an_item_scoped_chart_defaults_to_proxy():
+    """Per-item cost comes from the same CpuTimeMs/DurationMs telemetry as per-user cost, so an
+    omitted isProxy must err toward the WEAKER claim. `(scope == "user")` declared every per-item
+    chart authoritative billed CU."""
+    out = render_chart_spec({"chartType": "bar", "title": "t", "sourceScope": "item",
+                             "series": _series()})
+    assert out["chart"]["isProxy"] is True
+    assert out["chart"]["proxyCaveat"]
+
+
+def test_a_capacity_scoped_chart_is_still_not_a_proxy():
+    out = render_chart_spec({"chartType": "line", "title": "t", "sourceScope": "capacity",
+                             "series": _series()})
+    assert out["chart"]["isProxy"] is False
+    assert "proxyCaveat" not in out["chart"]
 
 
 def test_uncoercible_point_is_rejected():

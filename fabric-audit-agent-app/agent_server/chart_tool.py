@@ -106,12 +106,25 @@ def render_chart_spec(inp):
         axis = {"x": "", "y": ""}
     scope = inp.get("sourceScope")
     if scope is None:
-        scope = "capacity"  # lenient default — most charts here are capacity-level true CU%
+        # REJECT, do not assume. The canonical handler in tools.py already rejects a missing
+        # sourceScope; agent.py deliberately strips the MCP render_chart and registers THIS looser
+        # one, so the strict version is unreachable in production and this lenient default was the
+        # only behaviour that ran. Defaulting to "capacity" meant a per-item cuSeconds chart -- the
+        # shipped "Item concentration (donut)" suggested action does exactly this -- was declared
+        # capacity-level TRUE CU, which is the claim gates.true_cu_per_user_gate marks PERMANENTLY
+        # BLOCKED. An un-scoped chart is a caller bug; the model retries with the scope.
+        return _reject(inp, "sourceScope is required: one of "
+                            f"{list(_CHART_SCOPES)} — a chart of per-user or per-item cost must not "
+                            "be presented as capacity-level true CU")
     if scope not in _CHART_SCOPES:
         return _reject(inp, f"sourceScope must be one of {list(_CHART_SCOPES)}, got {scope!r}")
 
     is_proxy = inp.get("isProxy")
-    is_proxy = (scope == "user") if is_proxy is None else bool(is_proxy)
+    # ITEM data is a proxy too, not just user data. Per-item cost comes from the same CpuTimeMs /
+    # DurationMs telemetry as per-user cost -- `(scope == "user")` silently declared every per-item
+    # chart authoritative billed CU. Default to proxy for BOTH, so an omitted flag errs toward the
+    # weaker claim rather than the stronger one.
+    is_proxy = (scope in ("user", "item")) if is_proxy is None else bool(is_proxy)
 
     total_points = sum(len(s.get("data") or []) for s in series)
     if total_points <= 1:

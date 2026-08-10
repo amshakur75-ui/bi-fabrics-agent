@@ -49,7 +49,10 @@ class TestNewMetricDefinitions:
         m = get_metric("pct_base_lifetime")
         assert m is not None
         assert m["formula"] == "cuSeconds / baseCu * 100"
-        assert m["metric_type"] == "presentational"
+        # proxy_cpu, not "presentational": both derive from cuSeconds (CpuTimeMs), so
+        # is_proxy() must be True. Asserting "presentational" here is what let the
+        # headline capacity_peaks column render with no proxy caveat at all.
+        assert m["metric_type"] == "proxy_cpu"
         assert m["verified"] is False
         assert "not capacity utilization" in m["notes"].lower() or "NOT capacity" in m["notes"]
         assert "throttl" in m["notes"].lower()
@@ -58,7 +61,10 @@ class TestNewMetricDefinitions:
         m = get_metric("pct_base_converted")
         assert m is not None
         assert m["formula"] == "pctBaseLifetime / 10  (== cuSeconds / (baseCu * 10) * 100)"
-        assert m["metric_type"] == "presentational"
+        # proxy_cpu, not "presentational": both derive from cuSeconds (CpuTimeMs), so
+        # is_proxy() must be True. Asserting "presentational" here is what let the
+        # headline capacity_peaks column render with no proxy caveat at all.
+        assert m["metric_type"] == "proxy_cpu"
         # Must NOT claim to match the Capacity Metrics app (and the retired timepoint lens is noted).
         assert "NOT app-comparable" in m["notes"] or "not app-comparable" in m["notes"]
         assert "retire" in m["notes"].lower()
@@ -135,7 +141,7 @@ class TestCapacityPeaksWiring:
         metrics = row["metrics"]
         life = metrics["pctBaseLifetime"]
         assert life["value"] == 471.2
-        assert life["metric_type"] == "presentational"
+        assert life["metric_type"] == "proxy_cpu"
         assert life["formula"] == "cuSeconds / baseCu * 100"
         assert life["verified"] is False
         assert life["confidence"] == "likely"
@@ -143,7 +149,7 @@ class TestCapacityPeaksWiring:
 
         conv = metrics["pctBaseConverted"]
         assert conv["value"] == 47.1
-        assert conv["metric_type"] == "presentational"
+        assert conv["metric_type"] == "proxy_cpu"
         # C3 fix: pct_base_converted is derived (/10) from pct_base_lifetime, which is itself
         # verified=False -- a derived value cannot be marked more-verified than its input, so
         # this must be False (and display_caveat() must therefore be non-empty).

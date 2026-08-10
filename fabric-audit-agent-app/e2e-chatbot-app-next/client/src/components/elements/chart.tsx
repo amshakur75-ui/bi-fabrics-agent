@@ -124,8 +124,12 @@ function ProxyBadge() {
         <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm-.75 3.75a.75.75 0 0 1 1.5 0v4a.75.75 0 0 1-1.5 0v-4Zm.75 7a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" />
       </svg>
       <span>
-        Proxy-attributed data — per-user CU figures are approximations, not
-        authoritative capacity measurements.
+        {/* Was "per-user CU figures are approximations": wrong on two counts. It said "per-user" on
+            ITEM charts, and it attributed CU to the proxy at all. This is CPU-time from monitored
+            telemetry, which is not billed capacity CU by any margin. */}
+        Monitored CPU-time, not billed capacity CU — this attributes cost by
+        telemetry and is an approximation, not an authoritative capacity
+        measurement.
       </span>
     </div>
   );
@@ -367,6 +371,14 @@ function ChartInner({
   const flatData = useMemo(() => flattenSeries(chart.series), [chart.series]);
   const pieData = useMemo(() => flattenPie(chart.series), [chart.series]);
 
+  // ONE derived flag for the pill text, the pill colour and the caveat, so they can never disagree.
+  // Previously all three keyed off `chart.isProxy` alone while `sourceScope` was typed, parsed and
+  // never read — so a per-item chart whose isProxy was unset (the backend defaulted it false for
+  // item scope) rendered a GREEN "true CU" pill with no caveat over a CpuTimeMs ratio, which is the
+  // claim gates.true_cu_per_user_gate marks permanently blocked. Only capacity-scoped data can ever
+  // be true CU, so scope gates the strong label independently of the flag.
+  const showsProxy = chart.isProxy || chart.sourceScope !== 'capacity';
+
   return (
     <div
       className={cn(
@@ -387,12 +399,12 @@ function ChartInner({
         <span
           className={cn(
             'shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium',
-            chart.isProxy
+            showsProxy
               ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200'
               : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
           )}
         >
-          {chart.isProxy ? 'monitored proxy' : 'true CU'}
+          {showsProxy ? 'monitored proxy' : 'true CU'}
         </span>
       </div>
 
@@ -434,7 +446,7 @@ function ChartInner({
       </div>
 
       {/* Proxy badge */}
-      {chart.isProxy && <ProxyBadge />}
+      {showsProxy && <ProxyBadge />}
     </div>
   );
 }
