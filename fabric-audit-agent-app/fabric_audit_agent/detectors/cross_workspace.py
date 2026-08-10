@@ -10,12 +10,40 @@ Deliberately scoped to STRUCTURAL anti-patterns. Capacity is single-tenant; attr
 isn't the same "one root cause" signal.
 """
 # flag-type prefixes that are NOT meaningful to cluster across workspaces
-_EXCLUDE_PREFIXES = ("capacity", "meta", "pattern", "concentration", "cross_user", "blind_spot")
+#
+# The second group is a CORRECTNESS requirement, not a taste call. `_workspace_of` reads the text
+# before " / " and these five families do not put a workspace there at all -- they set `resource` to
+# a bare item name (long_running, query_shape, query_antipatterns, xmla_errors) or to a USER EMAIL
+# (absolute_cost), and none of them carries a workspace in evidence either. So each distinct user or
+# item counted as a distinct "workspace": three slow operations by three people in ONE workspace
+# produced a Warning-level finding reading
+#
+#   "The 'activity.slow-operation' issue appears across 3 workspaces (aaron@newellco.com,
+#    brenda@newellco.com, carl@newellco.com) - likely a shared/copy-pasted pattern... Fix it once at
+#    the source/template."
+#
+# ...which is false on its face AND leaks user emails into a Teams card under the label
+# "workspaces". Clustering these across workspaces is impossible with the data they carry; if a
+# workspace is ever added to those flags, remove the prefix here and the clustering starts working.
+_EXCLUDE_PREFIXES = ("capacity", "meta", "pattern", "concentration", "cross_user", "blind_spot",
+                     "activity", "query", "xmla")
 
 
 def _workspace_of(resource):
-    # resources are "Workspace / Item" (report/model/refresh/share) or just "Workspace" (admin-grant)
-    return (str(resource or "").split(" / ")[0].strip()) or "(unknown)"
+    """The workspace a flag belongs to, or None when the resource does not name one.
+
+    Resources are "Workspace / Item" (report/model/refresh/share) or a bare "Workspace"
+    (admin-grant). Returning a sentinel like "(unknown)" would make every unattributable flag
+    cluster together under one fake workspace, so this returns None and the caller skips it.
+    """
+    r = str(resource or "").strip()
+    if not r:
+        return None
+    if "@" in r.split(" / ")[0]:
+        # A user, not a workspace. Belt-and-braces for any future detector that sets resource to a
+        # principal -- the _EXCLUDE_PREFIXES above cover today's five.
+        return None
+    return r.split(" / ")[0].strip() or None
 
 
 def cross_workspace_patterns(flags, min_workspaces=3):
@@ -27,6 +55,8 @@ def cross_workspace_patterns(flags, min_workspaces=3):
         if not t or any(t.startswith(p) for p in _EXCLUDE_PREFIXES):
             continue
         ws = _workspace_of(f.get("resource"))
+        if ws is None:
+            continue          # no workspace to cluster on; counting it would invent one
         by_type.setdefault(t, {}).setdefault(ws, f)  # keep one sample flag per (type, workspace)
 
     out = []

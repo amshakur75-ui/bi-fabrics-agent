@@ -58,3 +58,38 @@ def test_result_sorted_by_breadth():
     ]
     out = cross_workspace_patterns(flags, min_workspaces=3)
     assert [p["evidence"]["patternType"] for p in out] == ["report.directquery", "refresh.chronic"]
+
+
+def test_users_are_never_counted_as_workspaces():
+    """`resource` is a USER EMAIL for activity.slow-operation (detectors/absolute_cost) and a bare
+    ITEM NAME for query/xmla families — none of them carries a workspace anywhere. _workspace_of
+    reads the text before " / ", so each distinct user counted as a distinct workspace: three slow
+    operations by three people in ONE workspace produced a Warning finding claiming the pattern
+    "appears across 3 workspaces (aaron@…, brenda@…, carl@…)" — false on its face, and it leaked
+    user emails into a Teams card under the label "workspaces"."""
+    flags = [{"type": "activity.slow-operation", "resource": u, "evidence": {}}
+             for u in ("aaron@newellco.com", "brenda@newellco.com", "carl@newellco.com")]
+    assert cross_workspace_patterns(flags) == []
+
+
+def test_bare_item_names_are_not_counted_as_workspaces():
+    flags = [{"type": "query.dax-antipattern", "resource": i, "evidence": {}}
+             for i in ("Ent-Reporting-DTC", "Ent-Reporting-Sales", "Ent-Reporting-HR")]
+    assert cross_workspace_patterns(flags) == []
+
+
+def test_genuinely_workspace_scoped_flags_still_cluster():
+    """The feature must keep working for the families whose resource IS workspace-qualified."""
+    flags = [{"type": "model.bidirectional", "resource": f"{ws} / Sales", "evidence": {}}
+             for ws in ("Enterprise Sales", "Enterprise DTC", "Enterprise HR")]
+    out = cross_workspace_patterns(flags)
+    assert len(out) == 1
+    assert out[0]["evidence"]["workspaceCount"] == 3
+    assert "Enterprise Sales" in out[0]["evidence"]["workspaces"]
+
+
+def test_a_bare_workspace_resource_still_clusters():
+    """security.admin-grant sets resource to a bare workspace name — that is legitimate."""
+    flags = [{"type": "security.admin-grant", "resource": ws, "evidence": {}}
+             for ws in ("Enterprise Sales", "Enterprise DTC", "Enterprise HR")]
+    assert len(cross_workspace_patterns(flags)) == 1

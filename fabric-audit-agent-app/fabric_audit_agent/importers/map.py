@@ -40,17 +40,45 @@ def _fmt(x):
     return str(int(x)) if x == int(x) else str(x)
 
 
+def _duration_unit(h):
+    """The unit a duration header is in: ``"ms"`` | ``"sec"`` | ``"min"`` (the assumed default).
+
+    Operates on the NORMALIZED header, which is why the obvious checks do not work: ``_norm`` strips
+    punctuation, so "Duration (s)" arrives as ``"durations"`` and "Duration (ms)" as ``"durationms"``
+    -- a naive `"(s)" in h` matches neither. Getting this wrong is not cosmetic: a real export ships
+    "Duration (s)", and reading 300 seconds as 300 MINUTES reported a 5-minute refresh as
+    "refreshes in 300 min". importers/capacity_metrics.map_items already handles this correctly as
+    durationSec; this mapper did not.
+    """
+    if h.endswith("ms") or "millis" in h:
+        return "ms"
+    if "sec" in h or h.endswith("durations"):
+        return "sec"
+    return "min"
+
+
 _MATCHERS = {
     "sku": lambda h: h == "sku" or "skuname" in h or ("sku" in h and "skip" not in h),
     "capacityName": lambda h: "capacity" in h and ("name" in h or "id" in h or h == "capacity"),
     "tenant": lambda h: "tenant" in h,
     "memoryGB": lambda h: "capacitymemory" in h or h in ("memory", "memorygb", "ram", "ramgb"),
-    "throttle": lambda h: "throttl" in h or "overload" in h or "interactivedelay" in h,
+    # NOT "interactivedelay". That column is a PERCENTAGE (the interactive-delay threshold), and the
+    # loop below SUMS whatever this matches into throttleMinutes -- so 288 daily rows averaging 0.5%
+    # summed to 144, and severity.py (Critical above 30 minutes) reported
+    # "CU peaked 92% with 144 min throttled" for a capacity that never delayed a single request.
+    # collector_csv then lets that bogus sum win over the correct timepoints-derived signal. Only
+    # count columns that are genuinely a throttled/overloaded DURATION or row count.
+    "throttle": lambda h: "throttl" in h or "overload" in h,
     "time": lambda h: "timepoint" in h or "timestamp" in h or "datetime" in h or h in ("time", "date"),
     "workspace": lambda h: "workspace" in h,
     "itemName": lambda h: "itemname" in h or h == "item" or "datasetname" in h or h == "dataset" or "semanticmodel" in h or ("model" in h and "name" in h) or h == "name" or "reportname" in h,
     "sizeGB": lambda h: "sizegb" in h or "modelsize" in h or "datasetsize" in h or h == "size" or "dynamicmemory" in h or "totalsize" in h,
-    "durationMin": lambda h: "duration" in h,
+    # Unit-aware: a bare "duration" header is assumed to be MINUTES here, but the real exports ship
+    # "Duration (s)" -- and importers/capacity_metrics.map_items gets this right as durationSec.
+    # Matching seconds into a *Min field reported a 5-minute refresh as "refreshes in 300 min".
+    "durationMin": lambda h: "duration" in h and _duration_unit(h) == "min",
+    "durationSec": lambda h: "duration" in h and _duration_unit(h) == "sec",
+    "durationMs": lambda h: "duration" in h and _duration_unit(h) == "ms",
     "scheduledAt": lambda h: "scheduled" in h or "starttime" in h or h == "start",
     "bidi": lambda h: "bidirection" in h or "bidi" in h or "bothdirection" in h,
     "autoDate": lambda h: "autodate" in h or "autodatetime" in h,
@@ -59,6 +87,21 @@ _MATCHERS = {
     "mode": lambda h: h == "mode" or "storagemode" in h or "connectionmode" in h,
     "slowest": lambda h: "slowest" in h or "renderms" in h or "rendertime" in h or ("visual" in h and "ms" in h),
 }
+
+
+def _duration_minutes(r, cols):
+    """Refresh duration in MINUTES from whichever unit the export happened to use.
+
+    Converted, never dropped: splitting the matcher by unit without converting here would trade a
+    wrong value for a silently missing one, which is the same defect in a quieter form.
+    """
+    if cols.get("durationMin"):
+        return _num0(r.get(cols["durationMin"]))
+    if cols.get("durationSec"):
+        return _round3(_num0(r.get(cols["durationSec"])) / 60.0)
+    if cols.get("durationMs"):
+        return _round3(_num0(r.get(cols["durationMs"])) / 60000.0)
+    return 0
 
 
 def _find(headers, key):
@@ -166,7 +209,8 @@ def map_table(headers, rows=None):
             "refreshes": [],
         }
 
-        if cols["itemName"] and (cols["sizeGB"] or cols["durationMin"] or cols["scheduledAt"]):
+        if cols["itemName"] and (cols["sizeGB"] or cols["durationMin"] or cols["durationSec"]
+                                 or cols["durationMs"] or cols["scheduledAt"]):
             for r in rows:
                 dataset = _cell(r, cols["itemName"])
                 if not dataset:
@@ -181,7 +225,10 @@ def map_table(headers, rows=None):
                     "workspace": _cell(r, cols["workspace"]),
                     "dataset": dataset,
                     "scheduledAt": sched,
-                    "durationMin": _num0(r.get(cols["durationMin"])) if cols["durationMin"] else 0,
+                    # Seconds are CONVERTED, not dropped. Splitting the matcher without wiring the
+                    # seconds branch here would have traded a wrong value (5 min read as 300 min)
+                    # for a silently missing one, which is the same defect in a quieter form.
+                    "durationMin": _duration_minutes(r, cols),
                     "sizeGB": _num0(r.get(cols["sizeGB"])) if cols["sizeGB"] else 0,
                 })
             cov.append({"field": "capacity.refreshes", "source": cols["itemName"], "value": f"{len(capacity['refreshes'])} row(s)"})

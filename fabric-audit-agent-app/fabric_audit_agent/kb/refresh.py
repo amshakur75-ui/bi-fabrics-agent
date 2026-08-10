@@ -1,4 +1,25 @@
 REFRESH_PLAYBOOKS = {
+    # The PARENT type, and the commonest refresh finding of all: detectors/refresh.py emits
+    # `refresh.failing` for every failed refresh, and only narrows to one of the five sub-causes
+    # below when classify_refresh_failure can read a recognisable error string. Without an entry
+    # here, get_remediation fell through to the developer placeholder -- so the most frequent
+    # refresh finding in the product rendered into the report AND the Teams card as
+    # "Pattern not yet in the knowledge base. / Investigate manually and add a playbook entry."
+    # Deliberately generic (the specific cause is genuinely unknown on this path) but actionable,
+    # and it names where to look rather than telling the reader the tool has nothing to say.
+    "refresh.failing": {
+        "rootCause": "The scheduled refresh is failing, but the error text did not match a known "
+                     "cause (credential, gateway, timeout, concurrency, or data constraint).",
+        "fixes": [
+            "Open the semantic model's refresh history and read the failure detail for the most "
+            "recent run — it names the failing step and usually the source.",
+            "Check whether the failure is intermittent (a source/gateway blip) or every run (a "
+            "configuration or credential problem); only the latter needs a change.",
+            "If the error mentions a specific source, verify that source is reachable with the "
+            "credentials the model uses.",
+        ],
+        "owner": "Power BI team",
+    },
     "refresh.credential": {
         "rootCause": "The refresh failed on an expired or invalid credential against the source.",
         "fixes": [
