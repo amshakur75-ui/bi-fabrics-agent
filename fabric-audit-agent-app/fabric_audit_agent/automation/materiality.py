@@ -55,8 +55,11 @@ _DEFAULTS = {
     "correlation_window_min": 5.0,
     # Minimum total CU-seconds in the window before a concentration SHARE is meaningful.
     # A 5-minute denominator makes one overnight refresh in an idle window ~100% share, so the
-    # 30% alert fired on a near-empty denominator by construction. 60 CU-s is ~1 CU busy for a
-    # minute -- low enough to keep real quiet-hour incidents, high enough to drop pure noise.
+    # 30% alert fired on a near-empty denominator by construction. CALIBRATED AGAINST LIVE DATA,
+    # not intuition: a busy 5-minute window on this tenant measures ~12,980 CU-s (logged as
+    # windowCuSeconds on the tier2 `pulled:` line), so 60 is ~0.5% of normal activity -- it can only
+    # suppress a window that is genuinely dead, never a real quiet-hour incident. Raise it only with
+    # observed windowCuSeconds values in hand.
     "min_window_cu": 60.0,
 }
 
