@@ -53,6 +53,11 @@ _DEFAULTS = {
     # simultaneous events; wider windows (10+) tolerate a bit of clock skew between the LA
     # events source and the capacity-events source. 5 min matches the sweep cadence.
     "correlation_window_min": 5.0,
+    # Minimum total CU-seconds in the window before a concentration SHARE is meaningful.
+    # A 5-minute denominator makes one overnight refresh in an idle window ~100% share, so the
+    # 30% alert fired on a near-empty denominator by construction. 60 CU-s is ~1 CU busy for a
+    # minute -- low enough to keep real quiet-hour incidents, high enough to drop pure noise.
+    "min_window_cu": 60.0,
 }
 
 

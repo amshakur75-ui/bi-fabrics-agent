@@ -52,6 +52,29 @@ def _check_concentration(facts, config=None):
     cap = (facts or {}).get("capacity") or {}
     cap_peak = cap.get("peakCuPct")
     cap_throttle = cap.get("throttleMinutes")
+    # MINIMUM-ACTIVITY FLOOR. sharePct is a share of a 5-MINUTE denominator, so in an idle window a
+    # single overnight refresh is ~100% of ~nothing -> warn -> a "one item is driving 100% of
+    # activity" ticket about a capacity doing essentially no work. The 30% alert was firing on a
+    # near-empty denominator BY CONSTRUCTION. A share is only meaningful once the window carries
+    # enough total cost to divide: below the floor we say nothing rather than saying something
+    # confident about noise. Set FABRIC_TIER2_MIN_WINDOW_CU=0 to disable (an explicit 0 is now
+    # honoured -- `if raw:` used to discard it).
+    min_window_cu = float(load_cfg().get("min_window_cu", 0) or 0)
+    if min_window_cu > 0:
+        total_cu, measured = 0.0, False
+        for it in items:
+            v = _num_guard(it.get("cuSeconds"))
+            if v is not None:
+                total_cu += v
+                measured = True
+        # `measured` is load-bearing. If NO item reports a cost at all -- a frequency-mode
+        # attribution, or a cost column that failed to resolve -- then we cannot tell an idle
+        # window from a busy one, and applying the floor would convert a DATA GAP into silence.
+        # That is the same failure mode as reporting peakCuPct 0 for an unparseable export: the
+        # most reassuring possible answer, from no evidence. Unmeasurable windows fall through to
+        # the gate, which is at least honest about what it saw.
+        if measured and total_cu < min_window_cu:
+            return []
     for item in items:
         share = item.get("sharePct")
         if share is None:
@@ -86,6 +109,60 @@ def _check_concentration(facts, config=None):
     return triggers
 
 
+def _likely_drivers(facts, n=3):
+    """Top items by monitored cost this window, each with its heaviest user.
+
+    The product promise is that a capacity card NAMES WHO CAUSED IT. It did not: the
+    ``capacity_incident`` branch of ``_facts_for`` read only the capacity metrics, and never
+    ``facts["items"]`` / ``topUsers`` -- even though the Log Analytics attribution collector
+    populates them on EVERY sweep, unconditionally. So a 210% peak with one heavy user active
+    produced a card full of percentages and no name, and the user's name reached a human only via a
+    separate concentration ticket that needs 3 consecutive ticks (~15 min) and never goes to Teams
+    -- by which time a short incident is over.
+
+    This is a PROXY (CpuTimeMs / DurationMs), never billed capacity CU, so the caller must label it
+    as such and the card carries PROXY_RANKING_DISCLOSURE. Ordering is by cost when cost is known;
+    items with no cost are dropped rather than ranked arbitrarily, because an arbitrary "likely
+    driver" is worse than none.
+    """
+    ranked = []
+    for it in (facts or {}).get("items") or []:
+        cu = _num_guard(it.get("cuSeconds"))
+        if cu is None:
+            continue
+        top_user, top_user_cu = None, None
+        for u in it.get("topUsers") or []:
+            ucu = _num_guard(u.get("cuSeconds"))
+            if top_user is None or (ucu is not None and (top_user_cu is None or ucu > top_user_cu)):
+                top_user, top_user_cu = u.get("user"), ucu
+        ranked.append({"item": it.get("name"), "workspace": it.get("workspace"),
+                       "cuSeconds": cu, "user": top_user, "userCuSeconds": top_user_cu,
+                       "attributionMode": it.get("attributionMode")})
+    ranked.sort(key=lambda r: r["cuSeconds"], reverse=True)
+    return ranked[:n]
+
+
+def _likely_driver_facts(trigger):
+    """``_likely_drivers`` output as card fact rows, or ``[]`` when there is nothing to name."""
+    drivers = (trigger or {}).get("likelyDrivers") or []
+    if not drivers:
+        return []
+    bits = []
+    for d in drivers:
+        label = d.get("item") or "unknown item"
+        ws = d.get("workspace")
+        if ws:
+            label = f"{label} ({ws})"
+        user = d.get("user")
+        if user:
+            label += f" — {user}"
+        cu = d.get("cuSeconds")
+        if cu is not None:
+            label += f", {round(float(cu), 1)} CPU-s"
+        bits.append(label)
+    return [("Likely drivers (monitored CPU-time, not billed CU)", "; ".join(bits))]
+
+
 def _check_throttle(facts):
     """Check throttle gate against capacity data.
 
@@ -105,6 +182,9 @@ def _check_throttle(facts):
             trig["peakAt"] = cap["peakAt"]
         if cap.get("capacityId"):
             trig["capacityId"] = cap["capacityId"]
+        _drivers = _likely_drivers(facts)
+        if _drivers:
+            trig["likelyDrivers"] = _drivers
         return [trig]
     return []
 
@@ -123,6 +203,9 @@ def _check_pressure(facts):
             trig["peakAt"] = cap["peakAt"]
         if cap.get("capacityId"):
             trig["capacityId"] = cap["capacityId"]
+        _drivers = _likely_drivers(facts)
+        if _drivers:
+            trig["likelyDrivers"] = _drivers
         return [trig]
     return []
 
@@ -152,6 +235,9 @@ def _check_extreme_peak(facts, mcfg=None):
         trig["peakAt"] = cap["peakAt"]
     if cap.get("capacityId"):
         trig["capacityId"] = cap["capacityId"]
+    _drivers = _likely_drivers(facts)
+    if _drivers:
+        trig["likelyDrivers"] = _drivers
     return [trig]
 
 
@@ -197,6 +283,12 @@ def _check_overage(facts):
             return []
         if overage > 0:
             trig = {"check": "overage", "overageTotalMs": overage,
+                    # primary_metric returns peakCuPct for the WHOLE capacity family (unit
+                    # stability across the shared capacity::<id> key), so an overage-only incident
+                    # without it stored metric=None -- leaving the peak-escalation axis dead for
+                    # that incident forever and showing no utilisation figure on any surface. A
+                    # reader could not tell 101% from 300%.
+                    "peakCuPct": cap.get("peakCuPct"),
                     "overageCumulativePct": cap.get("overageCumulativePct"),
                     "minutesToBurndown": cap.get("minutesToBurndown"),
                     "normalityHint": "Overage is accumulating — if this is a one-off large "
@@ -210,6 +302,9 @@ def _check_overage(facts):
                 trig["peakAt"] = cap["peakAt"]
             if cap.get("capacityId"):
                 trig["capacityId"] = cap["capacityId"]
+            _drivers = _likely_drivers(facts)
+            if _drivers:
+                trig["likelyDrivers"] = _drivers
             return [trig]
     return []
 
@@ -623,6 +718,12 @@ def _facts_for(t):
             if more > 0:
                 joined += f" (+{more} more in chat)"
             f.append(("Correlated user spikes", joined))
+        # WHO. Never presented as billed capacity CU -- this is CpuTimeMs/DurationMs attribution,
+        # so the label says "monitored" and _send attaches PROXY_RANKING_DISCLOSURE. Without this
+        # the card answered "how bad" and "when" but never "who", which is the one thing a human
+        # needs in order to act.
+        for name, value in _likely_driver_facts(t):
+            f.append((name, value))
         # The composite branch returns EARLY, so the shared recurrence append at the bottom of
         # this function never runs for it. Repeat it here or a hoisted recurrence is still
         # invisible on the card.
@@ -667,6 +768,12 @@ def _facts_for(t):
              ("Rise", f"+{t.get('risePts')} pts / 5 min")]
     elif check == "silent_failure":
         f = [("Blind runs", t.get("runs"))]
+    # Also on the SHARED path, not just the composite: a lone capacity signal (throttle on its own,
+    # a pressure-only window) is still a capacity card that must name who. Composites return early
+    # above and render it there; everything else picks it up here. No-op for triggers that carry no
+    # likelyDrivers, so attribution checks are unaffected.
+    for _name, _value in _likely_driver_facts(t):
+        f.append((_name, _value))
     if (t.get("recurrence") or {}).get("isRecurring"):
         f.append(("Recurrence", "recurring (matches prior findings)"))
     # Capacity + attribution are SEPARATE facts (Part 5): for attribution checks, when this window's
@@ -773,7 +880,7 @@ def _coalesce_capacity_family(triggers):
                      "signals": sigs, "signalTypes": [s.get("check") for s in sigs]}
         # Hoist the primary numeric facts from whichever component signal surfaced them.
         for k in ("peakCuPct", "throttleMinutes", "overageTotalMs", "overageCumulativePct",
-                  "minutesToBurndown"):
+                  "minutesToBurndown", "likelyDrivers"):
             for s in sigs:
                 if s.get(k) is not None:
                     composite[k] = s[k]
@@ -922,7 +1029,9 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         # _facts_for now renders per-user CPU-time on the CAPACITY card ("<user> ... 3389 CPU-s,
         # 8.2x their own p95"), so the moment TIER2_BASELINE_ENABLED is on, the only Teams card the
         # product emits carries a per-user PROXY figure with no disclosure at all.
-        disclosure = PROXY_RANKING_DISCLOSURE if trigger.get("correlatedUserSpikes") else None
+        disclosure = (PROXY_RANKING_DISCLOSURE
+                      if (trigger.get("correlatedUserSpikes") or trigger.get("likelyDrivers"))
+                      else None)
         # "When / first noticed" (Part 5): sourced from the incident row's firstAlertedAt, falling
         # back to runAt when the row has no first-alerted timestamp yet. Uses the repo's canonical
         # display-time helper (never hand-rolled tz math); falls back to the raw ISO string if the
