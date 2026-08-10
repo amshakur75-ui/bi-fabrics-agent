@@ -309,8 +309,17 @@ def _build_events_collector(env, window=None):
                    "order": "cost", "excludePrefixes": ["VertiPaqSE"]}
             return {"events": create_event_collector(la_query, cfg)["collect"]()}
         except Exception as exc:
+            # RAISE, don't fail open. Returning {"events": []} looked identical to a genuinely
+            # quiet estate: collector_merge drops falsy lists (`if rows:`), so the key vanished
+            # entirely and absolute_cost / query_shape / query_antipatterns / xmla_errors /
+            # user_baseline all read `facts.get("events") or []` -> []. Because the exception was
+            # caught INSIDE collect(), the merge recorded the source as "ok", sourcesFailed stayed
+            # empty, record_collector_failures never fired and collectorOk stayed True -- five
+            # detectors went silent with no surface anywhere. Raising lets collector_merge classify
+            # it: the failure lands in sourcesFailed -> HealthReport -> the Degraded line, and the
+            # merge still returns whatever the other sources produced.
             print(f"[sweep] events pull failed ({type(exc).__name__}: {exc})")
-            return {"events": []}
+            raise
 
     return {"collect": collect}
 

@@ -62,7 +62,9 @@ def load_cfg(env=None):
     cfg = dict(_DEFAULTS)
     for k in cfg:
         raw = env.get("FABRIC_TIER2_" + k.upper())
-        if raw:
+        # `if raw:` discarded "0" -- the natural way to DROP a floor during a live incident -- and
+        # silently kept the default. Test for presence, not truthiness.
+        if raw is not None and str(raw).strip():
             try:
                 cfg[k] = float(raw)
             except (TypeError, ValueError):

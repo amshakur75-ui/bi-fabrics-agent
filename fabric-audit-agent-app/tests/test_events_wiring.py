@@ -46,10 +46,36 @@ def test_build_events_collector_attaches_events(monkeypatch):
     assert facts["events"][0]["user"] == "alice@co"
 
 
-def test_build_events_collector_fails_open_on_query_error(monkeypatch):
+def test_build_events_collector_raises_so_the_merge_can_see_the_failure(monkeypatch):
+    """A query failure must NOT read as a quiet estate.
+
+    The old contract returned {"events": []} and never raised. collector_merge drops falsy lists
+    (`if rows:`), so the key vanished entirely and absolute_cost / query_shape /
+    query_antipatterns / xmla_errors / user_baseline all read `facts.get("events") or []` -> [].
+    Worse, because the exception was caught INSIDE collect(), the merge recorded the source as
+    "ok": sourcesFailed stayed empty, record_collector_failures never fired, collectorOk stayed
+    True. Five detectors went silent with no surface anywhere. Raising hands the failure to
+    collector_merge, which records it per-source and keeps the other sources' output.
+    """
+    import pytest
     _fake_build_log_analytics_query(monkeypatch, raise_exc=RuntimeError("LA unreachable"))
-    facts = _build_events_collector(_ENV)["collect"]()
-    assert facts == {"events": []}   # never raises; empty is the fail-open contract
+    with pytest.raises(RuntimeError, match="LA unreachable"):
+        _build_events_collector(_ENV)["collect"]()
+
+
+def test_a_failed_events_source_lands_in_sourcesFailed_not_in_silence(monkeypatch):
+    """End-to-end: the raise above must actually become a health-visible record rather than
+    aborting the sweep. This is the half the unit test cannot see."""
+    from fabric_audit_agent.adapters.collector_merge import create_merged_collector
+    from fabric_audit_agent.automation.health import HealthReport
+    _fake_build_log_analytics_query(monkeypatch, raise_exc=RuntimeError("LA unreachable"))
+    good = {"collect": lambda: {"capacity": {"peakCuPct": 55.0}}}
+    merged = create_merged_collector([good, _build_events_collector(_ENV)])["collect"]()
+    assert merged["capacity"]["peakCuPct"] == 55.0        # the healthy source still lands
+    assert any("LA unreachable" in str(x) for x in merged.get("sourcesFailed") or [])
+    health = HealthReport()
+    health.record_collector_failures(merged["sourcesFailed"])
+    assert health.degraded is True                        # ... and it reaches the Degraded line
 
 
 def test_build_events_collector_empty_when_no_rows(monkeypatch):

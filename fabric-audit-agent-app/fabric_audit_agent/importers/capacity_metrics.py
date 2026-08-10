@@ -234,8 +234,18 @@ def capacity_signal_from_timepoints(headers, rows):
             window_min = med / 60
     throttle_min = math.floor(overloaded * window_min + 0.5) if (overloaded and window_min) else overloaded
 
-    return {
-        "peakCuPct": _round1(p95) if p95 is not None else 0,
+    # peakCuPct MUST stay None when nothing parsed. Reporting 0 meant that a failure to find or
+    # parse `Total CU(s)` / `100% in CU(s)` -- a renamed export column, a locale decimal comma, an
+    # empty file -- surfaced as "0% peak CU, 0 minutes throttled": the single most reassuring
+    # reading the product can emit, manufactured from zero data. Downstream gates treat None as
+    # unknown (and detectors/capacity.py now complains about it) rather than as healthy.
+    out = {
+        "peakCuPct": _round1(p95) if p95 is not None else None,
         "throttleMinutes": throttle_min,
         "overloadedCount": overloaded,
+        "sampleCount": len(utils),
     }
+    if p95 is None:
+        out["peakCuPctUnavailable"] = ("no parseable utilization rows — peak CU is UNKNOWN, "
+                                       "not zero")
+    return out
