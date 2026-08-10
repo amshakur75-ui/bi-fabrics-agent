@@ -92,11 +92,18 @@ def _check_throttle(facts):
     cap = (facts or {}).get("capacity") or {}
     result = throttle_claim_gate(cap)
     if result["passed"]:
-        return [{"check": "throttle", "gate": result,
-                 "throttleMinutes": cap.get("throttleMinutes"),
-                 "peakCuPct": cap.get("peakCuPct"),
-                 "normalityHint": "Capacity exceeded its throttle threshold — check if this "
-                                  "coincides with a scheduled refresh or batch window"}]
+        trig = {"check": "throttle", "gate": result,
+                "throttleMinutes": cap.get("throttleMinutes"),
+                "peakCuPct": cap.get("peakCuPct"),
+                "normalityHint": "Capacity exceeded its throttle threshold — check if this "
+                                 "coincides with a scheduled refresh or batch window"}
+        # B3 correlation booster: propagate peakAt onto the trigger so the correlator anchors
+        # user spikes against the actual capacity event time, not the sweep's run_at.
+        if cap.get("peakAt"):
+            trig["peakAt"] = cap["peakAt"]
+        if cap.get("capacityId"):
+            trig["capacityId"] = cap["capacityId"]
+        return [trig]
     return []
 
 
@@ -105,10 +112,16 @@ def _check_pressure(facts):
     cap = (facts or {}).get("capacity") or {}
     result = pressure_claim_gate(cap)
     if result["passed"]:
-        return [{"check": "pressure", "gate": result,
-                 "peakCuPct": cap.get("peakCuPct"),
-                 "normalityHint": "CU exceeded 100% but throttle not yet confirmed — watch "
-                                  "for escalation in the next few checks"}]
+        trig = {"check": "pressure", "gate": result,
+                "peakCuPct": cap.get("peakCuPct"),
+                "normalityHint": "CU exceeded 100% but throttle not yet confirmed — watch "
+                                 "for escalation in the next few checks"}
+        # B3 correlation booster: propagate peakAt for anchor.
+        if cap.get("peakAt"):
+            trig["peakAt"] = cap["peakAt"]
+        if cap.get("capacityId"):
+            trig["capacityId"] = cap["capacityId"]
+        return [trig]
     return []
 
 
@@ -133,6 +146,8 @@ def _check_extreme_peak(facts, mcfg=None):
                               "Fabric smoothing may have absorbed it this time, but the underlying "
                               "load was real and could throttle on a smaller capacity or a longer "
                               "sustained window.")}
+    if cap.get("peakAt"):
+        trig["peakAt"] = cap["peakAt"]
     if cap.get("capacityId"):
         trig["capacityId"] = cap["capacityId"]
     return [trig]
@@ -162,6 +177,8 @@ def _check_throttle_imminent(facts, mcfg=None):
             "normalityHint": (f"Fabric throttle threshold(s) at {label} — approaching but not yet "
                               "throttling. Investigate the current load before Fabric starts "
                               "delaying interactive queries or rejecting refreshes.")}
+    if cap.get("peakAt"):
+        trig["peakAt"] = cap["peakAt"]
     if cap.get("capacityId"):
         trig["capacityId"] = cap["capacityId"]
     return [trig]
@@ -501,6 +518,38 @@ def _facts_for(t):
         if pcts:
             f.append(("Fabric thresholds",
                       ", ".join(f"{k}={v}%" for k, v in pcts.items())))
+        # B3 correlated user spikes — the biggest actionable payoff of Design A': the human
+        # sees "capacity throttled AND this specific user's query was 8x their p95 in the
+        # same window" on ONE card. Top 3 shown to keep the card readable; the notification-
+        # center chat has the full list.
+        spikes = t.get("correlatedUserSpikes") or []
+        if spikes:
+            lines = []
+            for sp in spikes[:3]:
+                user = sp.get("user") or "unknown"
+                cu = sp.get("cuSeconds")
+                ratio = sp.get("ratio")
+                item = sp.get("item")
+                op = sp.get("operation")
+                bit = user
+                if op or item:
+                    bit += f" ({op or 'operation'}"
+                    if item:
+                        bit += f" on {item}"
+                    bit += ")"
+                metric = []
+                if cu is not None:
+                    metric.append(f"{cu} CPU-s")
+                if ratio is not None:
+                    metric.append(f"{ratio}x baseline")
+                if metric:
+                    bit += " — " + ", ".join(metric)
+                lines.append(bit)
+            more = len(spikes) - len(lines)
+            joined = "; ".join(lines)
+            if more > 0:
+                joined += f" (+{more} more in chat)"
+            f.append(("Correlated user spikes", joined))
         return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
     if check == "concentration":
         f = [("Item", t.get("item")), ("Workspace", t.get("workspace")),
@@ -657,6 +706,23 @@ def _coalesce_capacity_family(triggers):
                 composite["thresholdPcts"] = s["thresholdPcts"]
                 composite["worstPct"] = s.get("worstPct")
                 break
+        # B3 correlation booster — hoist per-user spikes that overlap this incident from any
+        # component. All components at this point correlate to the SAME capacity event (they
+        # share capacityId), so their spike lists are equivalent; take the first non-empty.
+        # De-duped by user so the composite doesn't repeat the same person if multiple
+        # components each attached them.
+        seen_users = set()
+        merged_spikes = []
+        for s in sigs:
+            for sp in s.get("correlatedUserSpikes") or []:
+                u = sp.get("user")
+                if u and u in seen_users:
+                    continue
+                if u:
+                    seen_users.add(u)
+                merged_spikes.append(sp)
+        if merged_spikes:
+            composite["correlatedUserSpikes"] = merged_spikes
         # A single normalityHint for the composite — chosen from the highest-priority signal
         # (throttle > extreme_peak > overage > pressure > throttle_imminent).
         priority = {"throttle": 0, "extreme_peak": 1, "overage": 2, "pressure": 3,
@@ -1002,7 +1068,7 @@ def _record_reading(readings_store, *, run_at, facts=None, collector_ok, health=
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                     heartbeat_store=None, readings_store=None, config=None, tenant=None, scope=None,
                     alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None,
-                    ack_store=None, ticket_writer=None, health=None):
+                    ack_store=None, ticket_writer=None, health=None, baseline_store=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
@@ -1015,6 +1081,10 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     ``health``: optional ``automation.health.HealthReport`` — records the collector outcome
     (including any per-source failures merged collectors surface as ``facts["sourcesFailed"]``,
     adapters/collector_merge.py) plus everything ``process_alerts``/``_record_reading`` record.
+    ``baseline_store``: optional B1/B2 user_baseline store — when provided, the sweep runs the
+    precomputed baseline detector on ``facts["events"]`` and correlates any spikes against
+    capacity triggers (B3 correlation booster). Spikes overlapping an active capacity incident
+    are attached to the composite trigger so the ONE Teams card names the likely driver.
 
     Returns ``{"triggered": bool, "triggers": list, "delivered": dict, "checkedAt": str}``.
     """
@@ -1090,6 +1160,25 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
 
     triggers = _cross_reference_recurrence(triggers, findings_store,
                                            scope=scope, tenant=tenant)
+
+    # B3 correlation booster: if a baseline store is threaded in, run the precomputed baseline
+    # detector on the current window's events and annotate any capacity triggers with user
+    # spikes that fell in the same window. The composite capacity_incident card then names
+    # the likely driver ("Bipin ran ExecuteQuery — 3389 CPU-s, 8x baseline") right on the
+    # single Teams card, instead of surfacing it in a separate notification-center-only ticket.
+    if baseline_store is not None:
+        try:
+            from ..detectors.user_baseline import detect_user_baseline_deviation_precomputed
+            from .correlation import correlate_user_spikes_with_capacity
+            spikes = detect_user_baseline_deviation_precomputed(facts, config,
+                                                                 baseline_store=baseline_store)
+            window_min = float(mcfg.get("correlation_window_min", 5.0))
+            triggers = correlate_user_spikes_with_capacity(
+                spikes, triggers, window_min=window_min, run_at=checked_at)
+        except Exception as exc:
+            print(f"[tier2] correlation booster skipped ({type(exc).__name__}: {exc})")
+            if health is not None:
+                health.record_issue(f"correlation booster failed: {type(exc).__name__}: {exc}")
 
     triggered = any(t.get("check") != "data_unavailable" for t in triggers)
 

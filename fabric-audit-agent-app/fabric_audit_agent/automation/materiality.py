@@ -39,6 +39,11 @@ _DEFAULTS = {
     # rules still apply). Kills the resolve-then-re-fire flap that appeared on Aug 5 when the
     # same event bounced across two adjacent sweep windows.
     "quiet_ticks": 12.0,
+    # B3 correlation booster: half-window (minutes) inside which a per-user baseline spike is
+    # considered "correlated" with a capacity event. Tighter windows (e.g. 3 min) only pair
+    # simultaneous events; wider windows (10+) tolerate a bit of clock skew between the LA
+    # events source and the capacity-events source. 5 min matches the sweep cadence.
+    "correlation_window_min": 5.0,
 }
 
 
