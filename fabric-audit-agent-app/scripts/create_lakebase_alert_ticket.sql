@@ -47,6 +47,17 @@ BEGIN
     -- backfill incident_key for any legacy row that somehow lacks one, so the new PK can be set
     UPDATE ai_chatbot.alert_ticket SET incident_key = 'legacy::' || chat_id
       WHERE incident_key IS NULL;
+    -- DE-DUPE before the new PK. While chat_id was the PK, every tier2 run that minted a fresh
+    -- chat for the SAME incident inserted ANOTHER row, so duplicate incident_keys accumulated —
+    -- and `ADD CONSTRAINT ... PRIMARY KEY (incident_key)` then fails with
+    -- "could not create unique index ... Key (incident_key)=(...) is duplicated", aborting the
+    -- whole migration. Keep the most recently detected row per incident (ties broken by chat_id
+    -- so the choice is deterministic) and drop the rest.
+    DELETE FROM ai_chatbot.alert_ticket a
+     USING ai_chatbot.alert_ticket b
+     WHERE a.incident_key = b.incident_key
+       AND (COALESCE(a.first_detected, '') , a.chat_id)
+         < (COALESCE(b.first_detected, '') , b.chat_id);
     ALTER TABLE ai_chatbot.alert_ticket DROP CONSTRAINT alert_ticket_pkey;
     ALTER TABLE ai_chatbot.alert_ticket ALTER COLUMN incident_key SET NOT NULL;
     ALTER TABLE ai_chatbot.alert_ticket ADD CONSTRAINT alert_ticket_pkey PRIMARY KEY (incident_key);
