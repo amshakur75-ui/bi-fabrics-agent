@@ -76,6 +76,27 @@ def severity_of(trigger):
     return "info"
 
 
+# Severity RANK within the capacity family, worst first. Used by ``is_escalation`` so that a
+# signal JOINING an incident only counts as a worsening when it is at least as severe as the worst
+# signal already recorded. Without this, a weaker signal arriving a sweep later — very common,
+# because throttle_imminent and pressure are derived from the SAME capacity dict and land in
+# different windows — produced a spurious second Teams card for an incident that had not worsened.
+#   throttle / extreme_peak : actual throttling, or a >=200% spike       -> worst
+#   pressure                : CU already over 100%
+#   overage / throttle_imminent : accumulating burndown, or 80% of a Fabric threshold (a warning
+#                             that nothing has breached yet)             -> least
+_SIGNAL_RANK = {
+    "throttle": 3, "extreme_peak": 3,
+    "pressure": 2,
+    "overage": 1, "throttle_imminent": 1,
+}
+
+
+def signal_rank(name):
+    """Severity rank of one capacity signal (higher = worse). Unknown names rank 0."""
+    return _SIGNAL_RANK.get(name, 0)
+
+
 def signal_set(trigger):
     """The sorted set of capacity signals a trigger represents, as a list.
 

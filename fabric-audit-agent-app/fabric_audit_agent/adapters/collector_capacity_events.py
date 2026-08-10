@@ -148,9 +148,17 @@ def create_capacity_events_collector(query, config=None):
         if not windows:
             return {}   # nothing computable → contribute nothing; merge keeps other sources
 
+        # MULTI-CAPACITY SAFETY. This Eventhouse stream can carry more than one capacity (a
+        # trial/dev capacity alongside prod — capacity_base_cu's docstring anticipates exactly
+        # that). Reducing across ALL windows attributed the WRONG capacity's peak to whichever
+        # capacityId happened to appear first, and counted over-100% windows from both, so a
+        # 4000% trial spike was reported against the healthy prod capacity with a throttleMinutes
+        # larger than the elapsed window. Pick the capacity that OWNS the peak, then reduce only
+        # within it.
         peak_w = max(windows, key=lambda w: w["pct"])   # first max wins on ties (insertion order)
-        over_windows = sum(1 for w in windows if w["pct"] >= 100)
-        cap_id = next((w["cap"] for w in windows if w["cap"]), "")
+        cap_id = peak_w.get("cap") or ""
+        own = [w for w in windows if (w.get("cap") or "") == cap_id] or windows
+        over_windows = sum(1 for w in own if w["pct"] >= 100)
 
         cap = {
             "peakCuPct": round(peak_w["pct"], 1),
@@ -165,9 +173,25 @@ def create_capacity_events_collector(query, config=None):
         # already scaled ×100 by ``_windows`` (0-100+ range). Omitted when the source has no
         # threshold data (rare — but the check just doesn't fire, no fallback fabrication).
         for f in ("interactiveDelayPct", "interactiveRejectionPct", "backgroundRejectionPct"):
-            vals = [w[f] for w in windows if w.get(f) is not None]
+            vals = [w[f] for w in own if w.get(f) is not None]
             if vals:
                 cap["max" + f[0].upper() + f[1:]] = round(max(vals), 2)
+        # OVERAGE / BURNDOWN. _windows computes these per window, but they were never hoisted
+        # onto the reduced `cap` dict — so `_check_overage` read cap.get("overageTotalMs") and
+        # got None on every sweep (the detector was dead), the burndown escalation axis never
+        # had a value to compare, and tier2_capacity_reporting's overage columns were
+        # permanently NULL. Take the WORST state in this capacity's windows: the largest
+        # accumulated overage, and the SMALLEST minutesToBurndown (smaller = more urgent).
+        _ov = [w for w in own if w.get("overageTotalMs") is not None]
+        if _ov:
+            worst = max(_ov, key=lambda w: w["overageTotalMs"])
+            cap["overageTotalMs"] = worst["overageTotalMs"]
+            if worst.get("overageCumulativePct") is not None:
+                cap["overageCumulativePct"] = worst["overageCumulativePct"]
+            mtbs = [w["minutesToBurndown"] for w in _ov
+                    if w.get("minutesToBurndown") is not None]
+            if mtbs:
+                cap["minutesToBurndown"] = min(mtbs)
         return {"capacity": cap}
 
     return {"collect": collect}

@@ -11,6 +11,7 @@ Priority order of checks:
   2. ``throttle_claim_gate()`` — confirmed throttle signal (PRIMARY)
   3. ``pressure_claim_gate()`` — CU% > 100 without a throttle signal
   4. Overage check            — nonzero ``overageTotalMs`` (burndown is accumulating)
+     (``throttle_imminent`` is RETIRED — see ``_check_throttle_imminent``)
   5. Any STOP gate in ``gates.py`` tripping (``null_data_gate`` inconclusive)
 
 Read-only absolute — this module surfaces findings, never writes/scales/refreshes.
@@ -25,7 +26,8 @@ from ..investigation.gates import (
     pressure_claim_gate,
     null_data_gate,
 )
-from .incident import incident_key, severity_of, primary_metric, signal_set
+from .incident import (incident_key, severity_of, primary_metric, signal_set,
+                       _num as _num_guard)
 from .materiality import classify, is_escalation, load_cfg
 from ..timefmt import to_display
 
@@ -154,34 +156,31 @@ def _check_extreme_peak(facts, mcfg=None):
 
 
 def _check_throttle_imminent(facts, mcfg=None):
-    """Design A' — Fabric's own throttle-threshold pcts (interactiveDelay/interactiveRejection/
-    backgroundRejection) sitting at or above throttle_imminent_pct (default 80%) means throttling
-    is approaching but has not fired yet. An early-warning that lets a human intervene BEFORE
-    users see slow queries/refresh delays — Fabric's own signal that headroom is exhausting."""
-    from .materiality import load_cfg
-    mcfg = mcfg if mcfg is not None else load_cfg()
-    threshold = float(mcfg.get("throttle_imminent_pct", 80.0))
-    cap = (facts or {}).get("capacity") or {}
-    pcts = {"interactiveDelay": cap.get("maxInteractiveDelayPct"),
-            "interactiveRejection": cap.get("maxInteractiveRejectionPct"),
-            "background": cap.get("maxBackgroundRejectionPct")}
-    breached = {k: v for k, v in pcts.items()
-                if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= threshold}
-    if not breached:
-        return []
-    worst = max(breached.values())
-    label = ", ".join(f"{k}={round(v, 1)}%" for k, v in breached.items())
-    trig = {"check": "throttle_imminent", "worstPct": round(worst, 1),
-            "imminentThreshold": threshold, "thresholdPcts": {k: round(v, 2) for k, v in breached.items()},
-            "peakCuPct": cap.get("peakCuPct"),
-            "normalityHint": (f"Fabric throttle threshold(s) at {label} — approaching but not yet "
-                              "throttling. Investigate the current load before Fabric starts "
-                              "delaying interactive queries or rejecting refreshes.")}
-    if cap.get("peakAt"):
-        trig["peakAt"] = cap["peakAt"]
-    if cap.get("capacityId"):
-        trig["capacityId"] = cap["capacityId"]
-    return [trig]
+    """RETIRED 2026-08-10 — always returns []. Do not re-enable without a new data source.
+
+    This detector was built on a MISREADING of the Fabric threshold fields. It compared
+    ``interactiveDelayThresholdPercentage`` (and siblings) against 80 as if they were a live
+    "how close are we to throttling" utilization. They are not:
+
+      * ``kb/metric_definitions.py`` classifies them ``metric_type: "reference"`` — they are the
+        THRESHOLD SETTING, i.e. the CU% at which Fabric starts delaying, not current usage.
+      * The same note records them as "confirmed constant = 1 (i.e. 100%) across all windows",
+        and the fingerprinted live value on this tenant is 1.237113, which the collector scales
+        x100 to 123.71.
+
+    So the condition ``123.71 >= 80`` was TRUE on every window of every sweep. Had the deployed
+    KQL not happened to project these columns away, this would have minted one permanent
+    warn-severity incident firing 288x/day, which — because the incident row keeps an all-time
+    high-water ``metric`` — would also have poisoned the peak-escalation axis for that capacity
+    key forever. Precisely the "runs fine, tests pass, logically wrong" failure this project
+    keeps hunting.
+
+    The sound version of "approaching throttle" is CU% sitting in a band BELOW 100 for a
+    sustained period, which ``_check_sustained_band`` already implements against real
+    utilization (default 70-90% for 20+ minutes). Use that; there is no field in this stream
+    that reports proximity-to-throttle directly.
+    """
+    return []
 
 
 def _check_overage(facts):
@@ -685,8 +684,8 @@ def _investigate_query(t, *, prefix=None, when=None):
             "present the proxy as capacity consumption.")
 
 
-_COMPOSABLE_CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak",
-                                "throttle_imminent")
+# throttle_imminent is RETIRED (see _check_throttle_imminent) — never coalesced.
+_COMPOSABLE_CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak")
 
 
 def _coalesce_capacity_family(triggers):
@@ -785,14 +784,18 @@ def _coalesce_capacity_family(triggers):
 
 
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
-                   chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48,
+                   chat_writer=None, app_url="", cfg=None, now_dt=None,
                    ack_store=None, ticket_writer=None, health=None):
     """Run the alert state machine over the current triggers. Returns an action summary.
 
     Ordering is cost-critical: the deterministic dedup + materiality checks decide silence WITHOUT
     calling the LLM; ``reasoner`` (the investigation) runs only for a new report/ambiguous incident
-    or an escalation. Reminders reuse the stored investigation summary (no LLM). All sends route
-    through ``outbound.dispatch_outbound`` (egress chokepoint).
+    or an escalation. All sends route through ``outbound.dispatch_outbound`` (egress chokepoint).
+
+    NOTE: there is no reminder path. A still-firing incident deliberately does NOT re-notify —
+    repeating a card every N hours was the noise the user asked us to remove. The persistent
+    surface is the app's notification center; only a genuine WORSENING (see
+    ``materiality.is_escalation``) breaks through to Teams again.
 
     ``health``: optional ``automation.health.HealthReport`` — the chat-write / ticket-write / reopen
     failures below are already logged (WARN prints); this additionally records them so a degraded
@@ -812,17 +815,34 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     _ATTR_CHECKS = ("concentration", "cross_user")
     # Only these hard capacity incidents are pushed to Teams. Attribution / coverage findings are
     # notification-center-only (see _send) — Teams stays reserved for genuine capacity emergencies.
-    _TEAMS_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
+    _TEAMS_CHECKS = ("throttle", "pressure", "overage", "extreme_peak",
                      "capacity_incident")
     hysteresis_ticks = int(cfg.get("hysteresis_ticks", 3))
     pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
+    # Informational rows must be visible here too. They are NOT in query_pending (different
+    # status), so the hysteresis block below used to overwrite each one back to
+    # status='pending', presenceCount=1 — the row cycled pending/pending/informational forever
+    # and its firstAlertedAt was reset every cycle, so the digest saw it on one tick in three
+    # with a first-detected time of "15 minutes ago" for a pattern days old.
+    try:
+        _q_info = alerts_store.get("query_informational") if hasattr(alerts_store, "get") else None
+        _informational = (_q_info() or {}) if _q_info else {}
+    except Exception:
+        _informational = {}
+    pending = {**_informational, **pending}
     pending_seen = set()
     seen = set()
     # FIX A: is there a REAL capacity event firing this run? (throttle/pressure/overage = true-CU
     # over-threshold). A recurring attribution pattern only earns a live ticket when it actually
     # correlates with one of these; absent that, it's a known-stable pattern, logged informational.
-    capacity_linked = any((t.get("check") in _TEAMS_CHECKS) for t in triggers)
-    actions = {"new": [], "escalation": [], "reminder": [], "resolved": [], "silent": [],
+    # Only a genuine true-CU over-threshold event counts as "capacity-linked". NOT
+    # throttle_imminent (80% of a Fabric threshold, no CU breach) and NOT extreme_peak on its own
+    # — using _TEAMS_CHECKS here let an early warning promote a recurring attribution pattern to a
+    # live ticket + reasoner call, which is what this gate exists to prevent.
+    _TRUE_CU_CHECKS = ("throttle", "pressure", "overage", "capacity_incident")
+    capacity_linked = any((t.get("check") in _TRUE_CU_CHECKS) for t in triggers)
+    # No "reminder" bucket: a still-firing incident never re-notifies (see the docstring).
+    actions = {"new": [], "escalation": [], "resolved": [], "silent": [],
                "inactive": [], "reopened": [], "pending": [], "informational": []}
 
     def _send(kind, trigger, row, summary, *, investigate_prefix=None):
@@ -842,9 +862,10 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
             base = f"{app_url.rstrip('/')}/chat/{cid}" if cid else f"{app_url.rstrip('/')}/"
             chat_url = base + "?query=" + urllib.parse.quote(
                 _investigate_query(trigger, prefix=investigate_prefix, when=now_iso))
-        # Concentration/attribution alerts rank a CPU-time PROXY, not true CU — the card must say so.
-        disclosure = (PROXY_RANKING_DISCLOSURE
-                      if trigger.get("check") in ("concentration", "cross_user") else None)
+        # NOTE: no proxy-ranking disclosure here. It only applied to concentration / cross_user
+        # cards, and those never reach this point — _send returns False above for anything outside
+        # _TEAMS_CHECKS, which excludes them (attribution lives in the notification center).
+        disclosure = None
         # "When / first noticed" (Part 5): sourced from the incident row's firstAlertedAt, falling
         # back to runAt when the row has no first-alerted timestamp yet. Uses the repo's canonical
         # display-time helper (never hand-rolled tz math); falls back to the raw ISO string if the
@@ -896,7 +917,10 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 row["metric"] = pri_m
         row["signalTypes"] = sorted(sigs)
         for key in ("throttleMinutes", "minutesToBurndown"):
-            cur = trigger.get(key)
+            # Coerce through the repo numeric guard: a string/bool from a KQL override would
+            # otherwise raise inside max() below, escape process_alerts, and be swallowed by
+            # _deliver's bare except — silencing EVERY alert for that sweep.
+            cur = _num_guard(trigger.get(key))
             if cur is None:
                 continue
             pri = (prior or {}).get(key)
@@ -974,9 +998,15 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            + (f" (prior resolution note: \"{_note}\")" if _note else "")
                            + " and has now RECURRED. First decide whether the same cause returned or "
                            "a new driver is behind it this time.")
+                # A reopen is a FRESH occurrence: re-derive severity/metric from THIS trigger and
+                # restamp firstAlertedAt. Carrying the previous occurrence's high-water marks
+                # labelled the ticket with a peak that wasn't happening and left it unable to
+                # escalate (a re-fire at 110 kept warn/250 from a resolved event).
                 row = dict(prior, currentlyActive=True, status="active", lastAlertedAt=now_iso,
-                           runAt=now_iso, investigationSummary=summary, absenceCount=0)
-                _capacity_state(row, t, prior)
+                           runAt=now_iso, investigationSummary=summary, absenceCount=0,
+                           severity=sev, metric=metric, firstAlertedAt=now_iso,
+                           signalTypes=None, throttleMinutes=None, minutesToBurndown=None)
+                _capacity_state(row, t)
                 row["delivered"] = _send("new", t, row, summary, investigate_prefix=_prefix)
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
@@ -1100,9 +1130,24 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     _CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
                         "capacity_incident")
     quiet_ticks = int(cfg.get("quiet_ticks", 12))
+    # OWNERSHIP FILTER — only reason about incidents THIS job produces.
+    # `active` is every active row in the SHARED audit_alerts table, including the hourly sweep's
+    # findings (checkType = model/refresh/security/... written by sweep_delivery). They are never
+    # in `seen` (that holds only this tier2 run's triggers), so without this filter the loop below
+    # marked EVERY sweep finding currentlyActive=False within 5 minutes of creation. The
+    # notification center hides those from the Open tab (isFiringNow) and the digest drops them
+    # into the stale backlog — so an hourly finding was invisible almost immediately. It also
+    # overwrote the ticket's `detail` with "sweep finding (Warning)", destroying the sweep's
+    # recommendation text.
+    _TIER2_OWNED = set(_CAPACITY_CHECKS) | {
+        "concentration", "cross_user", "blind_spot", "sustained", "rate_change",
+        "silent_failure",
+    }
     for key, prior in active.items():
         if key in seen:
             continue
+        if prior.get("checkType") not in _TIER2_OWNED:
+            continue    # another job owns this row's lifecycle
         if prior.get("checkType") in _CAPACITY_CHECKS:
             # Design A' quiet-to-resolve (2026-08-09): a capacity incident is held open through
             # up to ``quiet_ticks`` consecutive absent sweeps (default 12 = 60 min clean) before
@@ -1214,6 +1259,13 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                                   now_dt=now_dt, ack_store=ack_store, ticket_writer=ticket_writer,
                                   health=health)
         except Exception as exc:
+            # Record it: this is TOTAL alert-path failure. Returning a dict nobody inspects meant
+            # a green run with zero alerts, indistinguishable from a healthy quiet period, so
+            # email_notifications.on_failure never fired.
+            msg = f"alert delivery pass FAILED: {type(exc).__name__}: {exc}"
+            print(f"[tier2] {msg}")
+            if health is not None:
+                health.record_issue(msg)
             return {"error": f"{type(exc).__name__}: {exc}"}
 
     try:

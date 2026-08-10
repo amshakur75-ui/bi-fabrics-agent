@@ -48,14 +48,6 @@ def _pressure(peak):
     return {"check": "pressure", "peakCuPct": peak}
 
 
-def _imminent(worst, peak=None):
-    t = {"check": "throttle_imminent", "worstPct": worst,
-         "thresholdPcts": {"interactiveDelay": worst}}
-    if peak is not None:
-        t["peakCuPct"] = peak
-    return t
-
-
 def _overage(burndown, peak=105.0):
     return {"check": "overage", "overageTotalMs": 9000.0, "minutesToBurndown": burndown,
             "overageCumulativePct": 12.0, "peakCuPct": peak}
@@ -72,7 +64,7 @@ def test_improvement_does_not_fire_a_card_and_does_not_downgrade_the_ticket():
     posts, sink = _sink()
     acts = _run(store, sink, [
         [_throttle(6.0, 105.0), _pressure(105.0)],   # tick 1: real incident -> 1 card
-        [_imminent(85.0, 99.0)],                     # tick 2: IMPROVED -> must be silent
+        [_overage(300.0, 99.0)],                     # tick 2: IMPROVED -> must be silent
         [_throttle(6.0, 105.0), _pressure(105.0)],   # tick 3: back to the same state -> silent
     ])
     assert len(posts) == 1, f"an improvement fired a card ({len(posts)} total)"
@@ -88,20 +80,21 @@ def test_improvement_does_not_fire_a_card_and_does_not_downgrade_the_ticket():
     assert set(row["signalTypes"]) == {"throttle", "pressure"}
 
 
-def test_thresholds_rising_while_still_throttling_IS_an_escalation():
-    """The counterpart to the improvement case. If throttle_imminent appears ALONGSIDE a
-    continuing throttle (rather than replacing it), the set genuinely grew — Fabric's own
-    thresholds climbing while we are already throttling is worse, and must break through."""
+def test_an_equally_severe_signal_joining_IS_an_escalation():
+    """Counterpart to the improvement case. extreme_peak (a >=200% spike) joining a continuing
+    throttle+pressure incident genuinely grew the set with a signal at least as severe as the
+    worst already seen, so it must break through."""
     store = create_delta_faithful_store()
     posts, sink = _sink()
     acts = _run(store, sink, [
-        [_throttle(6.0, 105.0), _pressure(105.0)],
-        [_throttle(6.0, 105.0), _pressure(105.0), _imminent(88.0, 105.0)],
+        [_throttle(6.0, 150.0), _pressure(150.0)],
+        [_throttle(6.0, 210.0), _pressure(210.0),
+         {"check": "extreme_peak", "peakCuPct": 210.0, "extremeThreshold": 200.0}],
     ])
     assert len(posts) == 2
     assert acts[1]["escalation"] == ["capacity::capacity"]
     assert set(store["_data"]["capacity::capacity"]["signalTypes"]) == {
-        "throttle", "pressure", "throttle_imminent"}
+        "throttle", "pressure", "extreme_peak"}
 
 
 # --- S2: genuine worsenings must break through -------------------------------------------

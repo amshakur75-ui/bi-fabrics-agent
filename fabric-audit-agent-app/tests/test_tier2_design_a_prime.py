@@ -1,8 +1,8 @@
 """Design A' (2026-08-09) — additional capacity detectors beyond throttle/pressure/overage.
 
-Covers the two new Tier-2 checks introduced so Design A's coverage picks up capacity events that
-Fabric's smoothing absorbs (`extreme_peak`) or that the platform is approaching but has not yet
-crossed (`throttle_imminent`). Detector + integration surfaces (title/facts/severity/materiality/
+Covers `extreme_peak` (capacity events Fabric's smoothing absorbs) and pins that
+`throttle_imminent` stays RETIRED — it was built on a misread field (see
+`_check_throttle_imminent`'s docstring) and must remain a no-op. Detector + integration surfaces (title/facts/severity/materiality/
 incident-key) are pinned so a fired signal produces a well-formed, deduped alert the same way
 the existing capacity checks do.
 """
@@ -48,30 +48,19 @@ def test_extreme_peak_respects_config_override():
     assert _check_extreme_peak({"capacity": {"peakCuPct": 140.0}}, cfg) == []
 
 
-def test_throttle_imminent_fires_at_or_above_threshold():
-    # any one Fabric threshold pct >= 80% triggers the early-warning
-    facts = {"capacity": {"peakCuPct": 92.0, "maxInteractiveDelayPct": 88.0,
-                          "maxInteractiveRejectionPct": 40.0,
-                          "maxBackgroundRejectionPct": 30.0}}
-    trigs = _check_throttle_imminent(facts)
-    assert len(trigs) == 1
-    t = trigs[0]
-    assert t["check"] == "throttle_imminent"
-    assert t["worstPct"] == 88.0
-    assert "interactiveDelay" in t["thresholdPcts"]
-    # only the breached pcts are surfaced — the sub-threshold ones do not clutter the alert
-    assert "interactiveRejection" not in t["thresholdPcts"]
-    assert "background" not in t["thresholdPcts"]
 
 
-def test_throttle_imminent_reports_worst_across_signals():
-    facts = {"capacity": {"maxInteractiveDelayPct": 82.0, "maxInteractiveRejectionPct": 95.0,
-                          "maxBackgroundRejectionPct": 81.0}}
-    trigs = _check_throttle_imminent(facts)
-    assert trigs[0]["worstPct"] == 95.0
-    # all three qualifying signals surface
-    assert set(trigs[0]["thresholdPcts"].keys()) == {"interactiveDelay", "interactiveRejection",
-                                                      "background"}
+def test_throttle_imminent_is_RETIRED_and_always_silent():
+    """Built on a misread field: the *ThresholdPercentage columns are the throttle SETTING
+    (kb metric_type "reference", "confirmed constant = 1"), not a live utilization. The live
+    value scales to 123.71, so `>= 80` was true on EVERY window — one permanent warn incident
+    firing 288x/day, whose all-time high-water metric would also poison the peak-escalation axis
+    for that capacity forever. The sound early-warning is _check_sustained_band (real CU% in a
+    sub-100 band). Must stay a no-op."""
+    facts = {"capacity": {"peakCuPct": 92.0, "maxInteractiveDelayPct": 123.71,
+                          "maxInteractiveRejectionPct": 150.0,
+                          "maxBackgroundRejectionPct": 200.0}}
+    assert _check_throttle_imminent(facts) == []
 
 
 def test_throttle_imminent_silent_when_no_threshold_data():
@@ -220,19 +209,6 @@ def test_coalesce_merges_multiple_capacity_signals_into_one_composite():
     assert c["peakCuPct"] == 210.0
     assert c["throttleMinutes"] == 8.5
 
-
-def test_coalesce_carries_threshold_pcts_from_throttle_imminent():
-    """When throttle_imminent joins the composite, its threshold pcts are hoisted onto the
-    composite so the single card can show them alongside peak/throttle."""
-    from fabric_audit_agent.automation.tier2_check import _coalesce_capacity_family
-    trigs = [{"check": "throttle", "throttleMinutes": 3.0, "peakCuPct": 108.0},
-             {"check": "throttle_imminent", "worstPct": 88.0,
-              "thresholdPcts": {"interactiveDelay": 88.0}}]
-    out = _coalesce_capacity_family(trigs)
-    c = out[0]
-    assert c["check"] == "capacity_incident"
-    assert c["thresholdPcts"] == {"interactiveDelay": 88.0}
-    assert c["worstPct"] == 88.0
 
 
 def test_coalesce_partitions_by_capacity_id():

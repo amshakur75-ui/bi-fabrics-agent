@@ -141,7 +141,8 @@ def test_active_incident_never_reposts_to_teams():
     assert len(posts) == 1
     for hrs in (49, 98, 147, 300):                                      # long after any old 48h window
         a = process_alerts([warn], now_dt=T0 + timedelta(hours=hrs), **kw)
-        assert a["silent"] == ["capacity::capacity"] and a["reminder"] == []
+        assert a["silent"] == ["capacity::capacity"]
+        assert "reminder" not in a          # the reminder path was removed
     assert len(posts) == 1                                              # still exactly one card, ever
     # the ticket is still open + active for the notification center
     assert store["query_active"]()["capacity::capacity"]["currentlyActive"] is True

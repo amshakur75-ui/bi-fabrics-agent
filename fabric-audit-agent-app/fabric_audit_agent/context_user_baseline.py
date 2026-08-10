@@ -36,6 +36,25 @@ def _from_row(row):
     return {cc: row.get(col) for cc, col in _FIELDS}
 
 
+def _dedupe_rows(rows):
+    """Collapse duplicate (scope, user) rows, keeping the best-sampled one.
+
+    The Delta MERGE matches on ``(scope, user_id)`` and Delta REJECTS a source frame containing
+    two rows that match the same target row ("multiple source rows matched..."), so a duplicate
+    took the entire nightly job down — and ``upsert_many`` has no try/except, so every baseline
+    went stale silently. Duplicates are reachable: the aggregate KQL groups with
+    ``summarize ... by _euser``, which is CASE-SENSITIVE in Kusto, and then ``tolower()``
+    collapses "A.User@x" and "a.user@x" into one key. Keep the row with the larger sample count.
+    """
+    best = {}
+    for r in rows or []:
+        key = (r.get("scope"), (r.get("user") or "").lower())
+        cur = best.get(key)
+        if cur is None or (r.get("count") or 0) > (cur.get("count") or 0):
+            best[key] = r
+    return list(best.values())
+
+
 def create_user_baseline_store_memory(initial=None):
     """In-memory store keyed by (scope, user). Tests + offline only — no cross-run persistence.
 
@@ -58,7 +77,8 @@ def create_user_baseline_store_memory(initial=None):
         return {k[1]: dict(v) for k, v in data.items() if k[0] == "user"}
 
     def upsert_many(rows):
-        for r in rows or []:
+        # Same de-dupe as the Delta store, so the double cannot hide a duplicate-row bug.
+        for r in _dedupe_rows(rows):
             data[_key(r)] = dict(r)
 
     def all_rows():
@@ -166,6 +186,7 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
         return out
 
     def upsert_many(rows):
+        rows = _dedupe_rows(rows)
         if not rows:
             return
         s = _get_spark()

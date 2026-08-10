@@ -7,7 +7,8 @@ active incident has worsened enough to re-alert. All thresholds come from ``load
 """
 import os
 
-from .incident import severity_of, primary_metric, signal_set, _num, _CAPACITY_FAMILY
+from .incident import (severity_of, primary_metric, signal_set, signal_rank, _num,
+                       _CAPACITY_FAMILY)
 
 _DEFAULTS = {
     "concentration_report": 40.0,   # report at/above this share%
@@ -75,11 +76,25 @@ def classify(trigger, cfg=None):
     if check == "data_unavailable":
         return "suppress", "data-unavailable is a data gap, not a capacity incident"
     if check == "capacity_incident":
-        # Composite: fires only when 2+ capacity family signals coalesce, so a fired
-        # composite is always material. Reason names the signals seen.
+        # A composite must still clear a materiality FLOOR. Returning "report" unconditionally
+        # meant coalescing ESCALATED sub-threshold blips into guaranteed Teams cards: one
+        # 30-second window at 100.5% CU produces both `pressure` (which classify() suppresses on
+        # its own as "momentary, not recurring") and `throttle` (0.5 min, "brief"), and merging
+        # two SUPPRESSED signals invented a hard alert. That is the exact opposite of what
+        # coalescing is for. A composite reports only if at least one component would report on
+        # its own merits.
         sigs = trigger.get("signalTypes") or []
-        return "report", f"multi-signal capacity incident ({', '.join(sigs)})" if sigs \
+        label = f"multi-signal capacity incident ({', '.join(sigs)})" if sigs \
             else "multi-signal capacity incident"
+        components = trigger.get("signals") or []
+        if components:
+            decisions = [classify(c, cfg)[0] for c in components]
+            if "report" not in decisions:
+                if all(d == "suppress" for d in decisions):
+                    return "suppress", ("every component is individually sub-threshold "
+                                        f"({', '.join(sigs)})")
+                return "ambiguous", f"multi-signal but no component is material ({', '.join(sigs)})"
+        return "report", label
     if _is_recurring(trigger):
         return "report", "recurring condition (matches prior findings)"
     if severity_of(trigger) == "warn":
@@ -195,7 +210,15 @@ def is_escalation(trigger, prior, cfg=None):
         # (a row written before this field existed — those are live in prod at deploy time),
         # not "no signals"; treating unknown as empty makes every signal look new.
         if pri_sigs and cur_sigs > pri_sigs:
-            return True
+            # ...and the signal that JOINED must be at least as severe as the worst already
+            # recorded. A strict superset alone also fires when a WEAKER signal shows up a sweep
+            # later — {pressure} -> {pressure, throttle_imminent} is CU already over 100% joined
+            # by "80% of a Fabric threshold", which is not a worsening. That happens constantly,
+            # because those signals are derived from the same capacity dict and land in different
+            # windows, so it would have double-carded most real incidents.
+            joined = cur_sigs - pri_sigs
+            if max(signal_rank(s) for s in joined) >= max(signal_rank(s) for s in pri_sigs):
+                return True
         # 4. burndown collapsing — overage draining far slower than before is an imminent
         #    worsening the other three axes cannot see (peak flat, throttle flat, set already
         #    the union). Without this, a warn incident whose minutesToBurndown goes 50 -> 2
@@ -212,14 +235,7 @@ def is_escalation(trigger, prior, cfg=None):
         return False
     if check == "concentration":
         return (cur - pri) >= cfg["esc_share_delta"]
-    if check == "pressure":
-        return (cur - pri) >= cfg["esc_peak_delta"]
-    if check == "throttle":
-        return cur >= max(cfg["throttle_min"], 2 * pri)
-    if check == "overage":
-        return (cur - pri) >= cfg["esc_peak_delta"]
-    if check == "extreme_peak":
-        return (cur - pri) >= cfg["esc_peak_delta"]
-    if check == "throttle_imminent":
-        return (cur - pri) >= cfg["esc_peak_delta"]
+    # No per-check branches for the capacity family here: they would be unreachable behind the
+    # `check in _CAPACITY_FAMILY` return above, and a stale one reads as if the unit-safety fix
+    # were incomplete. Same hazard `primary_metric` documents.
     return False

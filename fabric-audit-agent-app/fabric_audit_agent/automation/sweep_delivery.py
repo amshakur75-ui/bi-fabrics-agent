@@ -56,8 +56,10 @@ def short_title(text, max_words=8, max_chars=60):
 
 _LEVEL_RANK = {"Info": 0, "Warning": 1, "Critical": 2}
 # Finding families Tier-2 already alerts on in real time — the sweep must not repeat them.
-_TIER2_OWNED_PREFIXES = ("capacity.concentration", "capacity.throttle", "capacity.pressure",
-                         "capacity.overage")
+# Only finding types a detector ACTUALLY emits. "capacity.pressure" / "capacity.overage" were
+# listed here but are written by nothing (the capacity finding types are throttle /
+# concentration / contention / oversized-model), so they read as coverage that isn't there.
+_TIER2_OWNED_PREFIXES = ("capacity.concentration", "capacity.throttle")
 
 
 def _tier2_owned(key):

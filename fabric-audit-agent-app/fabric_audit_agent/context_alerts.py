@@ -229,5 +229,11 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
         safe = str(incident_key).replace("'", "''")
         s.sql(f"DELETE FROM {table} WHERE incident_key = '{safe}'")
 
-    return {"query_active": query_active, "query_pending": query_pending, "upsert": upsert,
+    # query_informational MUST be exported. `daily_summary` reads it defensively via
+    # `alerts_store.get("query_informational", lambda: {})()`, so omitting it here silently
+    # resolved to `{}` in PRODUCTION — every informational pattern was written to Delta and never
+    # read back, leaving the digest's informational section permanently empty. The memory store
+    # did export it, which is exactly why no test caught the divergence.
+    return {"query_active": query_active, "query_pending": query_pending,
+            "query_informational": query_informational, "upsert": upsert,
             "resolve": resolve, "delete": delete}
