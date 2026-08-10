@@ -1,12 +1,18 @@
 """Per-user spike history: every high-consumption event + counts + time-of-day + workload split.
 Pure / stdlib — input is already-normalized event dicts (from events.normalize_event).
-A 'spike' is an event above the user's own p95 OR above an absolute floor (floor_cu)."""
+A 'spike' is an event above a MULTIPLE of the user's own p95 OR above an absolute floor
+(floor_cu) — see the anomaly-test note in ``user_spike_history``."""
 
+from ..config import DEFAULT_CONFIG
 from .baseline import compute_baseline
 from .events import is_spike
 
+# Same multiple detectors/user_baseline.py applies, and for the same reason (see
+# config.baselineSpikeMultiplier).
+_SPIKE_MULTIPLIER = DEFAULT_CONFIG["activity"]["baselineSpikeMultiplier"]
 
-def user_spike_history(events, user, *, floor_cu=0):
+
+def user_spike_history(events, user, *, floor_cu=0, multiplier=None):
     """Return spike history for *user* derived from *events* (normalized event dicts).
 
     Args:
@@ -14,11 +20,16 @@ def user_spike_history(events, user, *, floor_cu=0):
                    ({ts,user,item,workspace,operation,kind,cuSeconds,durationMs,throttled}).
         user:      Email string to filter on (case-sensitive — normalize before calling).
         floor_cu:  Absolute CU-seconds floor; an event >= this is always a spike (default 0).
+        multiplier: Multiple of the user's p95 an event must exceed to count as a spike
+                   (default ``config.activity.baselineSpikeMultiplier``).
 
     Returns dict:
         {
             user:                 str,
             spikeCount:           int,
+            baselineP95CuSeconds: float|None,
+            spikeMultiplier:      float,
+            spikeThresholdCuSeconds: float|None,
             totalCuSeconds:       float,
             peakCuSeconds:        float,
             spikes:               [{ts, item, operation, kind, cuSeconds}, ...] sorted cu desc,
@@ -28,11 +39,15 @@ def user_spike_history(events, user, *, floor_cu=0):
         }
     """
     user_events = [e for e in events if e.get("user") == user]
+    mult = _SPIKE_MULTIPLIER if multiplier is None else float(multiplier)
 
     if not user_events:
         return {
             "user": user,
             "spikeCount": 0,
+            "baselineP95CuSeconds": None,
+            "spikeMultiplier": mult,
+            "spikeThresholdCuSeconds": None,
             "totalCuSeconds": 0,
             "peakCuSeconds": 0,
             "spikes": [],
@@ -44,13 +59,22 @@ def user_spike_history(events, user, *, floor_cu=0):
     baseline = compute_baseline(user_events)
     p95 = baseline.get("p95")
 
-    # Treat floor_cu=0 (falsy) as "no absolute floor" — pass None so is_spike only uses p95.
+    # ANOMALY TEST, not a percentile lookup. The baseline p95 is computed from THE SAME events
+    # being tested, so a bare `cu > p95` returns ~5% of the input by construction, forever: 400
+    # uniform events reported spikeCount 20 on a user whose behaviour never varied. Requiring a
+    # MULTIPLE of p95 makes the answer depend on the shape of the distribution instead of its
+    # length — the fix detectors/user_baseline.py already carries, applied here because this
+    # module is an MCP tool the agent quotes directly.
+    threshold = p95 * mult if p95 is not None else None
+
+    # Treat floor_cu=0 (falsy) as "no absolute floor" — pass None so is_spike only uses the
+    # threshold.
     effective_floor = floor_cu if floor_cu else None
 
     # Identify spike events
     spike_events = [
         e for e in user_events
-        if is_spike(e, p95=p95, floor_cu=effective_floor)
+        if is_spike(e, p95=threshold, floor_cu=effective_floor)
     ]
     spike_events_sorted = sorted(spike_events, key=lambda e: e.get("cuSeconds", 0), reverse=True)
 
@@ -100,6 +124,10 @@ def user_spike_history(events, user, *, floor_cu=0):
     return {
         "user": user,
         "spikeCount": len(spikes),
+        # The bar each spike had to clear, so the count can be explained rather than trusted.
+        "baselineP95CuSeconds": p95,
+        "spikeMultiplier": mult,
+        "spikeThresholdCuSeconds": threshold,
         "totalCuSeconds": total_cu,
         "peakCuSeconds": peak_cu,
         "spikes": spikes,

@@ -1,6 +1,7 @@
-"""Tests for resolve.term_resolver — two-pass matching, curated ambiguity, LOW exclusion."""
+"""Tests for resolve.term_resolver — canonical/exact/containment matching, curated ambiguity,
+LOW exclusion."""
 from fabric_audit_agent.resolve import resolve_term
-from fabric_audit_agent.resolve.routing_table import ROUTING_TABLE
+from fabric_audit_agent.resolve.routing_table import ROUTING_TABLE, known_models
 
 
 def test_exact_match_resolved_with_connection_path():
@@ -91,6 +92,26 @@ def test_unverified_variant_carries_soft_cue():
     assert r["status"] == "resolved"
     assert r["canonicalName"] == "Ent-Reporting-SCM"
     assert "unverified phrasing" in r["message"]
+
+
+# ── Invariant: every CANONICAL NAME resolves to itself ────────────────────────────────
+def test_every_canonical_name_resolves_to_itself():
+    """The invariant below only iterated ``variants``, which is how this survived: canonical
+    names are not variants, so 5 of the 13 participating models answered no_match for their own
+    name and Ent-Reporting-DTC came back ambiguous with itself. The system prompt tells the agent
+    to call resolve_term FIRST, so the failure surfaced as "No canonical model matched
+    'Ent-Reporting-Sales' … Known models: Ent-Reporting-Sales, …".
+    """
+    for name in known_models():
+        r = resolve_term(name)
+        assert r["status"] == "resolved", f"{name} did not resolve: {r}"
+        assert r["canonicalName"] == name
+        assert r["matchedVariant"] == name
+        assert r["variantVerified"] is True
+        assert "ambiguous" not in r["message"]
+    # Case and punctuation folding applies to canonical names too.
+    assert resolve_term("ent reporting sales")["canonicalName"] == "Ent-Reporting-Sales"
+    assert resolve_term("ENT_REPORTING_HR")["canonicalName"] == "Ent-Reporting-HR"
 
 
 # ── Invariant: every registered variant resolves to itself, never a generic collision ──

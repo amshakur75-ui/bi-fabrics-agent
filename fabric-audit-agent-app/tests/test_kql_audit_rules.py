@@ -9,6 +9,7 @@ CORRECT002-006, BEST001-006, HINT001-002) — see test_kql_audit_rules_ported.py
 """
 
 from fabric_audit_agent.query.kql_audit_rules import (
+    CAPACITY_TABLES,
     POWER_BI_TABLES,
     WORKSPACE_RETENTION_DAYS,
     PipelineStep,
@@ -17,6 +18,7 @@ from fabric_audit_agent.query.kql_audit_rules import (
     check_correct001,
     check_correct007,
     check_perf001,
+    check_perf003_capacity,
     check_perf003_power_bi,
     check_retention,
     parse_kusto_error,
@@ -130,6 +132,76 @@ def test_perf003_power_bi_no_fire_with_time_filter():
 def test_perf003_power_bi_scoped_to_table():
     # A different table missing a time filter is out of PERF003_POWER_BI's scope.
     assert check_perf003_power_bi('ContainerLog | where Level == "Error"') == []
+
+
+def test_perf003_power_bi_fires_when_time_column_is_only_binned():
+    """Naming TimeGenerated is not filtering by it: this is an unbounded full-retention scan of
+    the highest-volume table, and it previously audited 100/A with zero findings because the
+    time-filter probe matched any mention of the column."""
+    q = ("PowerBIDatasetsWorkspace | summarize cpuMs=sum(CpuTimeMs) by ArtifactName, "
+         "ExecutingUser, bin(TimeGenerated, 5m) | top 20 by cpuMs desc")
+    findings = check_perf003_power_bi(q)
+    assert len(findings) == 1 and findings[0]["severity"] == "error"
+    result = audit_kql(q)
+    assert result["blocking"] is True
+    assert result["grade"] != "A"
+    # The advisory probe already flagged this shape; both now agree.
+    assert any(r["check"] == "Timeout" for r in preflight_limits(q))
+
+
+def test_perf003_power_bi_no_fire_on_bounded_query_that_also_bins():
+    q = ("PowerBIDatasetsWorkspace | where TimeGenerated > ago(1d) "
+         "| summarize cpuMs=sum(CpuTimeMs) by bin(TimeGenerated, 5m) | top 20 by cpuMs desc")
+    assert check_perf003_power_bi(q) == []
+    assert audit_kql(q)["blocking"] is False
+
+
+def test_time_filter_probe_accepts_explicit_datetime_bounds():
+    q = ("PowerBIDatasetsWorkspace | where TimeGenerated between "
+         "(datetime(2026-08-01) .. datetime(2026-08-02)) | count")
+    assert check_perf003_power_bi(q) == []
+
+
+# ── PERF003_CAPACITY (custom) ─────────────────────────────────────────────────
+
+
+def test_capacity_tables_constant():
+    assert CAPACITY_TABLES == {"CapacityEvents"}
+
+
+def test_perf003_capacity_blocks_no_time_filter():
+    """CapacityEvents was in none of the table sets, so engine="capacity" had no time-filter
+    rule at all — 8 of the 10 shipped templates read this table."""
+    q = "CapacityEvents | summarize windowCount = count() by capacityId"
+    findings = check_perf003_capacity(q)
+    assert len(findings) == 1 and findings[0]["severity"] == "error"
+    assert audit_kql(q)["blocking"] is True
+
+
+def test_perf003_capacity_no_fire_with_ingestion_time_filter():
+    q = ("CapacityEvents\n| where ingestion_time() > ago(1d)\n"
+         "| summarize windowCount = count() by capacityId")
+    assert check_perf003_capacity(q) == []
+    assert audit_kql(q)["blocking"] is False
+
+
+def test_perf003_capacity_scoped_to_table():
+    assert check_perf003_capacity("PowerBIDatasetsWorkspace | count") == []
+
+
+def test_shipped_query_library_templates_stay_clean():
+    """The new blocking rules must not reject the queries the product actually ships."""
+    import json
+    from pathlib import Path
+
+    library = json.loads(
+        (Path(__file__).resolve().parents[1] / "fabric_audit_agent" / "query_library.json")
+        .read_text(encoding="utf-8")
+    )
+    assert library
+    for entry in library:
+        result = audit_kql(entry["kql"])
+        assert result["blocking"] is False, (entry["name"], _rule_ids(result["findings"]))
 
 
 # ── CORRECT001: == null ───────────────────────────────────────────────────────

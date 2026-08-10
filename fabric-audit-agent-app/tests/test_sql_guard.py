@@ -6,7 +6,7 @@ import pytest
 from fabric_audit_agent.query.sql_guard import (
     assert_read_only_sql,
     escape_sql_identifier,
-    _strip_string_literals,
+    _scrub_sql,
     _MAX_SQL_LENGTH,
     _MAX_SQL_ROWS,
 )
@@ -53,38 +53,39 @@ class TestEscapeSqlIdentifier:
 
 
 # ---------------------------------------------------------------------------
-# _strip_string_literals
+# _scrub_sql  (was _strip_string_literals — renamed when it grew comment and
+# delimited-identifier handling; the string-literal assertions are unchanged)
 # ---------------------------------------------------------------------------
 
-class TestStripStringLiterals:
+class TestScrubSql:
     def test_strips_simple_string(self):
-        result = _strip_string_literals("SELECT * WHERE x = 'hello'")
+        result = _scrub_sql("SELECT * WHERE x = 'hello'")
         assert "'hello'" not in result
         assert "SELECT * WHERE x = " in result
         # The quotes themselves are preserved, contents replaced with spaces
         assert result.count("'") == 2
 
     def test_preserves_escaped_quote(self):
-        result = _strip_string_literals("WHERE x = 'it''s fine'")
+        result = _scrub_sql("WHERE x = 'it''s fine'")
         # Doubled quote inside string is treated as escape, stays in-string
         assert "it" not in result
         assert "fine" not in result
 
     def test_preserves_semicolons_outside_strings(self):
-        result = _strip_string_literals("SELECT 1; SELECT 2")
+        result = _scrub_sql("SELECT 1; SELECT 2")
         assert ";" in result
 
     def test_strips_semicolons_inside_strings(self):
-        result = _strip_string_literals("WHERE x = 'a;b'")
+        result = _scrub_sql("WHERE x = 'a;b'")
         # The semicolon inside the string should be replaced with a space
         assert result.count(";") == 0
 
     def test_empty_string_literal(self):
-        result = _strip_string_literals("WHERE x = ''")
+        result = _scrub_sql("WHERE x = ''")
         assert result == "WHERE x = ''"
 
     def test_multiple_strings(self):
-        result = _strip_string_literals("WHERE x = 'hello' AND y = 'world'")
+        result = _scrub_sql("WHERE x = 'hello' AND y = 'world'")
         assert "hello" not in result
         assert "world" not in result
         # Structure (keyword positions) is preserved
@@ -304,6 +305,97 @@ class TestAssertReadOnlySqlBlocked:
     def test_rejects_waitfor(self):
         with pytest.raises(ValueError):
             assert_read_only_sql("WAITFOR DELAY '00:00:10'")
+
+
+# ---------------------------------------------------------------------------
+# Statements stacked WITHOUT a semicolon, and mutations hidden behind a comment
+# or a bracket-quoted identifier. Every query in this class was verified to PASS
+# the gate before the scrubber/keyword-scan rewrite.
+# ---------------------------------------------------------------------------
+
+class TestStackedWithoutSemicolon:
+    def test_rejects_drop_after_select_no_separator(self):
+        with pytest.raises(ValueError, match="DROP"):
+            assert_read_only_sql("SELECT 1 DROP TABLE dbo.Sales")
+
+    def test_rejects_update_after_select_no_separator(self):
+        with pytest.raises(ValueError, match="UPDATE"):
+            assert_read_only_sql("SELECT * FROM t UPDATE dbo.x SET y=1")
+
+    def test_rejects_drop_hidden_by_quote_in_bracket_identifier(self):
+        """The apostrophe inside `[col'umn]` used to desync the literal scanner, blanking the
+        second statement instead of the identifier."""
+        with pytest.raises(ValueError):
+            assert_read_only_sql("SELECT [col'umn] FROM t; DROP TABLE dbo.Sales")
+
+    def test_rejects_drop_hidden_by_line_comment_quote(self):
+        with pytest.raises(ValueError, match="semicolons"):
+            assert_read_only_sql("SELECT 1 -- '\n; DROP TABLE dbo.Sales")
+
+    def test_rejects_drop_hidden_by_block_comment_quote(self):
+        with pytest.raises(ValueError):
+            assert_read_only_sql("SELECT 1 /* ' */ DROP TABLE dbo.Sales")
+
+    def test_rejects_stacked_select(self):
+        with pytest.raises(ValueError, match="stacked SELECT"):
+            assert_read_only_sql("SELECT 1 SELECT 2")
+
+    def test_rejects_stacked_select_after_from(self):
+        with pytest.raises(ValueError, match="stacked SELECT"):
+            assert_read_only_sql("SELECT * FROM t SELECT * FROM u")
+
+    # --- fail closed on anything unparseable ---
+    def test_rejects_unterminated_string_literal(self):
+        with pytest.raises(ValueError, match="unterminated"):
+            assert_read_only_sql("SELECT * FROM T WHERE x = 'oops")
+
+    def test_rejects_unterminated_bracket_identifier(self):
+        with pytest.raises(ValueError, match="unterminated"):
+            assert_read_only_sql("SELECT [oops FROM T")
+
+    def test_rejects_unterminated_block_comment(self):
+        with pytest.raises(ValueError, match="unterminated"):
+            assert_read_only_sql("SELECT 1 /* oops")
+
+
+# ---------------------------------------------------------------------------
+# False-rejection guard: legitimate SELECTs whose text merely CONTAINS a blocked
+# word. A false rejection here breaks the product, so these are as important as
+# the blocks above.
+# ---------------------------------------------------------------------------
+
+class TestNoFalseRejections:
+    def test_column_names_containing_blocked_words(self):
+        sql = ("SELECT updated_at, LastUpdated, deleted_flag, created_on, insertion_id, "
+               "dropoff_count FROM Items")
+        assert assert_read_only_sql(sql) == sql
+
+    def test_bracket_quoted_columns_named_after_blocked_words(self):
+        sql = "SELECT [Update Date], [Delete Reason], [Set] FROM [dbo].[Audit Log]"
+        assert assert_read_only_sql(sql) == sql
+
+    def test_string_literals_containing_blocked_words(self):
+        sql = "SELECT * FROM Ops WHERE action = 'update' OR action = 'delete truncate drop'"
+        assert assert_read_only_sql(sql) == sql
+
+    def test_comment_containing_blocked_words(self):
+        sql = "SELECT id FROM T -- we never DROP or UPDATE anything here\n"
+        assert assert_read_only_sql(sql) == sql
+
+    def test_block_comment_containing_blocked_words(self):
+        sql = "SELECT id /* DELETE FROM T -- and /* nested */ still a comment */ FROM T"
+        assert assert_read_only_sql(sql) == sql
+
+    def test_union_all_subqueries_and_cte(self):
+        sql = ("WITH a AS (SELECT id FROM T1) "
+               "SELECT id FROM a UNION ALL SELECT id FROM (SELECT id FROM T2) s "
+               "WHERE id IN (SELECT id FROM T3)")
+        assert assert_read_only_sql(sql) == sql
+
+    def test_case_expression_with_scalar_subquery(self):
+        sql = ("SELECT CASE WHEN x > (SELECT AVG(y) FROM T2) THEN 'high' ELSE 'low' END "
+               "FROM T1 ORDER BY x")
+        assert assert_read_only_sql(sql) == sql
 
 
 # ---------------------------------------------------------------------------

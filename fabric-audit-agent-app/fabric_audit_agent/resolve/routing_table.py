@@ -394,6 +394,27 @@ def match_index() -> List[IndexedVariant]:
     return index
 
 
+def canonical_index() -> List[IndexedVariant]:
+    """Every participating entry's own canonical name, as an exact-match variant.
+
+    A canonical name is the most specific thing a caller can say, yet it was in no index at all:
+    ``Ent-Reporting-Sales`` normalizes to "ent reporting sales", which no variant equals, and the
+    bare "sales" variant is ``matchMode: "exact"`` so the containment pass skipped it. The
+    resolver therefore answered "No canonical model matched 'Ent-Reporting-Sales' … Known models:
+    Ent-Reporting-Sales, …" — listing the string it had just failed to match. ``Ent-Reporting-DTC``
+    failed differently: it containment-matched the curated ambiguous bare "DTC" and came back
+    ambiguous with itself.
+    """
+    return [
+        IndexedVariant(
+            entry,
+            {"text": entry["canonicalName"], "verified": True, "matchMode": "exact"},
+            normalize_for_matching(entry["canonicalName"]),
+        )
+        for entry in _participating_entries()
+    ]
+
+
 def all_canonical_names() -> str:
     """Comma-joined canonical names for the no_match message — excludes LOW entries."""
     return ", ".join(e["canonicalName"] for e in _participating_entries())

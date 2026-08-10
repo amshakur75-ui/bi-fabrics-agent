@@ -4,7 +4,9 @@ Python port of the plugin's ``services/term-resolver.ts``. Resolves informal New
 Z-model terminology to canonical ``Ent-Reporting-*`` dataset names and their Power BI
 workspace, using the routing table in ``routing_table.py``.
 
-Matching is two-pass over a normalized form (``normalize_for_matching``):
+Matching is three-pass over a normalized form (``normalize_for_matching``):
+  0. Canonical name — the input IS an entry's canonical name (``routing_table.canonical_index``).
+     Canonical names are not variants, so without this pass a model's own name did not resolve.
   1. Exact match — normalized input equals a normalized variant exactly.
   2. Containment match (only if pass 1 found nothing) — a normalized variant is found
      inside the normalized input as a whole-word-bounded substring. Direction matters:
@@ -27,12 +29,13 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional
 
-from .routing_table import IndexedVariant, all_canonical_names, match_index
+from .routing_table import IndexedVariant, all_canonical_names, canonical_index, match_index
 from .text_normalize import normalize_for_matching
 
 # Built once at import, mirroring the TS module-level INDEX. LOW-confidence entries are
-# already filtered out inside match_index().
+# already filtered out inside match_index() / canonical_index().
 _INDEX: List[IndexedVariant] = match_index()
+_CANONICAL_INDEX: List[IndexedVariant] = canonical_index()
 _ALL_CANONICAL_NAMES: str = all_canonical_names()
 
 
@@ -75,8 +78,17 @@ def resolve_term(raw_input: str) -> Dict:
             "message": "No term provided — ask the user which model they mean.",
         }
 
+    # Pass 0: the entry's own canonical name. Ahead of the variant passes because a canonical
+    # name is the least ambiguous input there is — and because for Ent-Reporting-DTC the
+    # containment pass would otherwise match the curated ambiguous bare "DTC" and report the
+    # model as ambiguous with itself.
+    hits: List[IndexedVariant] = [
+        iv for iv in _CANONICAL_INDEX if iv.normalized == normalized_input
+    ]
+
     # Pass 1: exact match.
-    hits: List[IndexedVariant] = [iv for iv in _INDEX if iv.normalized == normalized_input]
+    if not hits:
+        hits = [iv for iv in _INDEX if iv.normalized == normalized_input]
 
     # Pass 2: containment match, only if pass 1 found nothing. Whole-word-bounded, and
     # matchMode="exact" variants never participate (they had their chance in pass 1).

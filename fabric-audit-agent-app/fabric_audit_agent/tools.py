@@ -2934,7 +2934,8 @@ def create_tool_definitions(base_dir=None):
         {
             "name": "user_spike_history",
             "description": (
-                "Return per-user spike history: every high-cost event above the user's own p95 baseline, "
+                "Return per-user spike history: every high-cost event above a MULTIPLE of the user's own "
+                "p95 baseline (a bare 'above p95' test would return ~5% of the events by construction), "
                 "with counts, timestamps, items, time-of-day distribution, and interactive-vs-refresh split. "
                 "Falls back to a small offline mock when no live event collector is configured. Read-only."
             ),

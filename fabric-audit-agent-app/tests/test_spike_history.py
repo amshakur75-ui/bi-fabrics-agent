@@ -18,10 +18,12 @@ def _ev(ts, user, item, operation, kind, cu):
     }
 
 
-# Events for user "alice@co" — 8 events; p95 over these will be used to detect spikes.
+# Events for user "alice@co" — 8 events; p95 over these is the baseline spikes are measured against.
 # cuSeconds values: [1, 2, 3, 4, 5, 6, 7, 100]
 # p95 of sorted [1,2,3,4,5,6,7,100] (len=8, rank=0.95*7=6.65) = 7*(1-0.65)+100*0.65 = 67.45
-# So 100 is above p95 (spike); everything else is below. floor_cu=0 so no absolute-floor spikes.
+# The 100 CU-s event is 1.48x that p95 — above it, but NOT a multiple of it, so under the
+# corrected anomaly test Alice has no spikes. Being above a p95 derived from your own eight
+# events is arithmetic, not an anomaly.
 ALICE_EVENTS = [
     _ev("2026-06-30T08:05:00Z", "alice@co", "Sales",   "QueryEnd",    "interactive", 1.0),
     _ev("2026-06-30T09:10:00Z", "alice@co", "Sales",   "QueryEnd",    "interactive", 2.0),
@@ -30,7 +32,7 @@ ALICE_EVENTS = [
     _ev("2026-06-30T12:25:00Z", "alice@co", "Sales",   "CommandEnd",  "refresh",     5.0),
     _ev("2026-06-30T13:30:00Z", "alice@co", "Sales",   "CommandEnd",  "refresh",     6.0),
     _ev("2026-06-30T14:35:00Z", "alice@co", "Inventory","QueryEnd",   "interactive", 7.0),
-    _ev("2026-06-30T15:40:00Z", "alice@co", "Sales",   "QueryEnd",    "interactive", 100.0),  # spike
+    _ev("2026-06-30T15:40:00Z", "alice@co", "Sales",   "QueryEnd",    "interactive", 100.0),  # heaviest, but only 1.48x p95
 ]
 
 # Bob has two events — one huge spike above floor_cu, one small
@@ -40,6 +42,23 @@ BOB_EVENTS = [
 ]
 
 ALL_EVENTS = ALICE_EVENTS + BOB_EVENTS
+
+
+def _routine(user, n, cu, item="R1"):
+    """n routine events for *user* — mildly varied (+0-49%) so the values are not all identical,
+    which is the case that exposed the tautology: with any spread at all, `cu > p95` selects the
+    top 5% of the list no matter how ordinary the top 5% is."""
+    return [
+        _ev(f"2026-06-30T{i % 24:02d}:00:00Z", user, item, "QueryEnd", "interactive",
+            cu * (1 + (i % 50) / 100.0))
+        for i in range(n)
+    ]
+
+
+# dana has a genuinely anomalous event: 40 routine ~5 CU-s operations (p95 ≈ 6.9) plus one 500.
+DANA_EVENTS = _routine("dana@co", 40, 5.0, item="Sales") + [
+    _ev("2026-06-30T17:00:00Z", "dana@co", "Sales", "QueryEnd", "interactive", 500.0),
+]
 
 
 class TestUserSpikeHistoryBasicShape:
@@ -61,14 +80,36 @@ class TestUserSpikeHistoryBasicShape:
 
 
 class TestSpikeCount:
-    def test_spike_count_uses_p95_baseline(self):
-        # Only the 100 CU event is above p95 (~67.45)
+    def test_spike_count_requires_a_multiple_of_p95_not_merely_above_it(self):
+        """This test previously asserted spikeCount == 1 on these 8 self-derived events, which
+        pinned the tautology: the p95 came from the same events being tested, so `cu > p95`
+        returned ~5% of the input no matter what the data did. Alice's 100 CU-s is 1.48x her p95
+        of 67.45 — her most expensive hour, not an anomaly."""
         result = user_spike_history(ALL_EVENTS, "alice@co", floor_cu=0)
+        assert result["spikeCount"] == 0
+        assert result["spikes"] == []
+        # The bar is surfaced so the count is explainable: 3 x 67.45.
+        assert result["spikeMultiplier"] == 3.0
+        assert abs(result["baselineP95CuSeconds"] - 67.45) < 1e-6
+        assert abs(result["spikeThresholdCuSeconds"] - 202.35) < 1e-6
+
+    def test_spike_count_is_not_a_fixed_fraction_of_the_input(self):
+        """400 routine events returned spikeCount 20 — exactly 5% of the input, by construction,
+        because the p95 was derived from those same events. Routine behaviour must produce no
+        spikes at any input size."""
+        for n in (100, 400):
+            result = user_spike_history(_routine("uni@co", n, 7.0), "uni@co", floor_cu=0)
+            assert result["spikeCount"] == 0, (n, result["spikeCount"])
+
+    def test_spike_count_detects_a_real_outlier(self):
+        """The corrected test must still fire on an actual anomaly: 500 CU-s against a p95 of 5."""
+        result = user_spike_history(DANA_EVENTS, "dana@co", floor_cu=0)
         assert result["spikeCount"] == 1
+        assert result["spikes"][0]["cuSeconds"] == 500.0
 
     def test_spike_count_with_floor_cu(self):
-        # Bob: p95 of [0.5, 999] = 0.95*(999-0.5)+0.5 ≈ 935.5+0.5=936; 999 > p95 → spike
-        # also floor_cu=500 would catch it but p95 is sufficient
+        # Bob: the absolute floor is an independent trigger — 999 >= 500 is a spike regardless of
+        # how his own two-event p95 (~936) happens to land.
         result = user_spike_history(BOB_EVENTS, "bob@co", floor_cu=500)
         assert result["spikeCount"] == 1
 
@@ -91,32 +132,31 @@ class TestSpikeCount:
 
 class TestSpikesListShape:
     def test_each_spike_has_required_fields(self):
-        result = user_spike_history(ALL_EVENTS, "alice@co", floor_cu=0)
+        result = user_spike_history(DANA_EVENTS, "dana@co", floor_cu=0)
+        assert result["spikes"]
         for spike in result["spikes"]:
             for field in ("ts", "item", "operation", "kind", "cuSeconds"):
                 assert field in spike, f"Spike missing field: {field}"
 
     def test_spike_carries_correct_values(self):
-        result = user_spike_history(ALL_EVENTS, "alice@co", floor_cu=0)
+        result = user_spike_history(DANA_EVENTS + ALICE_EVENTS, "dana@co", floor_cu=0)
         assert len(result["spikes"]) == 1
         spike = result["spikes"][0]
-        assert spike["ts"] == "2026-06-30T15:40:00Z"
+        assert spike["ts"] == "2026-06-30T17:00:00Z"
         assert spike["item"] == "Sales"
         assert spike["operation"] == "QueryEnd"
         assert spike["kind"] == "interactive"
-        assert spike["cuSeconds"] == 100.0
+        assert spike["cuSeconds"] == 500.0
 
     def test_spikes_sorted_by_cu_desc(self):
-        # Create events where multiple spikes exist; verify ordering
-        events = [
-            _ev("2026-06-30T08:00:00Z", "charlie@co", "R1", "QueryEnd", "interactive", 5.0),
-            _ev("2026-06-30T09:00:00Z", "charlie@co", "R2", "QueryEnd", "interactive", 5.0),
+        # Two genuine outliers against 40 routine ~5 CU-s operations; verify ordering.
+        events = _routine("charlie@co", 40, 5.0) + [
             _ev("2026-06-30T10:00:00Z", "charlie@co", "R3", "QueryEnd", "interactive", 200.0),
             _ev("2026-06-30T11:00:00Z", "charlie@co", "R4", "QueryEnd", "interactive", 150.0),
         ]
         result = user_spike_history(events, "charlie@co", floor_cu=0)
         cus = [s["cuSeconds"] for s in result["spikes"]]
-        assert cus == sorted(cus, reverse=True)
+        assert cus == [200.0, 150.0]
 
 
 class TestAggregates:
@@ -158,12 +198,14 @@ class TestByHour:
             assert 0 <= k <= 23
 
     def test_by_hour_counts_spike_events_per_hour(self):
-        result = user_spike_history(ALL_EVENTS, "alice@co", floor_cu=0)
+        result = user_spike_history(DANA_EVENTS, "dana@co", floor_cu=0)
         bh = result["byHour"]
-        # Only 1 spike (100 CU at hour 15); byHour tracks spikes, not all events
-        assert bh.get(15) == 1
-        # Non-spike hours are not present (or 0)
+        # Dana's single spike is at hour 17; byHour tracks spikes, not all events.
+        assert bh.get(17) == 1
         assert bh.get(8, 0) == 0
+
+    def test_by_hour_is_empty_when_nothing_is_anomalous(self):
+        assert user_spike_history(ALL_EVENTS, "alice@co", floor_cu=0)["byHour"] == {}
 
     def test_by_hour_values_sum_to_spike_count(self):
         result = user_spike_history(ALL_EVENTS, "alice@co", floor_cu=0)

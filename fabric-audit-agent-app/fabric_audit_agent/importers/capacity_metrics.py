@@ -178,13 +178,41 @@ def inspect_columns(headers, rows):
 
 
 # ──────────── capacity facts from a timepoints table (robust to raw-% spikes) ────────────
-from datetime import datetime  # noqa: E402 - local to this helper
+from datetime import datetime, timezone  # noqa: E402 - local to this helper
+
+from ..timefmt import parse_iso_utc  # noqa: E402 - local to this helper
+
+# The real Capacity Metrics UI export writes Timepoint in the viewer's locale, e.g.
+# "8/7/2026 9:00:00 AM". Bare fromisoformat() parsed NEITHER that nor Log Analytics'
+# 7-fractional-digit "...T09:00:00.0000000Z" (on the Python 3.10 the job compute runs), which is
+# what left the timepoint interval unknown on real exports.
+_US_LOCALE_TS = re.compile(
+    r"^(\d{1,2})/(\d{1,2})/(\d{4})[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?$"
+)
 
 
 def _parse_ts(s):
+    """Parse one Timepoint cell to an aware UTC datetime, or None.
+
+    Delegates ISO-8601 to ``timefmt.parse_iso_utc`` — the same fix ``automation/correlation.py``
+    and ``adapters/attribution_rollup.py`` already applied — and adds the US-locale
+    ``M/D/YYYY h:mm:ss AM/PM`` form the export actually produces.
+    """
+    txt = str(s if s is not None else "").strip()
+    if not txt:
+        return None
+    dt = parse_iso_utc(txt)
+    if dt is not None:
+        return dt
+    m = _US_LOCALE_TS.match(txt)
+    if not m:
+        return None
+    month, day, year, hour, minute, second, half = m.groups()
+    hour = int(hour) % 12 + (12 if half.lower() == "p" else 0)
     try:
-        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
-    except Exception:  # noqa: BLE001 - any unparseable timestamp is simply skipped
+        return datetime(int(year), int(month), int(day), hour, int(minute),
+                        int(second or 0), tzinfo=timezone.utc)
+    except ValueError:  # impossible date (13/40/2026) — treat as unparseable
         return None
 
 
@@ -202,7 +230,10 @@ def capacity_signal_from_timepoints(headers, rows):
     compute utilization per row as ``Total CU(s) / 100% in CU(s) * 100`` (using each row's own
     baseline — it can change mid-window on a resize) and take the **p95** as a spike-robust peak.
     Throttle is read from the **Capacity State** column's ``Overloaded`` windows, converted to
-    minutes via the median timepoint interval. Returns ``{peakCuPct, throttleMinutes, overloadedCount}``.
+    minutes via the median timepoint interval. Returns
+    ``{peakCuPct, throttleMinutes, overloadedCount, sampleCount}``; ``peakCuPct`` and
+    ``throttleMinutes`` are None (with an accompanying ``*Unavailable`` note) when the data cannot
+    support them, never a reassuring 0 and never a row count.
     """
     total_cu = _find_h(headers, lambda n: "totalcus" in n or ("total" in n and "cus" in n))
     base_hdr = _find_h(headers, lambda n: "100%in" in n)
@@ -232,7 +263,16 @@ def capacity_signal_from_timepoints(headers, rows):
         med = diffs[len(diffs) // 2]
         if med > 0:
             window_min = med / 60
-    throttle_min = math.floor(overloaded * window_min + 0.5) if (overloaded and window_min) else overloaded
+    # throttleMinutes MUST stay None when the timepoint interval is unknown. Falling back to
+    # `overloaded` reported the raw ROW COUNT as minutes: 24 consecutive 5-minute Overloaded rows
+    # came back as "throttleMinutes: 24" instead of 120, and severity.py needs > 30 for Critical,
+    # so a two-hour overload was graded Warning. A count is not a duration; unknown is honest.
+    if not overloaded:
+        throttle_min = 0
+    elif window_min:
+        throttle_min = math.floor(overloaded * window_min + 0.5)
+    else:
+        throttle_min = None
 
     # peakCuPct MUST stay None when nothing parsed. Reporting 0 meant that a failure to find or
     # parse `Total CU(s)` / `100% in CU(s)` -- a renamed export column, a locale decimal comma, an
@@ -248,4 +288,9 @@ def capacity_signal_from_timepoints(headers, rows):
     if p95 is None:
         out["peakCuPctUnavailable"] = ("no parseable utilization rows — peak CU is UNKNOWN, "
                                        "not zero")
+    if throttle_min is None:
+        out["throttleMinutesUnavailable"] = (
+            f"{overloaded} Overloaded window(s) found, but no timepoint interval could be derived "
+            f"— throttle duration is UNKNOWN, and the window COUNT is not minutes"
+        )
     return out

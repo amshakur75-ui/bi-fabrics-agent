@@ -86,6 +86,13 @@ WORKSPACE_RETENTION_DAYS = 60
 # 25a: custom set — PowerBIDatasetsWorkspace is deliberately NOT in HIGH_VOLUME_TABLES.
 POWER_BI_TABLES = {"PowerBIDatasetsWorkspace"}
 
+# Fabric capacity-event telemetry in the Eventhouse KQL DB — the source table for the
+# ``engine: "capacity"`` half of query_library.json (8 of 10 templates). It is not an Azure
+# Monitor table, so it appeared in NONE of the sets above and no time-filter rule covered it at
+# all: an unbounded CapacityEvents scan audited clean. Its time predicate is ``ingestion_time()``
+# rather than TimeGenerated, which is why _has_time_filter_present must recognise that form.
+CAPACITY_TABLES = {"CapacityEvents"}
+
 # Workspace-based Application Insights schema (App* tables). Time column: TimeGenerated.
 APP_INSIGHTS_TABLES = {
     "AppRequests",
@@ -204,18 +211,37 @@ def _detect_time_column(query):
     return None
 
 
-def _has_time_filter_present(query):
-    """True when the query already carries a time-range filter. Ports hasTimeFilterPresent.
+# A time PREDICATE, not a mention of a time column. The column-name probe stays case-sensitive
+# (source behaviour) but now requires a comparison operator after the column.
+_TIME_COLUMN_PREDICATE_RE = re.compile(
+    r"\b(?:TimeGenerated|timestamp)\b\s*(?:[<>]=?|between\b|in\s*\(|\.\.)"
+)
+_INGESTION_TIME_PREDICATE_RE = re.compile(
+    r"\bingestion_time\s*\(\s*\)\s*(?:[<>]=?|between\b)", re.IGNORECASE
+)
 
-    First probe (TimeGenerated|timestamp) is case-sensitive; the rest are case-insensitive —
-    faithful to the source's per-regex flags.
+
+def _has_time_filter_present(query):
+    """True when the query already carries a time-range FILTER — a predicate, not a mention.
+
+    Ports hasTimeFilterPresent, with the column-name probe corrected. The source's
+    ``\\b(TimeGenerated|timestamp)\\b`` matched any appearance of the column, so an unbounded
+    full-retention scan of the highest-volume table scored 100/A with zero findings purely
+    because it projected or ``bin()``-ed the column:
+
+        PowerBIDatasetsWorkspace | summarize cpuMs=sum(CpuTimeMs) by bin(TimeGenerated, 5m)
+
+    Every shipped query shape names TimeGenerated, so dropping the one ``| where`` line was the
+    natural error and the blocking rules stayed silent — while ``preflight_limits``, using the
+    stricter probe, flagged the same query. The two now agree.
     """
     stripped = _strip_comments(query)
     return bool(
-        re.search(r"\b(?:TimeGenerated|timestamp)\b", stripped)
+        _TIME_COLUMN_PREDICATE_RE.search(stripped)
+        or _INGESTION_TIME_PREDICATE_RE.search(stripped)
         or re.search(r"\bago\s*\(", stripped, re.IGNORECASE)
-        or re.search(r"\bdatetime\s*\(", stripped, re.IGNORECASE)
         or re.search(r"\bbetween\s*\(.*datetime", stripped, re.IGNORECASE)
+        or re.search(r"[<>]=?\s*datetime\s*\(", stripped, re.IGNORECASE)
     )
 
 
@@ -464,6 +490,26 @@ def check_perf003_power_bi(kql):
         "without a time filter scans the full retention window and will be slow and expensive.",
         "Add a time filter as the first `where`: `| where TimeGenerated > ago(24h)`",
         corrected=_fix_perf003(kql),
+    )]
+
+
+def check_perf003_capacity(kql):
+    """PERF003_CAPACITY (custom) — a ``CapacityEvents`` query with no time filter. error.
+
+    Same contract as PERF003_POWER_BI, for the capacity engine: CapacityEvents is a per-window
+    event stream, so an unfiltered scan reads the whole Eventhouse retention. The shipped
+    templates all bound it with ``ingestion_time() > ago(...)``, so the suggested fix uses that
+    form rather than TimeGenerated.
+    """
+    if _first_table_name(kql) not in CAPACITY_TABLES:
+        return []
+    if _has_time_filter_present(kql):
+        return []
+    return [_finding(
+        "PERF003_CAPACITY", "error",
+        "`CapacityEvents` holds one row per capacity window. Querying without a time filter "
+        "scans the full Eventhouse retention and will be slow and expensive.",
+        "Add a time filter as the first `where`: `| where ingestion_time() > ago(1d)`",
     )]
 
 
@@ -1008,6 +1054,7 @@ _RULE_CHECKS = (
     check_perf001,
     check_perf002,
     check_perf003_power_bi,
+    check_perf003_capacity,
     check_perf004,
     check_perf005,
     check_perf006,
