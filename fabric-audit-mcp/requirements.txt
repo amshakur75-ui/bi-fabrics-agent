@@ -5,13 +5,22 @@
 # We therefore install fabric_audit_agent from a wheel uploaded to the UC Volume the app already
 # has as a resource (shakur-main.bi-fabrics-audit.raw). `.` installs this thin fabric-audit-mcp
 # package (provides the `fabric-audit-mcp` console script + fabric_audit_mcp package); its
-# dependency on fabric-audit-agent>=0.2.14 is satisfied by the wheel line above it.
+# dependency on fabric-audit-agent is satisfied by the wheel line above it.
 #
 # DEPLOY NOTE: Databricks Apps caches the pip install on THIS FILE's content hash
 # ("Requirements have not changed. Skipping installation."). Bump the marker below AND
 # re-upload a fresh wheel to the Volume whenever the core code changes.
-# code version: 1.9.17
-/Volumes/shakur-main/bi-fabrics-audit/raw/wheels/fabric_audit_agent-0.2.14-py3-none-any.whl
+#
+# WHY THIS PIN IS THE PROJECT'S SHARPEST TRAP (found 2026-08-10): the JOBS get the current core
+# automatically, because the bundle builds and references the wheel as an artifact. This app does
+# NOT -- it names one filename. So it silently sat on 0.2.14 (2026-08-04) for six days while jobs
+# advanced to 0.2.25, and since this app is the CHAT AGENT'S ONLY TOOL SOURCE (the App reaches
+# tools over HTTP via FABRIC_MCP_URL, it does not run tools.py in-process), every question a human
+# asked was answered by core code from BEFORE the alerts _FIELDS P0 fix, the multi-capacity
+# contamination fix, and the throttle-signal retirement. The two halves of the product disagreed
+# and nothing surfaced it. Whenever you deploy a job wheel, re-upload it here and bump the marker.
+# code version: 1.9.18
+/Volumes/shakur-main/bi-fabrics-audit/raw/wheels/fabric_audit_agent-0.2.25-py3-none-any.whl
 .
 openai>=1.0
 databricks-sdk>=0.28  # get_open_ai_client added in 0.28
@@ -19,3 +28,4 @@ msal>=1.24        # SP token (build_entra_token_provider) — capacities + Log A
 requests>=2       # EntraHttp REST client — capacities + Log Analytics query calls
 azure-kusto-data>=4.0  # Kusto/KQL client — Workspace Monitoring Eventhouse + Capacity Events
 tzdata>=2024.1    # IANA tz database for zoneinfo (timefmt Eastern display; no-op where OS provides it)
+openpyxl>=3.1     # export/xlsx_report — without it the xlsx export tool raises at call time
