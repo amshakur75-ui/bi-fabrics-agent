@@ -29,6 +29,7 @@ B2 blank-user fallback (Task 4.1):
   ``"item-owner"`` | ``"unresolved"``.
 """
 from datetime import datetime
+from ..timefmt import parse_iso_utc
 
 # Attribution-source strength: lower = stronger (direct beats all).
 _ATTRIBUTION_STRENGTH = {"direct": 0, "activity-crossref": 1, "item-owner": 2, "unresolved": 3}
@@ -40,16 +41,18 @@ def _stronger_source(a, b):
 
 
 def _parse_ts(val):
-    """Best-effort ISO-8601 timestamp parse. Returns ``datetime`` or ``None``."""
-    if not val:
-        return None
-    s = str(val).strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(s)
-    except (ValueError, TypeError):
-        return None
+    """Best-effort ISO-8601 timestamp parse. Returns ``datetime`` or ``None``.
+
+    Delegates to the repo's canonical parser rather than hand-rolling it. The hand-rolled version
+    swapped ``Z`` for ``+00:00`` and handed the string straight to ``fromisoformat``, which on
+    Python 3.10 -- what the serverless JOB COMPUTE runs, and the sweep job is where Log Analytics
+    rows are collected -- accepts only 3 or 6 fractional digits. Real LA ``TimeGenerated`` values
+    carry SEVEN (``2026-08-05T13:52:07.3079171Z``), so every parse raised, was caught, returned
+    None, and silently skipped the activity cross-reference. It worked locally on 3.12 and in the
+    App on 3.11, so nothing surfaced it. ``timefmt.parse_iso_utc`` trims the fraction to
+    microseconds first and exists precisely for this.
+    """
+    return parse_iso_utc(val)
 
 
 def _ts_delta_seconds(a, b):

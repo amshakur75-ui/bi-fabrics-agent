@@ -6,7 +6,7 @@ Read-only Microsoft Fabric / Power BI capacity & performance auditor — the **a
 rebuild** of the Node agent (`../fabric-audit-agent/`), targeting **Databricks**. Detects
 issues, explains root cause, prioritizes fixes for the Power BI team, coaches report authors,
 gives an evidence-backed capacity verdict, and runs the **30% concentration alert** (names the
-**User → Item → Owner** driving a hot item, two-way in Teams).
+**User → Item** driving a hot item, two-way in Teams). NOTE: the **Owner** leg is NOT shipped — `attribution_rollup.resolve_blank_user` implements it but has no production caller, and nothing in production produces `configuredBy`/`owner` at all, so it needs a new authenticated metadata collector (Power BI Admin `GET /admin/datasets`). Do not describe Owner as a current capability.
 
 **Read-only posture is absolute.** No writes, no refreshes, no scale actions. The only outward
 actions are delivering findings and sending notifications.

@@ -348,3 +348,24 @@ class TestBackwardCompatibility:
     def test_empty_input(self):
         assert rollup_attribution([]) == {"items": [], "users": []}
         assert rollup_attribution(None) == {"items": [], "users": []}
+
+
+def test_a_real_log_analytics_timestamp_with_seven_fractional_digits_parses():
+    """FIXTURE REALISM, the recurring hazard here. Real LA ``TimeGenerated`` values carry SEVEN
+    fractional digits. Python 3.10's ``fromisoformat`` -- and the serverless JOB COMPUTE runs 3.10,
+    which is where LA rows are collected -- accepts only 3 or 6, so the hand-rolled parser raised on
+    every real row, returned None, and silently skipped the activity cross-reference. It worked
+    locally on 3.12 and in the App on 3.11, so nothing surfaced it. Every fixture in this file used
+    a clean 0- or 3-digit form.
+    """
+    from fabric_audit_agent.adapters.attribution_rollup import _parse_ts
+
+    for raw in ("2026-08-05T13:52:07.3079171Z",      # the real shape, 7 digits
+                "2026-08-05T13:52:07.307Z",          # 3
+                "2026-08-05T13:52:07Z",              # none
+                "2026-08-05T13:52:07.307917Z"):      # 6
+        got = _parse_ts(raw)
+        assert got is not None, f"{raw!r} failed to parse"
+        assert got.year == 2026 and got.hour == 13 and got.minute == 52
+    assert _parse_ts("not a timestamp") is None
+    assert _parse_ts(None) is None

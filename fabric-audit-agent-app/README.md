@@ -19,7 +19,7 @@ Detects capacity throttling, oversized models, refresh contention, DirectQuery/v
 bloat, blast-radius, security/access and cost/unused issues; explains root cause; prioritises
 fixes for the Power BI team; coaches report authors; and gives an evidence-backed capacity
 verdict (**optimize vs. size-up**). It also runs the **30% concentration alert**: when one
-item/workload consumes ≥30% of capacity CU it names the **User → Item → Owner** driving it and
+item/workload consumes ≥30% of monitored activity it names the **User → Item** driving it (the Owner leg is not shipped — see CLAUDE.md) and
 can converse two-way in Teams.
 
 ## CLI (offline, mock adapters — 100% local, no network/key)
