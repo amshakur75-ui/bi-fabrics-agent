@@ -19,8 +19,8 @@
 # asked was answered by core code from BEFORE the alerts _FIELDS P0 fix, the multi-capacity
 # contamination fix, and the throttle-signal retirement. The two halves of the product disagreed
 # and nothing surfaced it. Whenever you deploy a job wheel, re-upload it here and bump the marker.
-# code version: 1.9.18
-/Volumes/shakur-main/bi-fabrics-audit/raw/wheels/fabric_audit_agent-0.2.25-py3-none-any.whl
+# code version: 1.9.19
+/Volumes/shakur-main/bi-fabrics-audit/raw/wheels/fabric_audit_agent-0.2.28-py3-none-any.whl
 .
 openai>=1.0
 databricks-sdk>=0.28  # get_open_ai_client added in 0.28
