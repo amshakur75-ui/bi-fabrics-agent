@@ -40,21 +40,36 @@ def _num(value):
 
 
 def throttle_claim_gate(capacity):
-    """Gate for the claim "throttling occurred". Passes ONLY on an actual throttle signal
-    (``throttleMinutes`` > 0 in the window) — never on high CU alone (smoothing absorbs bursts)."""
+    """Gate for the claim "capacity ran over its CU budget" (``throttleMinutes`` > 0).
+
+    HONESTY NOTE — this docstring previously said the gate "Passes ONLY on an actual throttle
+    signal ... never on high CU alone", which was FALSE about its own implementation:
+    ``throttleMinutes`` is derived by ``collector_capacity_events`` as minutes at CU >= 100%,
+    i.e. from high CU alone. So the gate was asserting the exact claim its own citation forbids,
+    and every downstream card said "Throttling" for a single 30-second window at 100.1% — which
+    Microsoft's troubleshooting guidance says is NOT throttling, because smoothing absorbs
+    bursts.
+
+    The gate is still USEFUL — sustained time over budget is real and worth alerting on — so the
+    behaviour is unchanged. What changed is the CLAIM: it now reports over-budget minutes, and
+    the ``claim`` string no longer asserts throttling. A true throttle claim is not derivable
+    from this stream (the *ThresholdPercentage fields are a constant reference setting, see
+    tier2_check._check_throttle_imminent).
+    """
     cap = capacity or {}
     minutes = _num(cap.get("throttleMinutes"))
     if minutes is not None and minutes > 0:
-        return {"passed": True, "claim": "throttling occurred",
-                "signal": {"throttleMinutes": minutes}}
+        return {"passed": True, "claim": "capacity exceeded 100% CU (over budget)",
+                "signal": {"minutesOverBudget": minutes, "throttleMinutes": minutes}}
     peak = _num(cap.get("peakCuPct"))
     if peak is not None and peak > 100:
-        note = (f"CU peaked at {peak}% but no throttle signal fired in the window - high utilization "
-                "alone is not throttling (smoothing absorbs bursts). The throttling claim is blocked; "
-                "the separate CU-pressure claim may still stand.")
+        note = (f"CU peaked at {peak}% but no window reached 100% of budget. The over-budget "
+                "claim is blocked; the separate CU-pressure claim may still stand.")
     else:
-        note = "No throttle signal in the data - the throttling claim is blocked."
-    return {"passed": False, "claim": "throttling occurred", "signal": None, "note": note}
+        note = ("No window over 100% of budget in the data - the over-budget claim is blocked. "
+                "NOTE: a true 'throttling' claim is never derivable from this stream.")
+    return {"passed": False, "claim": "capacity exceeded 100% CU (over budget)",
+            "signal": None, "note": note}
 
 
 def pressure_claim_gate(capacity):

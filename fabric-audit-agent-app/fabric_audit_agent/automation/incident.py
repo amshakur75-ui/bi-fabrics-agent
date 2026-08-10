@@ -50,8 +50,16 @@ def severity_of(trigger):
         comps = trigger.get("signals") or []
         return "warn" if any(severity_of(c) == "warn" for c in comps) else "info"
     if check == "throttle":
+        # Bar comes from materiality.load_cfg so severity and materiality can never disagree.
+        # A hardcoded 5 here meant classify() reported at 3.0 minutes while severity stayed
+        # `info` — and because is_escalation's first rule is a severity-RANK comparison, that
+        # also silently changed which worsenings could break through. The value is window-scoped
+        # (5-min sweep => 5.0 is the max observable), see materiality._DEFAULTS["throttle_min"].
         mins = _num(trigger.get("throttleMinutes"))
-        return "warn" if mins is not None and mins >= 5 else "info"
+        if mins is None:
+            return "info"
+        from .materiality import load_cfg as _load_cfg
+        return "warn" if mins >= float(_load_cfg()["throttle_min"]) else "info"
     if check == "concentration":
         share = _num(trigger.get("sharePct"))
         return "warn" if share is not None and share >= 50 else "info"

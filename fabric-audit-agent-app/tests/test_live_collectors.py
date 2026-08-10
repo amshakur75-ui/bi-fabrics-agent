@@ -188,16 +188,40 @@ def test_merge_collects_concurrently_preserving_precedence_order():
     def fast_proxy():
         return {"capacity": {"peakCuPct": 999}}
 
+    import threading
+    _lock = threading.Lock()
+    _state = {"inflight": 0, "max_inflight": 0}
+
+    def _tracked(fn):
+        def wrapped():
+            with _lock:
+                _state["inflight"] += 1
+                _state["max_inflight"] = max(_state["max_inflight"], _state["inflight"])
+            try:
+                return fn()
+            finally:
+                with _lock:
+                    _state["inflight"] -= 1
+        return wrapped
+
     start = time.monotonic()
     merged = create_merged_collector([
-        {"collect": slow_authoritative},
-        {"collect": lambda: (time.sleep(0.15) or {"items": [{"workspace": "W", "name": "A", "sharePct": 1, "cuSeconds": 1}]})},
-        {"collect": fast_proxy},
+        {"collect": _tracked(slow_authoritative)},
+        {"collect": _tracked(lambda: (time.sleep(0.15) or {"items": [{"workspace": "W", "name": "A", "sharePct": 1, "cuSeconds": 1}]}))},
+        {"collect": _tracked(fast_proxy)},
     ])["collect"]()
     elapsed = time.monotonic() - start
 
+    # THE actual concurrency assertion: at least two collectors were inside collect() at once.
+    assert _state["max_inflight"] >= 2, (
+        f"collectors ran serially (max concurrent = {_state['max_inflight']})")
+
     assert merged["capacity"]["peakCuPct"] == 80        # precedence by list order, not finish order
-    assert elapsed < 0.29                                # two 0.15s sources overlapped (serial would be >= 0.30)
+    # Concurrency is asserted by OBSERVED OVERLAP (see max_inflight below), not by a wall-clock
+    # budget. The previous `elapsed < 0.29` assertion failed whenever the machine was busy —
+    # a flaky test in a suite that must report zero errors is worse than no test, and it says
+    # nothing about whether the code is actually concurrent.
+    assert elapsed < 5.0                                 # sanity only: not serialized-and-hung
 
 
 def test_concentration_label_proxy_vs_authoritative():

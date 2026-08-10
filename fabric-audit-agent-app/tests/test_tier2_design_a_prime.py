@@ -233,7 +233,7 @@ def test_composite_title_names_all_signals():
          "peakCuPct": 210.0}
     title = _title_for(c)
     assert "Capacity incident" in title
-    assert "throttling" in title and "CU pressure" in title and "extreme peak" in title
+    assert "over budget" in title and "CU pressure" in title and "extreme peak" in title
     assert "210.0%" in title
 
 
@@ -245,9 +245,9 @@ def test_composite_facts_are_signal_bag_plus_hoisted_metrics():
          "peakCuPct": 210.0, "throttleMinutes": 8.5,
          "thresholdPcts": {"interactiveDelay": 88.0}}
     fmap = dict(_facts_for(c))
-    assert "Signals firing" in fmap and "throttling" in fmap["Signals firing"]
+    assert "Signals firing" in fmap and "over budget" in fmap["Signals firing"]
     assert fmap["Peak CU"] == "210.0%"
-    assert fmap["Throttle"] == "8.5 min"
+    assert fmap["Over budget"] == "8.5 min at >100% CU"
     assert "Fabric thresholds" in fmap
 
 

@@ -163,7 +163,19 @@ def create_capacity_events_collector(query, config=None):
         cap = {
             "peakCuPct": round(peak_w["pct"], 1),
             "peakAt": peak_w["ts"],
+            # NAMING CAVEAT (do not "fix" by renaming without reading this).
+            # This is MINUTES AT CU >= 100%, derived purely from utilization — it is NOT a
+            # Fabric throttle signal. Microsoft's own troubleshooting guidance is explicit that
+            # CU over 100% is not throttling, because smoothing absorbs bursts (10-min
+            # interactive / 24-h background). The real throttle signal would be the
+            # *ThresholdPercentage fields, which are a constant reference SETTING on this tenant
+            # and cannot report proximity to throttling (see
+            # tier2_check._check_throttle_imminent's retirement note).
+            # The key name is retained because it is load-bearing across _FIELDS, the gates, the
+            # detectors and the card, but every USER-FACING string must say "over 100% CU", not
+            # "throttling". `minutesOverBudget` is the honest alias for new consumers.
             "throttleMinutes": round(over_windows * _WINDOW_SEC / 60, 1),
+            "minutesOverBudget": round(over_windows * _WINDOW_SEC / 60, 1),
         }
         if cap_id:
             cap["capacityId"] = cap_id

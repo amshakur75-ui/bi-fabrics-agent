@@ -35,8 +35,12 @@ def test_incident_key_stable_across_dict_order():
 
 # ---- severity_of ---------------------------------------------------------
 def test_severity_derived_from_metrics():
+    # throttle severity reads materiality's WINDOW-SCOPED throttle_min (2.5 on a 5-min sweep),
+    # not a hardcoded 5 — otherwise classify() reports at 3.0 min while severity stays `info`,
+    # which also changes which worsenings is_escalation's severity-rank rule can see.
     assert severity_of({"check": "throttle", "throttleMinutes": 8}) == "warn"
-    assert severity_of({"check": "throttle", "throttleMinutes": 3}) == "info"
+    assert severity_of({"check": "throttle", "throttleMinutes": 3}) == "warn"
+    assert severity_of({"check": "throttle", "throttleMinutes": 1}) == "info"
     assert severity_of({"check": "concentration", "sharePct": 55}) == "warn"
     assert severity_of({"check": "concentration", "sharePct": 32}) == "info"
     assert severity_of({"check": "pressure", "peakCuPct": 130}) == "warn"
@@ -74,9 +78,18 @@ def test_attribution_uses_gate_not_severity_floor():
                      "recurrence": {"isRecurring": True}}, CFG)[0] == "report"
 
 
-def test_throttle_bands():
-    assert classify({"check": "throttle", "throttleMinutes": 8}, CFG)[0] == "report"
-    assert classify({"check": "throttle", "throttleMinutes": 3}, CFG)[0] == "ambiguous"
+def test_over_budget_bands():
+    """throttle_min is WINDOW-SCOPED: tier2 sweeps every 5 minutes, so 5.0 is the maximum
+    observable value. A bar of 5.0 meant "the entire window was over budget" and scored 4-of-5
+    minutes as merely info; 2.5 (a majority of the window) is the bar."""
+    assert classify({"check": "throttle", "throttleMinutes": 4.0}, CFG)[0] == "report"
+    assert classify({"check": "throttle", "throttleMinutes": 3.0}, CFG)[0] == "report"
+    assert classify({"check": "throttle", "throttleMinutes": 1.0}, CFG)[0] == "ambiguous"
+    # A material value is warn-severity (same bar), so classify short-circuits on the
+    # severity rule and the throttle branch's own report line is unreachable — outcomes are
+    # identical, only the reason differs. Below the bar it falls through to the throttle branch.
+    assert classify({"check": "throttle", "throttleMinutes": 4.0}, CFG)[1] == "derived severity=warn"
+    assert classify({"check": "throttle", "throttleMinutes": 1.0}, CFG)[1] == "brief time over 100% CU"
 
 
 def test_pressure_bands():

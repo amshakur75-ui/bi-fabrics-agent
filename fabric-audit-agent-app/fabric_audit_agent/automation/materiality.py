@@ -13,7 +13,11 @@ from .incident import (severity_of, primary_metric, signal_set, signal_rank, _nu
 _DEFAULTS = {
     "concentration_report": 40.0,   # report at/above this share%
     "concentration_suppress": 33.0,  # barely-over-30 single blip -> suppress
-    "throttle_min": 5.0,            # report throttle at/above this many minutes
+    # Minutes at >100% CU that make an over-budget signal material. MUST be scoped to the sweep
+    # window: tier2 runs every 5 minutes, so the maximum observable value IS 5.0 — a bar of 5.0
+    # meant "every single window in the sweep was over budget", and 4 of 5 minutes scored merely
+    # `info`. 2.5 = a majority of the window.
+    "throttle_min": 2.5,
     "pressure_report": 120.0,       # report peak CU% at/above this
     "pressure_suppress": 105.0,     # barely-over-100 momentary blip -> suppress
     "overage_burndown": 60.0,       # report if minutes-to-burndown below this
@@ -32,7 +36,11 @@ _DEFAULTS = {
     "hysteresis_ticks": 3.0,        # attribution must persist >= this many consecutive checks before it alerts
     # Design A' (Aug 2026) — additional capacity signals beyond throttle/pressure/overage:
     "extreme_peak_pct": 200.0,      # single-window CU peak at/above this = report even w/o throttle
-    "throttle_imminent_pct": 80.0,  # Fabric threshold pct at/above this = early-warning alert
+    # RETIRED — the detector this fed is a permanent no-op (it compared a constant Fabric
+    # threshold SETTING against 80 as if it were utilization; see
+    # tier2_check._check_throttle_imminent). Kept only so an existing
+    # FABRIC_TIER2_THROTTLE_IMMINENT_PCT env override does not KeyError in load_cfg.
+    "throttle_imminent_pct": 80.0,
     # Design A' quiet-to-resolve: a capacity incident holds open through brief clear-and-return
     # gaps rather than resolving on the first absent tick. Auto-resolve fires only after
     # ``quiet_ticks`` CONSECUTIVE absences (default 12 x 5-min sweep = 60 minutes clean). A
@@ -115,10 +123,14 @@ def classify(trigger, cfg=None):
             return "suppress", f"share {share:.0f}% barely over threshold, not recurring"
         return "ambiguous", "moderate concentration, not clearly material"
     if check == "throttle":
+        # NOTE: the report line below is unreachable — severity_of reads the SAME throttle_min,
+        # so anything at/above the bar is warn and short-circuits on the severity rule above.
+        # Kept for symmetry with the other branches and in case the bars are ever decoupled.
         mins = _num(trigger.get("throttleMinutes"))
         if mins is not None and mins >= cfg["throttle_min"]:
-            return "report", f"throttle {mins:.0f}m >= {cfg['throttle_min']:.0f}m"
-        return "ambiguous", "brief throttle signal"
+            return "report", (f"{mins:.1f}m over 100% CU >= {cfg['throttle_min']:.1f}m "
+                              "(over budget, not confirmed throttling)")
+        return "ambiguous", "brief time over 100% CU"
     if check == "pressure":
         pct = _num(trigger.get("peakCuPct"))
         if pct is not None and pct >= cfg["pressure_report"]:

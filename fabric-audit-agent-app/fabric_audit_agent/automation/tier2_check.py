@@ -481,7 +481,10 @@ def _ack_suppressed(ack_store, chat_id, now_dt):
     return False
 
 
-_SIGNAL_SHORT = {"throttle": "throttling", "pressure": "CU pressure", "overage": "overage",
+# User-facing labels. "throttle" is deliberately NOT called "throttling": the underlying
+# throttleMinutes is minutes at CU >= 100%, not a Fabric throttle signal (see
+# gates.throttle_claim_gate and collector_capacity_events' naming caveat).
+_SIGNAL_SHORT = {"throttle": "over budget", "pressure": "CU pressure", "overage": "overage",
                  "extreme_peak": "extreme peak", "throttle_imminent": "throttle imminent"}
 
 
@@ -495,7 +498,7 @@ def _title_for(t):
     if check == "concentration":
         return f"Concentration: {t.get('item', '?')} at {t.get('sharePct', '?')}%"
     if check == "throttle":
-        return f"Throttling on capacity ({t.get('throttleMinutes', '?')} min)"
+        return f"Capacity over budget ({t.get('throttleMinutes', '?')} min at >100% CU)"
     if check == "pressure":
         return f"CU pressure: peak {t.get('peakCuPct', '?')}%"
     if check == "extreme_peak":
@@ -527,7 +530,7 @@ def _facts_for(t):
         f = [("Signals firing", ", ".join(_SIGNAL_SHORT.get(s, s)
                                           for s in (t.get("signalTypes") or [])) or None),
              ("Peak CU", f"{t.get('peakCuPct')}%" if t.get("peakCuPct") is not None else None),
-             ("Throttle", f"{t.get('throttleMinutes')} min"
+             ("Over budget", f"{t.get('throttleMinutes')} min at >100% CU"
               if t.get("throttleMinutes") is not None else None),
              ("Overage", f"{t.get('overageTotalMs')} ms"
               if t.get("overageTotalMs") is not None else None),
@@ -587,7 +590,8 @@ def _facts_for(t):
             top = tu[0]
             f.append(("Top user", top.get("user") if isinstance(top, dict) else top))
     elif check == "throttle":
-        f = [("Throttle", f"{t.get('throttleMinutes')} min"), ("Peak CU", f"{t.get('peakCuPct')}%")]
+        f = [("Over budget", f"{t.get('throttleMinutes')} min at >100% CU"),
+             ("Peak CU", f"{t.get('peakCuPct')}%")]
     elif check == "pressure":
         f = [("Peak CU", f"{t.get('peakCuPct')}%")]
     elif check == "extreme_peak":

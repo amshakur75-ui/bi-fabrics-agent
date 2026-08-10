@@ -16,11 +16,25 @@ def test_throttle_gate_passes_only_on_throttle_signal():
     assert out["signal"]["throttleMinutes"] == 17
 
 
-def test_throttle_gate_blocks_on_high_cu_alone():
-    # CU% > 100 with NO throttle signal — smoothing absorbs bursts; the claim is BLOCKED.
+def test_over_budget_gate_blocks_when_no_window_reached_100pct():
+    """A peak of 130% can coexist with zero windows AT/OVER 100% of budget (the peak is a single
+    30-s reading; throttleMinutes counts qualifying windows). The over-budget claim is BLOCKED.
+
+    NOTE the claim wording: this gate reports TIME OVER BUDGET, not "throttling". Its docstring
+    used to assert it "never passes on high CU alone", which was false about its own
+    implementation — throttleMinutes IS derived from CU >= 100%. A true Fabric throttle claim is
+    not derivable from this stream at all."""
     out = throttle_claim_gate({"peakCuPct": 130.0, "throttleMinutes": 0})
     assert out["passed"] is False
-    assert "not throttling" in out["note"].lower() or "no throttle" in out["note"].lower()
+    assert "over budget" in out["claim"].lower()
+    assert "never derivable" in out["note"].lower() or "blocked" in out["note"].lower()
+
+
+def test_over_budget_gate_claim_never_says_throttling():
+    """Anti-hallucination: no code path may emit a confirmed-throttling claim from this data."""
+    for cap in ({"throttleMinutes": 4.0}, {"peakCuPct": 130.0, "throttleMinutes": 0}, {}):
+        out = throttle_claim_gate(cap)
+        assert "throttling occurred" not in out["claim"]
 
 
 def test_throttle_gate_blocks_on_missing_data():
