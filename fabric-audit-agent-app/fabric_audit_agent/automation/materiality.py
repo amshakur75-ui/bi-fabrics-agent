@@ -175,14 +175,35 @@ def is_escalation(trigger, prior, cfg=None):
                 return True
             if cur_thr >= max(cfg["throttle_min"], 2 * pri_thr):
                 return True
-        cur_sigs = set(signal_set(trigger))
-        pri_sigs = set((prior or {}).get("signalTypes") or [])
-        # Only meaningful when the prior row actually RECORDED a signal set. An empty
-        # ``pri_sigs`` means "unknown", not "no signals" — e.g. a row written before this
-        # field existed (the rows already live in prod at deploy time). Treating unknown as
-        # empty would make every signal look new and fire a card every tick, which is the
-        # precise failure this rule exists to prevent.
-        if pri_sigs and (cur_sigs - pri_sigs):
+        cur_sigs = {s for s in signal_set(trigger) if isinstance(s, str)}
+        # Type-guard the stored set: it round-trips through JSON in the Delta store, and a
+        # non-list value (hand-run backfill, a future writer, a raw MERGE against
+        # signal_types) would otherwise iterate CHARACTERS — "throttle" becomes
+        # {'t','h','r',...}, every signal looks new, and a card fires every tick. A non-
+        # iterable would raise inside is_escalation, escape process_alerts, and get swallowed
+        # by _deliver's except — silencing EVERY alert for that sweep.
+        _raw = (prior or {}).get("signalTypes")
+        pri_sigs = {s for s in _raw if isinstance(s, str)} if isinstance(_raw, list) else set()
+        # STRICT SUPERSET, not set-difference. Difference also fires when the set merely
+        # ROTATES, which is a common real shape and often an IMPROVEMENT: throttling stops and
+        # CU falls below 100 while Fabric's threshold pcts stay elevated, so the set goes
+        # {pressure, throttle} -> {throttle_imminent}. Under set-difference that produced an
+        # "escalation" Teams card for a capacity event that had just got BETTER. A superset
+        # means the incident genuinely gained a signal on top of everything already seen.
+        #
+        # Only meaningful when the prior row actually RECORDED a set. Empty means "unknown"
+        # (a row written before this field existed — those are live in prod at deploy time),
+        # not "no signals"; treating unknown as empty makes every signal look new.
+        if pri_sigs and cur_sigs > pri_sigs:
+            return True
+        # 4. burndown collapsing — overage draining far slower than before is an imminent
+        #    worsening the other three axes cannot see (peak flat, throttle flat, set already
+        #    the union). Without this, a warn incident whose minutesToBurndown goes 50 -> 2
+        #    produces nothing at all.
+        cur_mtb = _num(trigger.get("minutesToBurndown"))
+        pri_mtb = _num((prior or {}).get("minutesToBurndown"))
+        if (cur_mtb is not None and pri_mtb is not None and pri_mtb > 0
+                and cur_mtb <= pri_mtb / 2.0):
             return True
         return False
     cur = primary_metric(trigger)

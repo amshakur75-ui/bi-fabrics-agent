@@ -104,19 +104,13 @@ def primary_metric(trigger):
     """
     check = (trigger or {}).get("check")
     if check in _CAPACITY_FAMILY:
+        # This branch covers throttle / pressure / overage / extreme_peak / throttle_imminent /
+        # capacity_incident. Do NOT add per-check branches for those below — they would be
+        # unreachable, and a stale one (e.g. overage returning overageCumulativePct) reads as if
+        # the unit-safety fix were incomplete when it is simply shadowed.
         return _num(trigger.get("peakCuPct"))
     if check == "concentration":
         return _num(trigger.get("sharePct"))
-    if check == "throttle":
-        return _num(trigger.get("throttleMinutes"))
-    if check == "pressure":
-        return _num(trigger.get("peakCuPct"))
-    if check == "extreme_peak":
-        return _num(trigger.get("peakCuPct"))
-    if check == "throttle_imminent":
-        return _num(trigger.get("worstPct"))
-    if check == "overage":
-        return _num(trigger.get("overageCumulativePct"))
     if check == "cross_user":
         return _num(trigger.get("userCount"))
     if check in ("blind_spot", "sustained"):

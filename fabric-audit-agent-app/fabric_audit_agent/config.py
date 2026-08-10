@@ -40,6 +40,15 @@ DEFAULT_CONFIG = {
         # test — it fires on ~5% of all events by construction, forever, on a healthy capacity.
         # 3x on a long-tailed cost distribution puts it well under 0.1%.
         "baselineSpikeMultiplier": 3.0,
+        # baselineSpikeEstateMultiplier: a MUCH stricter multiple for the layer-2 (estate-wide)
+        # fallback. Once the estate p95 is computed correctly it is small (single-digit CPU-s
+        # across all users), so `3 x p95` sits under the absolute floor and the floor becomes the
+        # only live gate — which makes the estate layer a duplicate of
+        # detectors/absolute_cost.py's highCuSeconds=100, a bar this tenant's busy users clear
+        # routinely (107 / 207 CPU-s were documented as NORMAL there). That would put routine
+        # heavy users on the capacity card as the likely cause of a throttle. A cold-start user
+        # has no personal history, so only something genuinely extreme is worth naming.
+        "baselineSpikeEstateMultiplier": 25.0,
         # baselineSpikeFloorCuSeconds: absolute floor, so a user with a tiny baseline can't trip
         # on noise (p95=0.10 CPU-s -> 0.31 CPU-s is "3x" but meaningless). Reuses the same scale
         # as highCuSeconds.

@@ -554,11 +554,20 @@ def _facts_for(t):
                 if metric:
                     bit += " — " + ", ".join(metric)
                 lines.append(bit)
-            more = len(spikes) - len(lines)
+            # Use the TRUE count, not len(spikes) — the attached list is capped at 25 by the
+            # correlator, so a big incident would otherwise under-report ("+22 more" when the
+            # real remainder is larger).
+            total = t.get("correlatedUserSpikeCount") or len(spikes)
+            more = total - len(lines)
             joined = "; ".join(lines)
             if more > 0:
                 joined += f" (+{more} more in chat)"
             f.append(("Correlated user spikes", joined))
+        # The composite branch returns EARLY, so the shared recurrence append at the bottom of
+        # this function never runs for it. Repeat it here or a hoisted recurrence is still
+        # invisible on the card.
+        if (t.get("recurrence") or {}).get("isRecurring"):
+            f.append(("Recurrence", "recurring (matches prior findings)"))
         return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
     if check == "concentration":
         f = [("Item", t.get("item")), ("Workspace", t.get("workspace")),
@@ -732,6 +741,28 @@ def _coalesce_capacity_family(triggers):
                 merged_spikes.append(sp)
         if merged_spikes:
             composite["correlatedUserSpikes"] = merged_spikes
+            composite["correlatedUserSpikeCount"] = max(
+                [s.get("correlatedUserSpikeCount") or 0 for s in sigs] + [len(merged_spikes)])
+        # Recurrence is stamped on the RAW triggers by _cross_reference_recurrence, which runs
+        # BEFORE coalescing. Without hoisting it the composite — the highest-severity card the
+        # system emits — silently loses the "this has happened before" signal. Any recurring
+        # component makes the incident recurring; matching findings are unioned.
+        _recurring = [s.get("recurrence") for s in sigs
+                      if (s.get("recurrence") or {}).get("isRecurring")]
+        if _recurring:
+            matches = sorted({m for r in _recurring for m in (r.get("matchingFindings") or [])})
+            composite["recurrence"] = {
+                "isRecurring": True, "matchingFindings": matches,
+                "note": (f"This capacity incident matches {len(matches)} recent finding(s) from "
+                         "prior sweeps — likely a recurring condition, not a fresh event."),
+            }
+        # peakAt: the composite is what downstream sees, so carry the event time. Correlation
+        # currently runs on components (before coalescing), but anything that later anchors on
+        # the composite would silently fall back to run_at without this.
+        for s in sigs:
+            if s.get("peakAt"):
+                composite["peakAt"] = s["peakAt"]
+                break
         # A single normalityHint for the composite — chosen from the highest-priority signal
         # (throttle > extreme_peak > overage > pressure > throttle_imminent).
         priority = {"throttle": 0, "extreme_peak": 1, "overage": 2, "pressure": 3,
@@ -817,23 +848,55 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
         return bool(res.get("delivered"))
 
-    def _capacity_state(row, trigger):
+    _SEV_RANK = {"info": 0, "warn": 1}
+
+    def _capacity_state(row, trigger, prior=None):
         """Stamp the capacity-family escalation state onto a row (Design A').
 
         Applies to EVERY capacity-family trigger, not just composites: ``signal_set`` treats a
         lone trigger as a set of one, so the single -> composite transition (pressure crossing
         into throttle) is visible to the next tick's ``is_escalation``. Also refreshes
-        ``checkType`` so the stored row can't drift from the card (a row that began as
-        ``throttle`` and became ``capacity_incident`` used to keep the stale family forever).
-        All three fields are persisted — they are in ``context_alerts._FIELDS``.
+        ``checkType`` so the stored row can't drift from the card. All persisted fields are in
+        ``context_alerts._FIELDS``.
+
+        HIGH-WATER MARKS. When ``prior`` is given, severity / metric / signal set only ever
+        move UP. Without this, a capacity event that partially improves rewrote the row
+        downward (warn -> info, peak 105 -> 99, set narrowed), which mis-labelled the ticket in
+        the notification center AND made later spurious escalations easier, because every
+        comparison in ``is_escalation`` is against the stored value. The incident's identity is
+        "the worst this has been", not "the most recent reading".
         """
-        sigs = signal_set(trigger)
+        sigs = set(signal_set(trigger))
         if not sigs:
             return row
-        row["signalTypes"] = sigs
         row["checkType"] = trigger.get("check")
-        if trigger.get("throttleMinutes") is not None:
-            row["throttleMinutes"] = trigger["throttleMinutes"]
+        if prior:
+            prev = prior.get("signalTypes")
+            if isinstance(prev, list):
+                sigs |= {s for s in prev if isinstance(s, str)}
+            prior_sev = prior.get("severity")
+            if _SEV_RANK.get(prior_sev, -1) > _SEV_RANK.get(row.get("severity"), -1):
+                row["severity"] = prior_sev
+            cur_m, pri_m = row.get("metric"), prior.get("metric")
+            if isinstance(cur_m, (int, float)) and isinstance(pri_m, (int, float)) \
+                    and not isinstance(cur_m, bool) and not isinstance(pri_m, bool):
+                row["metric"] = max(cur_m, pri_m)
+            elif cur_m is None and pri_m is not None:
+                row["metric"] = pri_m
+        row["signalTypes"] = sorted(sigs)
+        for key in ("throttleMinutes", "minutesToBurndown"):
+            cur = trigger.get(key)
+            if cur is None:
+                continue
+            pri = (prior or {}).get(key)
+            # throttleMinutes: keep the worst (largest). minutesToBurndown: SMALLER is worse,
+            # but the escalation rule needs the PREVIOUS value to detect a collapse, so store
+            # the live reading rather than a high-water mark.
+            if key == "throttleMinutes" and isinstance(pri, (int, float)) \
+                    and not isinstance(pri, bool):
+                row[key] = max(cur, pri)
+            else:
+                row[key] = cur
         return row
 
     def _write_ticket(row, trigger):
@@ -902,20 +965,21 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            "a new driver is behind it this time.")
                 row = dict(prior, currentlyActive=True, status="active", lastAlertedAt=now_iso,
                            runAt=now_iso, investigationSummary=summary, absenceCount=0)
-                _capacity_state(row, t)
+                _capacity_state(row, t, prior)
                 row["delivered"] = _send("new", t, row, summary, investigate_prefix=_prefix)
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
                 actions["reopened"].append(key)
             elif is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric"),
                                     "signalTypes": prior.get("signalTypes"),
-                                    "throttleMinutes": prior.get("throttleMinutes")}, cfg):
+                                    "throttleMinutes": prior.get("throttleMinutes"),
+                                    "minutesToBurndown": prior.get("minutesToBurndown")}, cfg):
                 inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": True}
                 row = dict(prior, severity=sev, metric=metric, lastAlertedAt=now_iso, runAt=now_iso,
                            currentlyActive=True, absenceCount=0,
                            escalationCount=(prior.get("escalationCount") or 0) + 1,
                            investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
-                _capacity_state(row, t)
+                _capacity_state(row, t, prior)
                 row["delivered"] = _send("new", t, row, inv.get("summary"))
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
@@ -928,6 +992,14 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 # ticket fresh (currentlyActive=True) so the center reflects reality, and stay silent.
                 # A genuine WORSENING still breaks through (escalation, checked above), and a
                 # recurrence AFTER a human resolve still re-alerts (reopen branch, checked above).
+                # LOAD-BEARING INVARIANT — do NOT add a metric/severity/signalTypes refresh
+                # here. This branch deliberately does not upsert while the incident is already
+                # currentlyActive, so the row keeps its last-ALERTED state. That is the only
+                # thing preventing the card-every-tick bug for a FLAPPING signal set: with
+                # A={throttle,pressure} -> B={pressure} -> C={throttle,pressure}, refreshing the
+                # row at B would narrow the stored set and make C look like "a new signal
+                # joined" at every oscillation. Worsening still breaks through via the
+                # escalation branch above, which updates the row on purpose.
                 if prior.get("currentlyActive") is not True:
                     # Re-fire during the quiet-grace window: same incident, no new card. Reset
                     # absenceCount so the next absent tick starts the grace clock from scratch.

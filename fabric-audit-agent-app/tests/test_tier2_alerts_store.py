@@ -56,11 +56,13 @@ def test_row_mapping_round_trips():
         # Design A' capacity-incident state — MUST round-trip or the dedup silently dies
         # in production (see test_alerts_store_delta_fidelity.py for the behavioral proof).
         "absenceCount": 3, "signalTypes": ["pressure", "throttle"], "throttleMinutes": 8.0,
+        "minutesToBurndown": 12.5,
     }
     row = _to_row(alert)
     assert row["incident_key"] == "capacity::capacity"
     assert row["check_type"] == "throttle" and row["metric"] == 8.0
     assert row["absence_count"] == 3 and row["throttle_minutes"] == 8.0
+    assert row["minutes_to_burndown"] == 12.5
     # signalTypes is a LIST in the dict but a JSON STRING in the Delta row — handing
     # createDataFrame a raw list against the StringType column raises inside upsert(),
     # which has no try/except and would drop the alert entirely.

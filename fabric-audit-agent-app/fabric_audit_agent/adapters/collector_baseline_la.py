@@ -56,7 +56,15 @@ def build_per_user_kql(window_clause, exclude_prefixes=_DEFAULT_EXCLUDE_PREFIXES
         "| summarize p50 = percentile(_cu, 50), p95 = percentile(_cu, 95), "
         "sampleCount = count(), minCu = min(_cu), maxCu = max(_cu) by _euser"
     )
-    lines.append("| project user = _euser, p50, p95, sampleCount, minCu, maxCu")
+    # tolower IS LOAD-BEARING. `investigation.events.normalize_event` lowercases the user
+    # (`(_identity_email(row) or "").lower()`), so the LIVE event carries
+    # "abdishakur.mohamed@newellco.com". Without tolower here the baseline row keys on
+    # "Abdishakur.Mohamed@newellco.com", `per_user.get(user)` misses, and EVERY mixed-case user
+    # is silently demoted to the estate baseline forever — while the card still reads
+    # "33x the estate-wide p95 (their personalized baseline isn't ready yet)" for someone who
+    # has 14 days of history sitting in the table. Defeats the whole "their own history" premise
+    # and looks like it is working.
+    lines.append("| project user = tolower(_euser), p50, p95, sampleCount, minCu, maxCu")
     return first_statement("\n".join(lines))
 
 
@@ -90,7 +98,9 @@ def _row_to_baseline(row, *, scope, user, as_of):
     count = _num(row.get("sampleCount"))
     return {
         "scope": scope,
-        "user": user,
+        # Lowercase defensively too — the KQL already does tolower(), but a `kql` override or a
+        # different source must not be able to reintroduce the case mismatch described above.
+        "user": user.lower() if isinstance(user, str) else user,
         "p50": _num(row.get("p50")),
         "p95": _num(row.get("p95")),
         "count": int(count) if count is not None else None,

@@ -129,7 +129,11 @@ def run_bootstrap_aggregate(collector, *, as_of=None, baseline_store=None):
     if baseline_store is not None and rows:
         baseline_store["upsert_many"](rows)
     users = sum(1 for r in rows if r.get("scope") == "user")
-    return {"rowsWritten": len(rows), "users": users,
+    # rowsWritten must count rows actually WRITTEN. With no store it used to report
+    # len(rows) having persisted nothing, and the nightly job's zero-row alarm keys off this
+    # number — so a misconfigured run reported "rowsWritten=427" and exited green.
+    written = len(rows) if baseline_store is not None else 0
+    return {"rowsWritten": written, "users": users,
             "hasEstate": any(r.get("scope") == "estate" for r in rows), "asOf": as_of}
 
 
@@ -150,5 +154,6 @@ def run_bootstrap(collector, *, min_history=20, as_of=None, baseline_store=None)
     if baseline_store is not None:
         baseline_store["upsert_many"](rows)
     users = sum(1 for r in rows if r["scope"] == "user")
-    return {"rowsWritten": len(rows), "users": users, "hasEstate": any(
+    written = len(rows) if baseline_store is not None else 0
+    return {"rowsWritten": written, "users": users, "hasEstate": any(
         r["scope"] == "estate" for r in rows), "asOf": as_of}

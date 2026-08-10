@@ -44,6 +44,10 @@ _FIELDS = [
     ("absenceCount", "absence_count"),
     ("signalTypes", "signal_types"),
     ("throttleMinutes", "throttle_minutes"),
+    # Burndown is the FOURTH escalation axis: overage draining far slower than before is an
+    # imminent worsening the peak / throttle / signal-set axes cannot see. Needs the PREVIOUS
+    # reading to detect the collapse, so it must persist.
+    ("minutesToBurndown", "minutes_to_burndown"),
 ]
 
 # Fields carried as a Python list but stored as a compact JSON string (Delta STRING column),
@@ -69,9 +73,15 @@ def _from_row(row):
         v = out.get(cc)
         if isinstance(v, str):
             try:
-                out[cc] = json.loads(v)
+                decoded = json.loads(v)
             except (TypeError, ValueError):
-                out[cc] = []
+                decoded = []
+            # Coerce a successfully-decoded NON-list to []. `set("throttle")` would iterate
+            # CHARACTERS, making every signal look new (card every tick); a non-iterable would
+            # raise inside is_escalation and get swallowed, silencing EVERY alert that sweep.
+            out[cc] = decoded if isinstance(decoded, list) else []
+        elif v is not None and not isinstance(v, list):
+            out[cc] = []
     return out
 
 
@@ -118,7 +128,8 @@ def _schema():
              # _to_row) — handing createDataFrame a raw Python list against a StringType
              # column raises TypeError inside upsert(), which has no try/except and would
              # drop the alert outright.
-             "absence_count": IntegerType(), "throttle_minutes": DoubleType()}
+             "absence_count": IntegerType(), "throttle_minutes": DoubleType(),
+             "minutes_to_burndown": DoubleType()}
         return StructType([
             StructField(col, t.get(col, StringType()), True) for _, col in _FIELDS
         ])
@@ -136,7 +147,8 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
                      "currently_active": "BOOLEAN", "presence_count": "INT",
                      # Design A' — the self-heal ALTER below adds these to an existing
                      # prod table on first use, so no manual migration is needed.
-                     "absence_count": "INT", "throttle_minutes": "DOUBLE"}
+                     "absence_count": "INT", "throttle_minutes": "DOUBLE",
+                     "minutes_to_burndown": "DOUBLE"}
 
     def _get_spark():
         nonlocal spark

@@ -20,7 +20,8 @@ def _event(user, cu, item="Report A", op="ExecuteQuery", ts="2026-08-09T13:52:00
     return {"user": user, "cuSeconds": cu, "item": item, "operation": op, "ts": ts}
 
 
-def _cfg(min_history=20, multiplier=3.0, floor=100, max_age_days=3):
+def _cfg(min_history=20, multiplier=3.0, floor=100, max_age_days=3,
+         estate_multiplier=25.0):
     """The gate is ``cu > p95 * multiplier AND cu >= floor``.
 
     A bare ``cu > p95`` is a percentile lookup, not an anomaly test — it fires on ~5% of ALL
@@ -29,6 +30,7 @@ def _cfg(min_history=20, multiplier=3.0, floor=100, max_age_days=3):
     """
     return {"activity": {"baselineMinHistory": min_history,
                          "baselineSpikeMultiplier": multiplier,
+                         "baselineSpikeEstateMultiplier": estate_multiplier,
                          "baselineSpikeFloorCuSeconds": floor,
                          "baselineMaxAgeDays": max_age_days}}
 
@@ -94,7 +96,7 @@ def test_floor_is_configurable():
 
 def test_layer2_estate_fires_for_a_cold_start_user():
     store = create_user_baseline_store_memory([_estate(p95=80.0)])
-    flags = _run({"events": [_event("brandnew@x", 400.0)]}, store)
+    flags = _run({"events": [_event("brandnew@x", 3000.0)]}, store)
     assert len(flags) == 1
     assert flags[0]["evidence"]["baselineSource"] == "estate"
     assert "estate-wide p95" in flags[0]["what"]
@@ -106,9 +108,29 @@ def test_layer2_used_when_personalized_is_undertrained():
         _personalized("a@x", count=3, p95=10000.0),   # too few samples to trust
         _estate(count=500, p95=80.0),
     ])
-    flags = _run({"events": [_event("a@x", 400.0)]}, store, _cfg(min_history=20))
+    flags = _run({"events": [_event("a@x", 3000.0)]}, store, _cfg(min_history=20))
     assert len(flags) == 1
     assert flags[0]["evidence"]["baselineSource"] == "estate"
+
+
+def test_estate_layer_uses_a_much_stricter_multiple_than_personalized():
+    """A correctly-computed estate p95 is SMALL (single-digit CPU-s across all users), so a 3x
+    gate would sit under the absolute floor and the floor alone would decide — making this layer
+    a duplicate of absolute_cost's highCuSeconds=100, a bar this tenant's busy users clear
+    routinely. Routine heavy users must not be named on a capacity card as the likely cause."""
+    store = create_user_baseline_store_memory([_estate(p95=8.0)])
+    cfg = _cfg(multiplier=3.0, estate_multiplier=25.0, floor=100)
+    # 150 CPU-s is 18x the estate p95 and clears the floor — but a cold-start user with no
+    # personal history needs something genuinely extreme, so 25x is the bar: stays silent.
+    assert _run({"events": [_event("cold@x", 150.0)]}, store, cfg) == []
+    # 500 CPU-s is 62x -> fires, and the evidence reports the multiplier ACTUALLY applied.
+    flags = _run({"events": [_event("cold@x", 500.0)]}, store, cfg)
+    assert len(flags) == 1
+    assert flags[0]["evidence"]["spikeMultiplier"] == 25.0
+    # The SAME cost against a personalized baseline of the same p95 fires at the 3x bar.
+    store2 = create_user_baseline_store_memory([_personalized("warm@x", p95=8.0)])
+    f2 = _run({"events": [_event("warm@x", 150.0)]}, store2, cfg)
+    assert len(f2) == 1 and f2[0]["evidence"]["spikeMultiplier"] == 3.0
 
 
 def test_layer3_silent_when_nothing_is_populated():
@@ -119,11 +141,11 @@ def test_layer3_silent_when_nothing_is_populated():
 def test_ignores_events_missing_user_or_cost():
     store = create_user_baseline_store_memory([_estate(p95=80.0)])
     facts = {"events": [
-        {"cuSeconds": 400.0},                 # no user -> skip
+        {"cuSeconds": 3000.0},                # no user -> skip
         _event("a@x", None),                  # no cost -> skip
         _event("b@x", "not a number"),        # non-numeric -> skip
         _event("c@x", float("inf")),          # non-finite -> skip
-        _event("d@x", 400.0),                 # fires (estate)
+        _event("d@x", 3000.0),                # fires (estate, needs 25x)
     ]}
     flags = _run(facts, store)
     assert [f["resource"] for f in flags] == ["d@x"]
@@ -139,7 +161,7 @@ def test_stale_personalized_baseline_falls_through_to_estate():
         _personalized("a@x", p95=100.0, as_of=old),
         _estate(p95=80.0),                                # fresh
     ])
-    flags = _run({"events": [_event("a@x", 400.0)]}, store)
+    flags = _run({"events": [_event("a@x", 3000.0)]}, store)
     assert flags and flags[0]["evidence"]["baselineSource"] == "estate"
 
 
@@ -203,7 +225,7 @@ def test_bulk_load_failure_degrades_to_estate():
         raise RuntimeError("delta unavailable")
     store["get_all_users"] = boom
     store["get_user"] = lambda u: (_ for _ in ()).throw(RuntimeError("also down"))
-    flags = _run({"events": [_event("a@x", 400.0)]}, store)
+    flags = _run({"events": [_event("a@x", 3000.0)]}, store)
     assert flags and flags[0]["evidence"]["baselineSource"] == "estate"
 
 

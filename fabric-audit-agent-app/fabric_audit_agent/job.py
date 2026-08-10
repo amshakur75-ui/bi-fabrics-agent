@@ -42,7 +42,7 @@ def _check_startup_invariant(health=None, *, catalog=None, known_names=None):
             health.record_issue(msg)
 
 
-def _run_startup_preflight(env, health=None):
+def _run_startup_preflight(env, health=None, expect=None):
     """Sub-plan 5 Part 5d: run the read-only config/health preflight snapshot
     (``automation.preflight.run_preflight``) once at job startup, log it, and -- when a
     ``HealthReport`` is available -- fold any failed check into it as a recorded issue (reusing
@@ -51,7 +51,7 @@ def _run_startup_preflight(env, health=None):
     exception path of its own."""
     try:
         from .automation.preflight import run_preflight
-        report = run_preflight(env)
+        report = run_preflight(env, expect=expect)
     except Exception as exc:
         msg = f"startup preflight failed to run: {type(exc).__name__}: {exc}"
         print(f"[startup] WARN: {msg}")
@@ -751,15 +751,35 @@ def _build_tier2_collector(env, window="5m"):
         # booster no-ops: B2 and B3 were DEAD CODE in production (found 2026-08-10; every test
         # injected the key by hand, so nothing caught it).
         #
-        # `window=window` is passed EXPLICITLY and must stay that way: _build_events_collector
-        # defaults to FABRIC_LA_WINDOW ("1d"), which on a 5-minute sweep would re-pull a full day
-        # of events every run and re-flag the same spikes ~288 times a day.
+        # WINDOW IS DELIBERATELY WIDER THAN THE SWEEP CADENCE (15m vs 5m), matching
+        # watch_run.py's own reasoning: "overlaps the 5-min cadence so nothing is missed between
+        # runs; dedup handles the overlap."
+        #
+        # A 5m window leaves a PERMANENT BLIND HOLE, because Power BI diagnostic logs reach
+        # PowerBIDatasetsWorkspace with minutes of ingestion latency while the KQL filters on
+        # TimeGenerated (the EVENT time, not the ingest time). A query at TimeGenerated=13:52
+        # that becomes queryable at 13:56 is missed by BOTH the 13:55 sweep (not ingested yet)
+        # and the 14:00 sweep (13:52 is outside ago(5m)) — and the events most likely to matter
+        # are exactly the ones next to the capacity peak. Overlap is harmless: spikes only ride
+        # on capacity triggers that already dedupe by incident_key, and the +/-5-min correlation
+        # window discards anything that doesn't actually overlap the event.
+        #
+        # NOT `window` (the capacity-events cadence) and NOT FABRIC_LA_WINDOW (defaults to "1d",
+        # which would re-pull a whole day every 5 minutes).
+        _events_window = env.get("FABRIC_TIER2_EVENTS_WINDOW", "15m")
+        # GATED on the same flag as the detectors it feeds. This is a THIRD Log Analytics query
+        # on a job that runs 288x/day; paying for it while TIER2_BASELINE_ENABLED is unset would
+        # buy nothing, because the only consumers (the baseline detector and the correlation
+        # booster) are switched off. Turning the flag on turns on the whole chain together.
+        _baseline_on = str(env.get("TIER2_BASELINE_ENABLED", "")).strip().lower() in (
+            "1", "true", "yes")
         # Fail-open at collect time, so an LA outage degrades the correlation booster rather than
         # breaking the capacity gates.
-        try:
-            collectors.append(_build_events_collector(env, window=window))
-        except Exception as exc:
-            print(f"[tier2] events collector skipped ({type(exc).__name__}: {exc})")
+        if _baseline_on:
+            try:
+                collectors.append(_build_events_collector(env, window=_events_window))
+            except Exception as exc:
+                print(f"[tier2] events collector skipped ({type(exc).__name__}: {exc})")
 
     if not collectors:
         return {"collect": lambda: {"capacity": None, "items": [], "models": []}}
@@ -994,17 +1014,26 @@ def run_baseline_bootstrap_job(env=None, *, collector=None, baseline_store=None,
                     "health": health.to_dict()}
     if baseline_store is None:
         cat, sch = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
-        if cat and sch:
-            try:
-                from .context_user_baseline import create_user_baseline_store_delta
-                baseline_store = create_user_baseline_store_delta(cat, sch)
-            except Exception as exc:
-                print(f"[baseline] store init failed ({type(exc).__name__}: {exc})")
-                health.record_issue(f"baseline store init failed: "
-                                    f"{type(exc).__name__}: {exc}")
-                return {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "health": health.to_dict()}
+        if not (cat and sch):
+            # MUST return an error, not fall through. Without a store, run_bootstrap_aggregate
+            # happily collects real rows, SKIPS the upsert, and reports rowsWritten=len(rows) —
+            # so the nightly job printed "rowsWritten=427 users=426 hasEstate=True" and exited
+            # GREEN having written nothing, forever, while the table stayed empty.
+            msg = "FABRIC_DELTA_CATALOG / FABRIC_DELTA_SCHEMA not configured"
+            print(f"[baseline] {msg}")
+            health.record_issue(f"baseline store unavailable: {msg}")
+            return {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
+                    "error": msg, "health": health.to_dict()}
+        try:
+            from .context_user_baseline import create_user_baseline_store_delta
+            baseline_store = create_user_baseline_store_delta(cat, sch)
+        except Exception as exc:
+            print(f"[baseline] store init failed ({type(exc).__name__}: {exc})")
+            health.record_issue(f"baseline store init failed: "
+                                f"{type(exc).__name__}: {exc}")
+            return {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "health": health.to_dict()}
 
     from .automation.user_baseline_bootstrap import run_bootstrap, run_bootstrap_aggregate
     try:
@@ -1034,7 +1063,9 @@ def baseline_bootstrap_main():
     health = HealthReport()
     _check_startup_invariant(health)
     env = os.environ
-    _run_startup_preflight(env, health)
+    # This job uses Log Analytics only — it deliberately passes no Kusto vars, so scope the
+    # preflight or it reports "degraded: capacity-events" on every single nightly run.
+    _run_startup_preflight(env, health, expect={"log-analytics"})
     try:
         result = run_baseline_bootstrap_job(env=env, health=health)
     except Exception as exc:

@@ -54,7 +54,7 @@ def _csv_check(env):
     return {"name": "csv-paths", "ok": True, "detail": None}
 
 
-def run_preflight(env):
+def run_preflight(env, expect=None):
     """Read-only startup health snapshot. Never raises, never makes a live/network call.
 
     Checks:
@@ -70,18 +70,33 @@ def run_preflight(env):
     real deployment, but this function does not decide policy about which combination is
     required -- it only reports what it observed; callers decide what "degraded" means for them.
 
+    ``expect`` (optional): the set of DATA-SOURCE check names this particular job actually needs
+    (e.g. ``{"log-analytics"}`` for the nightly baseline job, which deliberately passes no Kusto
+    vars). A source outside that set is reported ``ok=True`` with a "not applicable" detail
+    instead of a failure. Without this, the baseline job reported
+    ``preflight degraded: capacity-events: partially configured`` on EVERY run — permanently
+    yellow, so a real degradation in that same line would go unnoticed. Omit ``expect`` to check
+    every source (the sweep / tier2 behaviour).
+
     Returns ``{"ok": bool, "checks": [...], "degraded": bool}`` -- ``ok`` is True only when every
     check passed; ``degraded`` mirrors ``not ok`` (kept as a separate key for symmetry with
     ``automation.health.HealthReport``, whose callers already look for a ``degraded`` field).
     """
     env = env if env is not None else {}
     checks = []
+
+    def _scoped(check):
+        """Neutralize a data-source check this job does not use."""
+        if expect is None or check["ok"] or check["name"] in expect:
+            return check
+        return {"name": check["name"], "ok": True,
+                "detail": "not applicable to this job"}
     try:
-        checks.append(_env_check(
-            "log-analytics", env, ["FABRIC_LA_WORKSPACE_ID", "FABRIC_CLIENT_ID"]))
-        checks.append(_env_check(
+        checks.append(_scoped(_env_check(
+            "log-analytics", env, ["FABRIC_LA_WORKSPACE_ID", "FABRIC_CLIENT_ID"])))
+        checks.append(_scoped(_env_check(
             "capacity-events", env,
-            ["FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB", "FABRIC_CLIENT_ID"]))
+            ["FABRIC_CAPACITY_EVENTS_CLUSTER", "FABRIC_CAPACITY_EVENTS_DB", "FABRIC_CLIENT_ID"])))
         checks.append(_csv_check(env))
         checks.append(_catalog_check())
     except Exception as exc:

@@ -174,6 +174,7 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
 
     min_history = _cfg("baselineMinHistory")
     multiplier = float(_cfg("baselineSpikeMultiplier"))
+    estate_multiplier = float(_cfg("baselineSpikeEstateMultiplier"))
     floor_cu = float(_cfg("baselineSpikeFloorCuSeconds"))
     max_age_days = float(_cfg("baselineMaxAgeDays"))
 
@@ -185,7 +186,16 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
         print(f"[baseline] estate lookup failed ({type(exc).__name__}: {exc})")
         estate = None
     per_user = {}
-    if "get_all_users" in baseline_store:
+    # Track whether the BULK PATH IS IN PLAY, not whether it returned anything. Gating the
+    # lookup on `if per_user:` (truthiness) meant an empty-but-successful load — a freshly
+    # created table with only an estate row, or every user filtered out by min_history, both
+    # very likely in the first days after enabling this — sent EVERY event down the per-user
+    # `get_user` path: one spark.sql().collect() per event, i.e. the exact thousands-of-
+    # round-trips regression the bulk load exists to remove, on the path where there is nothing
+    # to find anyway. Silent, because the fallback swallows exceptions; the only symptom is a
+    # 5-minute job taking minutes and overlapping the next run.
+    bulk = "get_all_users" in baseline_store
+    if bulk:
         try:
             per_user = baseline_store["get_all_users"]() or {}
         except Exception as exc:
@@ -195,12 +205,20 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
     # ``now`` is injectable so a test can pin it: the staleness check compares against
     # wall-clock, which would make any historical fixture look stale.
     now = now if now is not None else _now_utc()
-    if not _fresh_enough(estate, now, max_age_days):
+    if estate is not None and not _fresh_enough(estate, now, max_age_days):
+        # Every row shares the nightly job's asOf, so N consecutive nightly failures expire ALL
+        # layers at once and the feature goes 100% silent. Say so out loud — otherwise "no
+        # alerts" is indistinguishable from "nothing wrong".
+        print(f"[baseline] estate baseline is stale (asOf={estate.get('asOf')}, "
+              f"maxAgeDays={max_age_days}) — falling through to silence for cold-start users")
         estate = None
+    if per_user and all(not _fresh_enough(b, now, max_age_days) for b in per_user.values()):
+        print(f"[baseline] ALL {len(per_user)} personalized baselines are stale "
+              f"(maxAgeDays={max_age_days}) — the nightly bootstrap has not succeeded recently")
 
     def _lookup(user):
         """Personalized baseline for ``user``, from the bulk map when available."""
-        if per_user:
+        if bulk:
             return per_user.get(user)
         # Fallback for a store without get_all_users (older adapter / a custom fake).
         try:
@@ -240,8 +258,13 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
         # by construction — see config.baselineSpikeMultiplier. Require BOTH a multiple of the
         # baseline AND an absolute floor, so neither a tiny baseline nor a big-but-normal user
         # generates noise.
+        #
+        # The estate layer uses a MUCH larger multiple: a correctly-computed estate p95 is small,
+        # so the shared floor would otherwise be the only gate and this layer would just
+        # re-report routine heavy users (see config.baselineSpikeEstateMultiplier).
         p95 = baseline["p95"]
-        if not (cu > p95 * multiplier and cu >= floor_cu):
+        mult = multiplier if source == "personalized" else estate_multiplier
+        if not (cu > p95 * mult and cu >= floor_cu):
             continue
 
         comparison = compare_to_baseline(cu, baseline)
@@ -263,7 +286,7 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
                 "baselineP50": baseline.get("p50"), "baselineP95": baseline.get("p95"),
                 "baselineCount": baseline.get("count"),
                 "baselineSource": source, "baselineAsOf": baseline.get("asOf"),
-                "spikeMultiplier": multiplier, "ratioVsP95": ratio,
+                "spikeMultiplier": mult, "ratioVsP95": ratio,
                 "deltaVsP50Pct": comparison.get("deltaVsP50Pct"),
             },
             "what": (f"{user} ran \"{operation}\" on \"{item}\" costing {cu_out} CPU-s — "

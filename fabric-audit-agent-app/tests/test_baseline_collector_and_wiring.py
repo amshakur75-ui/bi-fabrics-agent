@@ -156,6 +156,8 @@ _ENV = {
     "FABRIC_CLIENT_SECRET": "secret",
     "FABRIC_TENANT_ID": "tid",
     "FABRIC_LA_WORKSPACE_ID": "la-ws",
+    # The raw-events pull is gated on the same flag as the detectors it feeds.
+    "TIER2_BASELINE_ENABLED": "1",
 }
 
 
@@ -169,7 +171,6 @@ def test_tier2_collector_now_includes_a_raw_events_source():
         return {"collect": lambda: {"events": [{"user": "a@x", "cuSeconds": 1.0}]}}
 
     with patch("fabric_audit_agent.job._build_events_collector", side_effect=fake_events), \
-         patch("fabric_audit_agent.job.build_kusto_query", create=True), \
          patch("fabric_audit_agent.adapters.clients.build_kusto_query"), \
          patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
         collector = _build_tier2_collector(dict(_ENV), window="5m")
@@ -179,9 +180,30 @@ def test_tier2_collector_now_includes_a_raw_events_source():
     assert facts["events"], "events list came back empty"
 
 
-def test_tier2_collector_passes_the_five_minute_window_explicitly():
-    """_build_events_collector defaults to FABRIC_LA_WINDOW ("1d"). On a 5-minute sweep that
-    would re-pull a full day every run and re-flag the same spikes ~288x/day."""
+def test_tier2_collector_events_pull_is_gated_on_the_baseline_flag():
+    """It is a THIRD Log Analytics query on a job that runs 288x/day. Paying for it while
+    TIER2_BASELINE_ENABLED is unset buys nothing — the only consumers (baseline detector +
+    correlation booster) are switched off."""
+    called = {"n": 0}
+
+    def fake_events(env, window=None):
+        called["n"] += 1
+        return {"collect": lambda: {"events": []}}
+
+    env_off = {k: v for k, v in _ENV.items() if k != "TIER2_BASELINE_ENABLED"}
+    with patch("fabric_audit_agent.job._build_events_collector", side_effect=fake_events), \
+         patch("fabric_audit_agent.adapters.clients.build_kusto_query"), \
+         patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
+        _build_tier2_collector(env_off, window="5m")
+    assert called["n"] == 0, "events collector must not run while the baseline flag is off"
+
+
+def test_tier2_events_window_overlaps_the_sweep_cadence():
+    """A 5m window leaves a PERMANENT BLIND HOLE: Power BI diagnostic logs arrive with minutes
+    of ingestion latency while the KQL filters on TimeGenerated (EVENT time). A query at
+    TimeGenerated=13:52 that becomes queryable at 13:56 is missed by the 13:55 sweep (not
+    ingested) AND the 14:00 sweep (13:52 is outside ago(5m)) — and those are exactly the events
+    next to the capacity peak. 15m overlaps; dedup handles it, matching watch_run.py."""
     seen = {}
 
     def fake_events(env, window=None):
@@ -192,8 +214,27 @@ def test_tier2_collector_passes_the_five_minute_window_explicitly():
          patch("fabric_audit_agent.adapters.clients.build_kusto_query"), \
          patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
         _build_tier2_collector(dict(_ENV), window="5m")
+    assert seen["window"] == "15m", "must be WIDER than the 5m cadence, not equal to it"
 
-    assert seen["window"] == "5m"
+    # Overridable for tuning without a redeploy.
+    env2 = dict(_ENV, FABRIC_TIER2_EVENTS_WINDOW="30m")
+    with patch("fabric_audit_agent.job._build_events_collector", side_effect=fake_events), \
+         patch("fabric_audit_agent.adapters.clients.build_kusto_query"), \
+         patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
+        _build_tier2_collector(env2, window="5m")
+    assert seen["window"] == "30m"
+
+
+def test_baseline_kql_lowercases_the_user_id():
+    """normalize_event lowercases the live event's user. Without tolower() here the baseline row
+    keys on "Abdishakur.Mohamed@..." while the event carries "abdishakur.mohamed@...", so
+    per_user.get(user) misses and EVERY mixed-case user is silently demoted to the estate
+    baseline — while the card still claims their personalized baseline "isn't ready yet"."""
+    assert "tolower(_euser)" in build_per_user_kql(WINDOW)
+    q, _ = _fake_query([{"user": "Mixed.Case@Example.COM", "p50": 1.0, "p95": 100.0,
+                         "sampleCount": 99, "minCu": 0.1, "maxCu": 900.0}], [])
+    rows = create_baseline_collector(q, {"minHistory": 20})["collect"]()
+    assert rows[0]["user"] == "mixed.case@example.com"
 
 
 def test_tier2_collector_survives_an_events_source_failure():

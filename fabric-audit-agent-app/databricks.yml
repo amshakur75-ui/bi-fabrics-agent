@@ -85,6 +85,13 @@ resources:
               - azure-kusto-data>=4.0  # Capacity Events KQL
               - psycopg2-binary        # Lakebase alert-chat writer
               - databricks-sdk>=0.81   # Lakebase credential + secret resolution
+      # A red run must reach a human. Without this the loud `raise` in
+      # baseline_bootstrap_main is decoration: the job goes red at 02:00 UTC and nothing is
+      # sent (`_alert_failure` is still a Phase-10 stub that returns False), so the tier2
+      # sweep would keep comparing against a stale/empty baseline indefinitely.
+      email_notifications:
+        on_failure:
+          - abdishakur.mohamed@newellco.com
       schedule:
         quartz_cron_expression: ${var.schedule_cron}
         timezone_id: UTC
@@ -130,6 +137,13 @@ resources:
               - azure-kusto-data>=4.0  # Capacity Events KQL
               - psycopg2-binary      # Lakebase chat writer
               - databricks-sdk>=0.81 # Lakebase credential (w.postgres — Autoscaling project)
+      # A red run must reach a human. Without this the loud `raise` in
+      # baseline_bootstrap_main is decoration: the job goes red at 02:00 UTC and nothing is
+      # sent (`_alert_failure` is still a Phase-10 stub that returns False), so the tier2
+      # sweep would keep comparing against a stale/empty baseline indefinitely.
+      email_notifications:
+        on_failure:
+          - abdishakur.mohamed@newellco.com
       schedule:
         quartz_cron_expression: "0 */5 * * * ?"   # every 5 minutes
         timezone_id: UTC
@@ -167,6 +181,14 @@ resources:
               - ./dist/*.whl
               - requests
               - msal>=1.24
+              - databricks-sdk>=0.81   # secret resolution; matches the other three stanzas
+      # A red run must reach a human. Without this the loud `raise` in
+      # baseline_bootstrap_main is decoration: the job goes red at 02:00 UTC and nothing is
+      # sent (`_alert_failure` is still a Phase-10 stub that returns False), so the tier2
+      # sweep would keep comparing against a stale/empty baseline indefinitely.
+      email_notifications:
+        on_failure:
+          - abdishakur.mohamed@newellco.com
       schedule:
         quartz_cron_expression: ${var.baseline_cron}
         timezone_id: UTC
@@ -209,6 +231,13 @@ resources:
               - azure-kusto-data>=4.0  # Capacity Events KQL
               - psycopg2-binary      # Lakebase chat writer
               - databricks-sdk>=0.81 # Lakebase credential (w.postgres — Autoscaling project)
+      # A red run must reach a human. Without this the loud `raise` in
+      # baseline_bootstrap_main is decoration: the job goes red at 02:00 UTC and nothing is
+      # sent (`_alert_failure` is still a Phase-10 stub that returns False), so the tier2
+      # sweep would keep comparing against a stale/empty baseline indefinitely.
+      email_notifications:
+        on_failure:
+          - abdishakur.mohamed@newellco.com
       schedule:
         quartz_cron_expression: ${var.daily_summary_cron}
         timezone_id: ${var.daily_summary_tz}
