@@ -17,6 +17,7 @@ from .query_shape import detect_query_shape
 from .query_antipatterns import detect_query_antipatterns
 from .xmla_errors import detect_xmla_errors
 from .long_running import detect_long_running_cluster
+from .user_baseline import detect_user_baseline_deviation_precomputed
 
 _DETECTORS = [
     detect_capacity, detect_concentration, detect_models,
@@ -26,7 +27,15 @@ _DETECTORS = [
 ]
 
 
-def detect_all(facts, config=None, detectors=None):
+def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
+    """Run every registered detector and flatten the flags.
+
+    ``baseline_store`` (Design A' B2, 2026-08-09): when provided, also runs the per-user
+    baseline-deviation detector with a 3-layer fallback (personalized / estate / silent).
+    Threaded from ``job.run_job`` at deploy time; ``None`` here is the safe default — the
+    detector is simply skipped and no alerts fire until the nightly bootstrap job has
+    populated the store.
+    """
     config = config or DEFAULT_CONFIG
     detectors = detectors if detectors is not None else _DETECTORS
     flags = []
@@ -39,6 +48,22 @@ def detect_all(facts, config=None, detectors=None):
                 "type": "meta.detector-error", "resource": name, "when": "",
                 "evidence": {"detector": name, "message": str(err)},
                 "what": f"Detector \"{name}\" failed and was skipped: {err}",
+            })
+    # B2: the per-user baseline detector takes an extra ``baseline_store`` arg beyond
+    # ``(facts, config)``, so it runs outside the uniform detectors loop above. Wrapped in
+    # the same failure-isolation shell — a broken store never crashes the sweep.
+    if baseline_store is not None:
+        try:
+            flags.extend(detect_user_baseline_deviation_precomputed(
+                facts, config, baseline_store=baseline_store))
+        except Exception as err:
+            flags.append({
+                "type": "meta.detector-error",
+                "resource": "detect_user_baseline_deviation_precomputed", "when": "",
+                "evidence": {"detector": "detect_user_baseline_deviation_precomputed",
+                             "message": str(err)},
+                "what": ("Detector \"detect_user_baseline_deviation_precomputed\" failed and "
+                         f"was skipped: {err}"),
             })
     # B4: after per-item detection, surface systemic anti-patterns spanning multiple workspaces.
     try:
