@@ -38,12 +38,15 @@ def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
     does not run in the hourly sweep. The ONLY live caller is the Tier-2 path, which calls the
     detector directly and feeds its flags to the correlation booster rather than into findings.
 
-    Threading a store in here would turn every flag into a FINDING -> reasoner -> Teams card +
-    notification-center ticket. That is not currently safe: the detector's threshold is
-    ``cuSeconds > p95``, which by construction fires on ~5% of ALL events, and
-    ``activity.user-baseline-deviation`` has no ``severity.py`` classification (falls to Info)
-    and no KB playbook. Fix the threshold (multiplier + absolute floor) and add the taxonomy
-    entries before wiring this into ``run_audit``.
+    Threading a store in here turns every flag into a FINDING -> reasoner -> Teams card +
+    notification-center ticket, which is a much louder surface than the Tier-2 correlation path.
+    The original blockers (a bare ``cu > p95`` threshold, and no severity/KB taxonomy) are now
+    FIXED — the gate is a multiple of p95 plus an absolute floor with a stricter estate
+    multiplier, and both ``severity.py`` and ``kb/activity.py`` have entries. What remains is a
+    deliberate product choice, not a defect: per-user spikes are currently surfaced ON the
+    capacity card (where they answer "who caused this throttle?") rather than as standalone
+    findings. Wire this only if you actually want standalone per-user tickets, and check the
+    resulting daily volume against ``SWEEP_MIN_LEVEL`` first.
     """
     config = config or DEFAULT_CONFIG
     detectors = detectors if detectors is not None else _DETECTORS

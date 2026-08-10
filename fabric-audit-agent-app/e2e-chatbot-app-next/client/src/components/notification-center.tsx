@@ -53,6 +53,10 @@ const ACTIONABLE = new Set([
   'capacity_incident',
   'extreme_peak',
   'throttle_imminent',
+  // warn-severity and its whole message is "alerts cannot be trusted until this clears" — it
+  // was previously on NEITHER Teams nor this tab, so a blind collector was invisible on both
+  // primary surfaces (only the daily digest's "Other findings" line mentioned it).
+  'silent_failure',
   // Hourly estate-wide sweep families (checkType = the finding family)
   'model',
   'report',

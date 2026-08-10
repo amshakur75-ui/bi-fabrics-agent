@@ -377,14 +377,25 @@ def _cross_reference_recurrence(triggers, findings_store, scope=None, tenant=Non
         for t in triggers:
             check = t.get("check", "")
             # Map Tier 2 check names to finding key prefixes used in the full sweep
+            # Prefixes must be finding types a DETECTOR ACTUALLY EMITS. The only capacity
+            # finding types written anywhere are capacity.throttle / capacity.concentration /
+            # capacity.contention / capacity.oversized-model. Mapping pressure / extreme_peak /
+            # overage to "capacity.pressure" / "capacity.overage" (which nothing emits) meant
+            # startswith() could never match, so those three checks were PERMANENTLY
+            # non-recurring: a CU-pressure incident that had recurred for weeks never got the
+            # recurring -> "report" short-circuit, never showed the Recurrence card fact, and
+            # never carried the "not a fresh event" note — silently, while the code read as if
+            # recurrence were covered. All the true-CU capacity signals share capacity.throttle
+            # as their historical evidence.
             key_prefixes = {
                 "concentration": "capacity.concentration",
                 "cross_user": "capacity.concentration",
                 "throttle": "capacity.throttle",
-                "pressure": "capacity.pressure",
-                "extreme_peak": "capacity.pressure",
+                "pressure": "capacity.throttle",
+                "extreme_peak": "capacity.throttle",
                 "throttle_imminent": "capacity.throttle",
-                "overage": "capacity.overage",
+                "overage": "capacity.throttle",
+                "capacity_incident": "capacity.throttle",
             }
             prefix = key_prefixes.get(check)
             if not prefix:  # unknown/meta check (e.g. blind_spot) -> never "matches all keys"

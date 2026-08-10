@@ -559,7 +559,8 @@ def _deliver_sweep_findings(envelope, env):
             ticket_writer=_ticket_writer,
             min_level=env.get("SWEEP_MIN_LEVEL", "Warning"),
         )
-        print(f"[sweep] delivered {len(result['delivered'])} new finding(s); skipped "
+        print(f"[sweep] ticketed {len(result['delivered'])} new finding(s) "
+              f"(notification center; no Teams card by design); skipped "
               f"dup={result['skipped_dup']} tier2={result['skipped_tier2']} minor={result['skipped_minor']}")
         return result
     except Exception as exc:  # delivery must never crash the sweep

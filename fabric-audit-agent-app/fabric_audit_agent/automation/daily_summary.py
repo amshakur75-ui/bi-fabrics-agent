@@ -44,7 +44,9 @@ _XMLA_PREFIX = "xmla."
 _RECURRING_SHAPE_TYPES = {"query.mdx-crossjoin", "query.dax-antipattern", "activity.recurring-shape"}
 # The rest of query performance: clusters of expensive queries against one item.
 _QUERY_PERF_OTHER_TYPES = {"activity.long-running-cluster"}
-_SLOW_OP_TYPES = {"activity.slow-operation"}
+# Types whose `resource` is a USER LOGIN rather than an item/workspace. Both are
+# per-user cost findings, so the top-users ranking must count both.
+_SLOW_OP_TYPES = {"activity.slow-operation", "activity.user-baseline-deviation"}
 
 
 def digest_key(date_str):
@@ -113,10 +115,11 @@ def _top_users(open_tickets, events, limit=_TOP_USERS_LIMIT):
     already fetches for capacity). Ranked by summed ``cuSeconds`` (falling back to operation
     count when no event carries a usable cuSeconds), source noted as ``"events"``.
 
-    Fallback when no event-level data was passed in: rank by how many ``activity.slow-operation``
-    findings (the ONLY taxonomy type whose ``resource`` is actually a user login — see
-    detectors/absolute_cost.py; recurring-shape / long-running-cluster key by ITEM, not user, and
-    must not be miscounted as a per-user ranking) each user has open today. This is real data
+    Fallback when no event-level data was passed in: rank by how many USER-KEYED taxonomy
+    findings (``_SLOW_OP_TYPES`` — ``activity.slow-operation`` and
+    ``activity.user-baseline-deviation``, the two whose ``resource`` is actually a user login;
+    recurring-shape / long-running-cluster key by ITEM, not user, and must not be miscounted as a
+    per-user ranking) each user has open today. This is real data
     already on hand, not invented, but it's a finding-count proxy, not true CU-seconds — the
     caller is told so via the returned ``source`` so the text can note the limitation.
 
@@ -428,7 +431,14 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     # "Open tickets: 161" flood that f9581cf fixed. Kept in sync with tier2_check's
     # _CAPACITY_CHECKS.
     _EXCLUDE = (DIGEST_CHECK, "throttle", "pressure", "overage",
-                "extreme_peak", "throttle_imminent", "capacity_incident")
+                "extreme_peak", "throttle_imminent", "capacity_incident",
+                # Informational capacity-STATUS signals. The notification centre already
+                # excludes these ("a to-do list of real problems, not 'capacity is N% today'
+                # repeated all day") but the digest still counted them in "Findings today" and
+                # rendered them under "Other findings" — e.g. "sustained (capacity) — CU% has
+                # sat in the 70-90% band". Same chatter, different surface; keep the two lists
+                # in agreement.
+                "sustained", "rate_change")
     # An "open" ticket is one that (a) isn't excluded by check-type AND (b) is still actively
     # firing. currentlyActive=False means the underlying finding stopped firing — the row is only
     # still in status='active' because no human clicked Resolve. Rolling those into the daily

@@ -47,7 +47,13 @@ TBLPROPERTIES (
   'delta.logRetentionDuration' = 'interval 90 days'
 );
 
--- 3. capacity_reporting — capacity CU% time-series snapshots
+-- 3. capacity_reporting — LEGACY / UNUSED as of 2026-08-10.
+-- No Python code reads or writes this table. It is a 30-SECOND-WINDOW grain; the Design A'
+-- per-sweep archive is a DIFFERENT table, `tier2_capacity_reporting`
+-- (see scripts/create_capacity_reporting_delta.sql + context_capacity_reporting.py).
+-- Kept only so existing deployments don't lose it. WARNING: querying THIS table when you meant
+-- the sweep archive returns an empty-but-valid result rather than an error, which reads as
+-- "the feature is broken".
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.capacity_reporting (
   run_at          STRING       COMMENT 'ISO-8601 UTC timestamp of the parent run',
   tenant          STRING       COMMENT 'Tenant identifier',
@@ -66,7 +72,8 @@ TBLPROPERTIES (
   'delta.logRetentionDuration' = 'interval 90 days'
 );
 
--- 4. concentration_alerts — concentration alert events
+-- 4. concentration_alerts — LEGACY / UNUSED as of 2026-08-10: no Python code reads or writes it
+-- (concentration incidents live in audit_alerts like every other tier-2 check).
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.concentration_alerts (
   alert_at        STRING       COMMENT 'ISO-8601 UTC timestamp of the alert',
   tenant          STRING       COMMENT 'Tenant identifier',
@@ -87,10 +94,10 @@ TBLPROPERTIES (
 
 -- 5. audit_alerts — Tier-2 alert state machine (dedup + 48h reminders + escalation + resolution)
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.audit_alerts (
-  incident_key          STRING   COMMENT 'Stable incident id, e.g. concentration::WS/Item or throttle::capacity',
+  incident_key          STRING   COMMENT 'Stable incident id, e.g. concentration::WS/Item or capacity::<capacityId> (the whole capacity family shares ONE key)',
   status                STRING   COMMENT 'active | resolved',
   severity              STRING   COMMENT 'Derived severity: info | warn',
-  check_type            STRING   COMMENT 'concentration/throttle/pressure/overage',
+  check_type            STRING   COMMENT 'capacity_incident (most capacity alerts) | throttle | pressure | overage | extreme_peak | throttle_imminent | concentration | cross_user | blind_spot | sustained | rate_change | silent_failure | daily_summary | a sweep family (model/report/refresh/...)',
   resource              STRING   COMMENT 'Item/workspace (concentration) or capacity',
   chat_id               STRING   COMMENT 'Pre-created Lakebase ai_chatbot conversation id (deep-link target)',
   metric                DOUBLE   COMMENT 'Primary metric value, for escalation comparison',
@@ -105,6 +112,14 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.audit_alerts (
   run_at                STRING   COMMENT 'ISO-8601 UTC of the run that last touched this row',
   currently_active      BOOLEAN  COMMENT 'Is the condition firing right now (attribution stays open when False)',
   presence_count        INT      COMMENT 'Hysteresis streak: consecutive checks a pending signal has persisted'
+  -- Design A' capacity-incident state. MUST match context_alerts._FIELDS: _to_row builds the
+  -- row by iterating that list, so a column missing HERE is added at runtime by
+  -- _ensure_schema's ALTER, but a column missing from _FIELDS is silently DROPPED on write.
+  -- That drift is what made quiet-to-resolve and signal-set escalation inert in production.
+  absence_count         INT      COMMENT 'Consecutive absent sweeps; auto-resolve at quiet_ticks (12 = 60 min)',
+  signal_types          STRING   COMMENT 'JSON array of the capacity signals seen in this incident (high-water union)',
+  throttle_minutes      DOUBLE   COMMENT 'Worst throttle minutes seen in this incident',
+  minutes_to_burndown   DOUBLE   COMMENT 'Latest overage burndown estimate; a halving is an escalation axis',
 )
 USING DELTA
 CLUSTER BY (incident_key)

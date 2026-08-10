@@ -6,8 +6,15 @@ pressure, concentration, overage). To avoid double-alerting, this delivers only 
 Tier-2 does NOT cover, and dedups against the SHARED ``audit_alerts`` store so a finding is alerted
 ONCE — never repeated across sweeps, and never on top of a Tier-2 alert for the same thing.
 
-Pure orchestration over injected ports (``alerts_store`` / ``delivery_sinks`` / ``chat_writer``);
-every send routes through ``outbound.dispatch_outbound`` (the egress chokepoint).
+Pure orchestration over injected ports (``alerts_store`` / ``delivery_sinks`` / ``chat_writer``).
+
+NOTE ON "delivered": this module sends NOTHING outward. Sweep findings are TICKETED — an
+``audit_alerts`` row + an ``alert_ticket`` row + a pre-created chat — so they appear in the app's
+notification center and are investigable, but no Adaptive Card is posted (Teams is reserved for
+Tier-2 real-time capacity emergencies; pushing every sweep finding there was the noise source
+found 2026-08-09). The ``delivered`` result key is kept for backwards compatibility with existing
+callers/tests and means "ticketed", not "sent". ``delivery_sinks`` is likewise accepted and
+unused.
 """
 import re
 import urllib.parse
@@ -108,9 +115,6 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
     failures below are already logged (WARN prints); this additionally records them so a degraded
     delivery path surfaces in the digest banner instead of only in job logs.
     """
-    from ..outbound import dispatch_outbound
-    from ..adapters.delivery_webhook import build_card
-
     now_iso = now_iso or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     min_rank = _LEVEL_RANK.get(min_level, 1)
     active = alerts_store["query_active"]()
@@ -157,10 +161,11 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
 
         family = _family(key)
         sev = "warn" if _LEVEL_RANK.get(level, 0) >= 1 else "info"
-        facts = [(n, v) for n, v in (("Severity", level), ("Where", f.get("where")),
-                                     ("Finding", key)) if v]
-        card = build_card("new", title=title, severity=sev, facts=facts, summary=what,
-                          chat_url=chat_url)
+        # NOTHING IS SENT FROM HERE. The Adaptive Card build and the dispatch_outbound import
+        # used to live at this point; both were dead (the card was assembled and dropped on the
+        # floor), which made the module docstring's "every send routes through dispatch_outbound"
+        # false and implied a Teams delivery that never happened. Removed rather than left as
+        # decoration.
         # Teams is reserved for TIER-2 real-time capacity emergencies (throttle/pressure/overage).
         # Every sweep-family finding (model/report/refresh/security/pipeline/cost/blast_radius/
         # pattern/activity/query/xmla/...) goes to the app notification center ONLY — pushing every
@@ -168,14 +173,13 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
         # Madhan 18.2s / 207 CPU-s, Jessica 173s / 148 CPU-s — none capacity emergencies). The
         # audit_alerts row + ticket_writer + chat_writer paths below still run, so the finding is
         # tracked, ticketed, and investigable — just not on your phone.
-        res = {"delivered": False, "status": None, "skipped": "sweep-not-in-teams-channel"}
         alerts_store["upsert"]({
             "incidentKey": key, "status": "active", "severity": sev, "checkType": family,
             "resource": f.get("where") or key, "chatId": chat_id,
             "metric": float(_LEVEL_RANK.get(level, 0)), "firstAlertedAt": now_iso,
             "lastAlertedAt": now_iso, "lastRemindedAt": None, "resolvedAt": None,
             "escalationCount": 0, "materialityReason": f"sweep finding ({level})",
-            "investigationSummary": what, "delivered": bool(res.get("delivered")), "runAt": now_iso,
+            "investigationSummary": what, "delivered": False, "runAt": now_iso,
             "currentlyActive": True,
         })
         # Write the app-readable ticket row so this estate-wide finding appears in the notification

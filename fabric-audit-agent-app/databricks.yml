@@ -67,8 +67,14 @@ resources:
               # Activity Events. Reachable now with the SP admin grant; feeds the notification center. ---
               FABRIC_SECURITY_ENABLED: "true"
               FABRIC_ORG_DOMAINS: "newellco.com"
-              # --- Step 6a: Teams delivery of NEW/material findings (shared audit_alerts dedup) ---
+              # --- Step 6a: sweep findings -> notification-center tickets (shared dedup) ---
+              # NOTE: despite the name, this gates the TICKET/chat/audit_alerts path, not a Teams
+              # post — sweep_delivery sends nothing outward. Setting it false stops all sweep
+              # tickets reaching the notification center.
               SWEEP_WEBHOOK_ENABLED: "true"
+              # Minimum finding level that earns a ticket. Anything below is counted
+              # skipped_minor and silently dropped, so make it explicit rather than defaulted.
+              SWEEP_MIN_LEVEL: "Warning"
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"
               APP_URL: "https://fabric-audit-agent-7405609570261849.9.azure.databricksapps.com"
               FABRIC_LAKEBASE_HOST: "ep-shy-bird-e1gcy0mq.database.eastus2.azuredatabricks.net"
@@ -119,6 +125,20 @@ resources:
               # Log Analytics per-user attribution (Step 2): the WHO source — unblocks concentration /
               # per-user surge / same-item cross-user gates (without it items=0 and they never fire).
               FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
+              # --- Design A' Phase B (per-user baseline + correlation booster) ---
+              # Flip to "1" to enable the per-user baseline detector, the correlation booster,
+              # AND the raw-event Log Analytics pull that feeds them (all three are gated on this
+              # one flag). Leave "0" until the nightly fabric-audit-baseline job has populated
+              # user_baseline at least once.
+              TIER2_BASELINE_ENABLED: "0"
+              # Window for that raw-event pull. Deliberately WIDER than the 5-min cadence:
+              # Log Analytics ingests with minutes of latency while the KQL filters on
+              # TimeGenerated (event time), so a 5m window leaves a permanent blind hole over
+              # exactly the events beside a capacity peak. Overlap is harmless (dedup + the
+              # +/-5-min correlation window).
+              FABRIC_TIER2_EVENTS_WINDOW: "15m"
+              # Passive archival to tier2_capacity_reporting; "0" opts a run out.
+              TIER2_REPORTING_ENABLED: "1"
               # Tier-2 -> Teams alerting (sub-project #2)
               TIER2_WEBHOOK_ENABLED: "true"
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"

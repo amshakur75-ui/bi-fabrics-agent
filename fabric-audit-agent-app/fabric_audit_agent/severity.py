@@ -96,6 +96,22 @@ def score_severity(flag, config=None):
         return {"level": "Warning", "reason": f"same query shape recurred {e.get('occurrences')}x"}
     if t == "activity.long-running-cluster":
         return {"level": "Warning", "reason": f"{e.get('count')} long-running operations on one item"}
+    if t == "activity.user-baseline-deviation":
+        # Level depends on WHICH fallback layer produced the baseline. A personalized p95 (the
+        # user's own 14-day history) is a real per-user anomaly -> Warning. The estate-wide
+        # fallback is a coarse cross-user comparison for someone with no history yet, so it is
+        # Info: worth surfacing as context, not worth paging on.
+        # Without this branch the type fell through to {"level": "Info", "reason": "unclassified"},
+        # which `sweep_delivery` then drops at SWEEP_MIN_LEVEL=Warning as `skipped_minor` — the
+        # finding would look wired and be invisible.
+        src = (e or {}).get("baselineSource")
+        ratio = (e or {}).get("ratioVsP95")
+        detail = f"{ratio}x their own 14-day p95" if ratio else "above their own 14-day p95"
+        if src == "personalized":
+            return {"level": "Warning", "reason": detail}
+        return {"level": "Info",
+                "reason": (f"{ratio}x the estate-wide p95 (no personalized baseline yet)"
+                           if ratio else "above the estate-wide p95 (no personalized baseline yet)")}
 
     if t == "query.mdx-crossjoin":
         return {"level": "Warning", "reason": "heavy MDX matrix cross-join shape recurring"}

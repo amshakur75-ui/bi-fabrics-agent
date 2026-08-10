@@ -2,75 +2,58 @@
 
 **Read this end-to-end before running any command.**
 
-## What actually ships (post-audit, 2026-08-10)
+## What actually ships
 
-A deep audit before deploy found and fixed several defects, and established that **two of the
-five features are inert in production**. Be honest with yourself about this table — it is the
-difference between "quiet because it works" and "quiet because it never runs."
+All five features are implemented and wired. A repeated audit loop found and fixed 30+ defects
+before this point — the full list, with the failure scenario for each, is in
+[PRESHIP-AUDIT-LEDGER.md](PRESHIP-AUDIT-LEDGER.md). Read that if you want to know *why* a
+particular guard exists.
 
 | | Status on deploy | Notes |
 |---|---|---|
-| **B6** unified capacity-incident dedup | **LIVE the moment the wheel lands** | This is the Teams-noise fix. No feature flag. |
-| **B4** sweep archive → `tier2_capacity_reporting` | **LIVE on deploy** (`TIER2_REPORTING_ENABLED` defaults on) | Passive append-only. Renamed table — see below. |
-| **B1** nightly `user_baseline` bootstrap | Runs nightly, **writes biased data** | See "Known-broken" below. Harmless while B2 is off. |
-| **B2** per-user baseline detector | **INERT** — cannot fire | `facts["events"]` does not exist in the Tier-2 sweep. |
-| **B3** correlation booster | **INERT** — depends on B2 | Cards will never show "Correlated user spikes". |
+| **B6** unified capacity-incident dedup | **LIVE the moment the wheel lands** | The Teams-noise fix. No feature flag — see below. |
+| **B4** sweep archive → `tier2_capacity_reporting` | **LIVE on deploy** (`TIER2_REPORTING_ENABLED=1`) | Passive append-only. Note the table NAME — see below. |
+| **B1** nightly `user_baseline` bootstrap | Runs nightly at 02:00 UTC | Server-side KQL percentiles, no row cap. Verified live: 1,391 rows / 1,390 users. |
+| **B2** per-user baseline detector | Gated on `TIER2_BASELINE_ENABLED` (ships `"0"`) | Reads the precomputed baseline; 3-layer fallback. |
+| **B3** correlation booster | Same flag as B2 | Names the likely driver ON the capacity card. |
 
 ### B6 goes live at deploy, NOT at a flag flip
 
 The new `extreme_peak` / `throttle_imminent` detectors and the composite dedup have **no
 feature flag**. Teams card volume and card *shape* change the moment the wheel deploys. Expect
 capacity alerts to arrive titled `Capacity incident (throttling + CU pressure) — peak N%`
-instead of separate per-signal cards. Brief whoever is on call.
+instead of separate per-signal cards. Brief whoever is on call. Rollback is a git revert +
+redeploy, not a flag flip.
 
 To soften the first 24h, set these absurdly high on the `fabric_audit_tier2` stanza and lower
 them later: `FABRIC_TIER2_EXTREME_PEAK_PCT: "100000"`,
 `FABRIC_TIER2_THROTTLE_IMMINENT_PCT: "100000"`.
 
-### Known-broken — do NOT run Stage 4 on this build
+### One flag turns on the whole B2/B3 chain
 
-`TIER2_BASELINE_ENABLED=1` will not do anything useful, and shouldn't be flipped until these
-are fixed:
+`TIER2_BASELINE_ENABLED` (in `databricks.yml`, ships as `"0"`) gates three things together: the
+raw-event Log Analytics pull, the baseline detector, and the correlation booster. Flipping it to
+`"1"` and redeploying is the entire Stage 4. It is deliberately off at first deploy only so the
+nightly bootstrap has populated `user_baseline` before anything reads it — not because anything
+is known-broken.
 
-1. **B2/B3 are unreachable.** `job._build_tier2_collector` composes only the capacity-events
-   and LA-attribution collectors; neither emits an `events` key, and `_build_events_collector`
-   (the only producer) is wired into the *unified* sweep, not Tier-2. The detector iterates an
-   empty list every run.
-2. **The baseline population is wrong.** `run_baseline_bootstrap_job` reuses
-   `_build_events_collector`, which caps at the **5,000 costliest** events (`_EVENTS_CAP`,
-   `order="cost"`). Over a 14-day window that keeps roughly the top 1%, so the computed `p95`
-   is closer to the true 99.9th percentile. Correct fix is a server-side
-   `summarize percentile(CpuTimeMs, 95) by ExecutingUser` instead of pulling raw rows.
-3. **The threshold is a percentile lookup, not an anomaly test.** `compare_to_baseline` returns
-   `shifted = cu > p95`, which fires on ~5% of all events by construction. Needs a multiplier
-   (e.g. `> 3 × p95`) plus an absolute floor before it means anything.
-4. **One Spark query per event.** `get_user` is called inside the per-event loop with no
-   batching; a few thousand events would blow the 5-minute job budget. Needs a single
-   `get_all_users()` load.
-
-None of these can bite while `TIER2_BASELINE_ENABLED` is unset, which is the default.
-
-### Table rename
+### Table name
 
 The B4 archive writes to **`tier2_capacity_reporting`**, not `capacity_reporting`.
-`scripts/create_delta_tables.sql` already provisions `capacity_reporting` at a different grain
-(one row per 30-second window); reusing that name would have failed every write on schema
-mismatch. Update any query you were planning against the old name.
+`scripts/create_delta_tables.sql` already provisions a LEGACY `capacity_reporting` at a
+different grain (one row per 30-second window) that no code reads or writes. Querying that one
+by mistake returns an empty-but-valid result rather than an error, which reads as "B4 is
+broken" — so make sure any query you write names `tier2_capacity_reporting`.
 
 ---
 
 ## Pre-flight (before touching prod)
 
-1. `git log --oneline main -8` — verify the following commits are on `main` in order:
-   - Slice 1: extreme_peak + throttle_imminent detectors
-   - Slice 2: unified capacity-incident dedup
-   - Slice 3: quiet_ticks grace window
-   - B1: user_baseline bootstrap
-   - B2: precomputed baseline detector wired
-   - B3: correlation booster
-   - B4: capacity_reporting Delta
-   - This runbook + job.py wire-up
-2. `python -m pytest -q` in `fabric-audit-agent-app/` → **2106+ passed**.
+1. `git log --oneline main -12` — the Phase B + audit-round commits should all be present, and
+   `git status --short` clean. NEVER deploy from a dirty tree: an artifact that maps to no commit
+   cannot be diffed or rolled back (this happened once in this project — see the ledger).
+2. `python -m pytest -q` in `fabric-audit-agent-app/` → **2145+ passed**, 0 failed.
+   (Run it from that directory — the repo root picks up a sibling repo and errors.)
 3. `git status --short` — no unstaged edits.
 
 If any step fails, **stop and fix locally first**. Do not deploy a partial state.
@@ -95,7 +78,7 @@ databricks sql -f scripts/create_capacity_reporting_delta.sql \
   --var catalog=<CATALOG> --var schema=<SCHEMA> --profile fabric-test
 ```
 
-Verify with `DESCRIBE TABLE {catalog}.{schema}.user_baseline` and `DESCRIBE TABLE {catalog}.{schema}.capacity_reporting`. Both should list every column from the SQL script.
+Verify with `DESCRIBE TABLE {catalog}.{schema}.user_baseline` and `DESCRIBE TABLE {catalog}.{schema}.tier2_capacity_reporting`. Both should list every column from the SQL script.
 
 ---
 
@@ -107,9 +90,13 @@ databricks bundle deploy --profile fabric-test
 
 The bundle should:
 - Redeploy the tier2 wheel-task with the new entry point `fabric-audit-baseline`.
-- Schedule the baseline job at `02:00 UTC nightly` (add to `databricks.yml` if not already there — the entry point is `fabric_audit_agent.job:baseline_bootstrap_main`).
+- Schedule the baseline job at `02:00 UTC nightly`. Already present: `databricks.yml` → `fabric_audit_baseline`, cron `${var.baseline_cron}` = `0 0 2 * * ?`, entry point `fabric-audit-baseline`.
 
-**Do NOT flip `TIER2_BASELINE_ENABLED` yet.** The tier2 sweep will still run with baseline_store=None (the safe default), which means the new baseline detector stays silent. `TIER2_REPORTING_ENABLED` defaults to `"1"` so the capacity_reporting table starts collecting rows immediately — this is intentional (harmless archival writes).
+**Leave `TIER2_BASELINE_ENABLED` at `"0"` for now** — purely a sequencing choice, so the nightly
+bootstrap populates `user_baseline` before anything reads it. With the flag off, the raw-event LA
+pull does not run either, so this deploy adds no new per-sweep query cost.
+`TIER2_REPORTING_ENABLED` ships `"1"`, so `tier2_capacity_reporting` starts collecting rows
+immediately (harmless append-only archival).
 
 ---
 
@@ -132,11 +119,11 @@ If the estate row is missing or the count is zero, DO NOT flip the tier2 flag �
 - `FABRIC_TENANT_ID` / `FABRIC_CLIENT_ID` / `FABRIC_CLIENT_SECRET` not on the baseline job's env (needs the same secrets the sweep uses)
 - `FABRIC_LA_WORKSPACE_ID` missing → events collector fails, empty rowset, no rows written
 
-Also spot-check `capacity_reporting`:
+Also spot-check `tier2_capacity_reporting`:
 
 ```sql
 SELECT run_at, peak_cu_pct, throttle_minutes, signal_types
-  FROM {catalog}.{schema}.capacity_reporting
+  FROM {catalog}.{schema}.tier2_capacity_reporting
  ORDER BY run_at DESC LIMIT 10;
 ```
 
@@ -148,15 +135,21 @@ You should see one row every 5 minutes from the moment Stage 2 landed.
 
 Only after Stage 3 shows populated `user_baseline` with at least one estate row and > 5 personalized rows.
 
-Set the env var on the tier2 job:
+In `databricks.yml`, under the `fabric_audit_tier2` task's `named_parameters`, change one
+character:
 
-```bash
-databricks jobs update --job-id <tier2-job-id> \
-  --json '{"job_settings": {"tasks": [{"task_key": "tier2", "environment_key": "tier2_env", ...}]}}' \
-  --profile fabric-test
+```yaml
+              TIER2_BASELINE_ENABLED: "0"     # -> "1"
 ```
 
-Or edit `databricks.yml` and re-deploy the bundle. The var: `TIER2_BASELINE_ENABLED=1`.
+then:
+
+```bash
+databricks bundle deploy --profile fabric-test
+```
+
+That single flag turns on the raw-event Log Analytics pull, the baseline detector, and the
+correlation booster together — they are gated as one chain so you can't half-enable it.
 
 **Watch the next 24 hours of tier2 sweeps.** Expected:
 - Sweep runs that see capacity events + correlated user spikes surface `Correlated user spikes: <user> ... N.Nx baseline` on the composite card.
@@ -175,13 +168,17 @@ Leave both flags on. At the end of 7 days, run this reconciliation query to spot
 -- Which sweep runs saw a capacity event but no correlation? (Expected: rare after baselines
 -- warm up, but non-zero because not every event has a same-user LA spike within ±5 min.)
 SELECT run_at, peak_cu_pct, throttle_minutes, signal_types
-  FROM {catalog}.{schema}.capacity_reporting
+  FROM {catalog}.{schema}.tier2_capacity_reporting
  WHERE throttle_minutes > 0
    AND run_at > date_sub(current_date(), 7)
  ORDER BY run_at DESC;
 ```
 
-If everything looks stable, `detect_absolute_cost` can be retired from `detectors/__init__.py` (the OR→AND gate was the 2026-08-09 interim; the per-user baseline now covers the same signal properly). File a follow-up commit for that.
+If everything looks stable, consider retiring `detect_absolute_cost` from
+`detectors/__init__.py` — its `slow AND costly` gate was the 2026-08-09 interim, and the per-user
+baseline now covers the same signal properly and per-user. Note it still uses an ABSOLUTE
+100 CPU-s bar that this tenant's busy users clear routinely, which is exactly the noise the
+baseline replaces. File a follow-up commit.
 
 ---
 
@@ -201,9 +198,15 @@ The nightly baseline job can also be paused independently — it only affects fr
 | Var | Default | Purpose |
 |---|---|---|
 | `TIER2_BASELINE_ENABLED` | `""` (off) | Flip to `1` in Stage 4 after `user_baseline` populated |
-| `TIER2_REPORTING_ENABLED` | `1` (on) | Archival to `capacity_reporting`; opt-out with `0` |
+| `TIER2_REPORTING_ENABLED` | `1` (on) | Archival to `tier2_capacity_reporting`; opt-out with `0` |
 | `FABRIC_BASELINE_WINDOW` | `14d` | LA lookback for the nightly job |
 | `FABRIC_BASELINE_MIN_HISTORY` | `20` | Per-user sample floor before personalized row emits |
+| `FABRIC_TIER2_EVENTS_WINDOW` | `15m` | Lookback for the raw-event LA pull that feeds B2/B3. MUST stay wider than the 5-min cadence: LA ingests with minutes of latency while the KQL filters on event time, so an exactly-5m window permanently misses the events beside a capacity peak |
+| `FABRIC_TIER2_CORRELATION_WINDOW_MIN` | `5` | ± minutes for spike ↔ capacity correlation |
+| `baselineSpikeMultiplier` (config) | `3.0` | Personalized gate: `cu > p95 × this` |
+| `baselineSpikeEstateMultiplier` (config) | `25.0` | Cold-start gate — much stricter, because a correct estate p95 is small and the floor would otherwise be the only gate |
+| `baselineSpikeFloorCuSeconds` (config) | `100` | Absolute floor, so a tiny baseline can't trip on noise |
+| `baselineMaxAgeDays` (config) | `3` | Refuse a baseline older than this and fall to the next layer |
 | `FABRIC_TIER2_QUIET_TICKS` | `12` | Consecutive absent sweeps before capacity incident auto-resolves |
 | `FABRIC_TIER2_EXTREME_PEAK_PCT` | `200` | Single-window peak at/above this → extreme_peak signal |
 | `FABRIC_TIER2_THROTTLE_IMMINENT_PCT` | `80` | Fabric threshold pct at/above this → early-warning |
