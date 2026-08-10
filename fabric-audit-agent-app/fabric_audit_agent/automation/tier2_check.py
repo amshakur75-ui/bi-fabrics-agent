@@ -445,8 +445,17 @@ def _ack_suppressed(ack_store, chat_id, now_dt):
     return False
 
 
+_SIGNAL_SHORT = {"throttle": "throttling", "pressure": "CU pressure", "overage": "overage",
+                 "extreme_peak": "extreme peak", "throttle_imminent": "throttle imminent"}
+
+
 def _title_for(t):
     check = t.get("check")
+    if check == "capacity_incident":
+        parts = [_SIGNAL_SHORT.get(s, s) for s in (t.get("signalTypes") or [])]
+        peak = t.get("peakCuPct")
+        peak_note = f" — peak {peak}%" if peak is not None else ""
+        return f"Capacity incident ({' + '.join(parts)}){peak_note}"
     if check == "concentration":
         return f"Concentration: {t.get('item', '?')} at {t.get('sharePct', '?')}%"
     if check == "throttle":
@@ -475,6 +484,24 @@ def _title_for(t):
 def _facts_for(t):
     check = t.get("check")
     f = []
+    if check == "capacity_incident":
+        # Composite card: show every signal that fired for this incident, plus the primary
+        # capacity metrics hoisted from whichever component surfaced them. This is what
+        # replaces N separate throttle/pressure/extreme_peak cards for the same event.
+        f = [("Signals firing", ", ".join(_SIGNAL_SHORT.get(s, s)
+                                          for s in (t.get("signalTypes") or [])) or None),
+             ("Peak CU", f"{t.get('peakCuPct')}%" if t.get("peakCuPct") is not None else None),
+             ("Throttle", f"{t.get('throttleMinutes')} min"
+              if t.get("throttleMinutes") is not None else None),
+             ("Overage", f"{t.get('overageTotalMs')} ms"
+              if t.get("overageTotalMs") is not None else None),
+             ("Burndown", f"{t.get('minutesToBurndown')} min"
+              if t.get("minutesToBurndown") is not None else None)]
+        pcts = t.get("thresholdPcts") or {}
+        if pcts:
+            f.append(("Fabric thresholds",
+                      ", ".join(f"{k}={v}%" for k, v in pcts.items())))
+        return [(n, v) for n, v in f if v is not None and "None" not in str(v)]
     if check == "concentration":
         f = [("Item", t.get("item")), ("Workspace", t.get("workspace")),
              ("Share", f"{t.get('sharePct')}%"), ("Owner", t.get("owner"))]
@@ -580,6 +607,66 @@ def _investigate_query(t, *, prefix=None, when=None):
             "present the proxy as capacity consumption.")
 
 
+_COMPOSABLE_CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak",
+                                "throttle_imminent")
+
+
+def _coalesce_capacity_family(triggers):
+    """Design A' (2026-08-09) — collapse the five capacity-family checks
+    (throttle/pressure/overage/extreme_peak/throttle_imminent) into a single composite
+    ``capacity_incident`` trigger per capacity, so multiple signal types firing for the
+    SAME underlying event produce ONE Teams card instead of N redundant ones. All other
+    trigger types (concentration / cross_user / blind_spot / sustained / rate_change /
+    silent_failure / data_unavailable) pass through unchanged.
+
+    The composite carries a ``signals`` list of the original triggers plus aggregated
+    metrics (peakCuPct, throttleMinutes, overage fields, worst threshold pcts) hoisted
+    from whichever component surfaced them. Downstream _title_for / _facts_for read the
+    composite; severity_of / primary_metric / is_escalation know the check type.
+    """
+    fam = [t for t in triggers if t.get("check") in _COMPOSABLE_CAPACITY_CHECKS]
+    others = [t for t in triggers if t.get("check") not in _COMPOSABLE_CAPACITY_CHECKS]
+    if len(fam) < 2:
+        # 0 or 1 family triggers → no coalescing needed. A single family trigger keeps its
+        # original shape (no composite wrapping) so it dedupes with prior-run composites via
+        # the shared incident_key. incident_key promotes throttle/pressure/etc. keys onto the
+        # capacity:: namespace already, so this is safe.
+        return triggers
+    by_cap = {}
+    for t in fam:
+        cap = t.get("capacityId") or "capacity"
+        by_cap.setdefault(cap, []).append(t)
+    composites = []
+    for cap_id, sigs in by_cap.items():
+        if len(sigs) == 1:
+            composites.append(sigs[0])
+            continue
+        composite = {"check": "capacity_incident", "capacityId": cap_id,
+                     "signals": sigs, "signalTypes": [s.get("check") for s in sigs]}
+        # Hoist the primary numeric facts from whichever component signal surfaced them.
+        for k in ("peakCuPct", "throttleMinutes", "overageTotalMs", "overageCumulativePct",
+                  "minutesToBurndown"):
+            for s in sigs:
+                if s.get(k) is not None:
+                    composite[k] = s[k]
+                    break
+        # Threshold pcts (from throttle_imminent) — the composite carries them so a single
+        # card can show that Fabric's own signals were at the edge, not just that CU crossed.
+        for s in sigs:
+            if s.get("thresholdPcts"):
+                composite["thresholdPcts"] = s["thresholdPcts"]
+                composite["worstPct"] = s.get("worstPct")
+                break
+        # A single normalityHint for the composite — chosen from the highest-priority signal
+        # (throttle > extreme_peak > overage > pressure > throttle_imminent).
+        priority = {"throttle": 0, "extreme_peak": 1, "overage": 2, "pressure": 3,
+                    "throttle_imminent": 4}
+        primary_sig = min(sigs, key=lambda s: priority.get(s.get("check"), 99))
+        composite["normalityHint"] = primary_sig.get("normalityHint")
+        composites.append(composite)
+    return composites + others
+
+
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                    chat_writer=None, app_url="", cfg=None, now_dt=None, reminder_hours=48,
                    ack_store=None, ticket_writer=None, health=None):
@@ -598,6 +685,9 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     from ..adapters.delivery_webhook import build_card, PROXY_RANKING_DISCLOSURE
 
     cfg = cfg if cfg is not None else load_cfg()
+    # Design A': collapse multi-signal capacity firings into a single composite BEFORE dedup so
+    # the same underlying incident produces one card, not N. Non-capacity triggers pass through.
+    triggers = _coalesce_capacity_family(triggers)
     now_dt = now_dt if now_dt is not None else datetime.now(timezone.utc)
     now_iso = now_dt.isoformat().replace("+00:00", "Z")
     active = alerts_store["query_active"]()
@@ -605,7 +695,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     _ATTR_CHECKS = ("concentration", "cross_user")
     # Only these hard capacity incidents are pushed to Teams. Attribution / coverage findings are
     # notification-center-only (see _send) — Teams stays reserved for genuine capacity emergencies.
-    _TEAMS_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent")
+    _TEAMS_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
+                     "capacity_incident")
     hysteresis_ticks = int(cfg.get("hysteresis_ticks", 3))
     pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
     pending_seen = set()
@@ -721,12 +812,20 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
                 actions["reopened"].append(key)
-            elif is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric")}, cfg):
+            elif is_escalation(t, {"severity": prior.get("severity"), "metric": prior.get("metric"),
+                                    "signalTypes": prior.get("signalTypes"),
+                                    "throttleMinutes": prior.get("throttleMinutes")}, cfg):
                 inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": True}
                 row = dict(prior, severity=sev, metric=metric, lastAlertedAt=now_iso, runAt=now_iso,
                            currentlyActive=True,
                            escalationCount=(prior.get("escalationCount") or 0) + 1,
                            investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
+                # Composite state: carry signal set + primary metrics so the next tick can
+                # decide "new signal joined" or "throttle worsened" without re-fetching.
+                if t.get("check") == "capacity_incident":
+                    row["signalTypes"] = t.get("signalTypes") or []
+                    if t.get("throttleMinutes") is not None:
+                        row["throttleMinutes"] = t["throttleMinutes"]
                 row["delivered"] = _send("new", t, row, inv.get("summary"))
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
@@ -816,13 +915,21 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                "lastRemindedAt": None, "resolvedAt": None, "escalationCount": 0,
                "materialityReason": reason, "investigationSummary": summary,
                "delivered": False, "runAt": now_iso, "currentlyActive": True}
+        # Composite state: carry signal set + primary metrics so the next tick's is_escalation
+        # can decide "new signal joined" without a fresh trigger. Only for capacity_incident;
+        # single-signal triggers keep the pre-Design-A' row shape.
+        if t.get("check") == "capacity_incident":
+            row["signalTypes"] = t.get("signalTypes") or []
+            if t.get("throttleMinutes") is not None:
+                row["throttleMinutes"] = t["throttleMinutes"]
         row["delivered"] = _send("new", t, row, summary)
         alerts_store["upsert"](row)
         _write_ticket(row, t)
         actions["new"].append(key)
 
     # resolution: incidents that were active but no longer fire this run
-    _CAPACITY_CHECKS = ("throttle", "pressure", "overage")
+    _CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
+                        "capacity_incident")
     for key, prior in active.items():
         if key in seen:
             continue

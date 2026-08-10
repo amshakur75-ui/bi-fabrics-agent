@@ -16,18 +16,28 @@ def _num(v):
         return None
 
 
+_CAPACITY_FAMILY = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
+                    "capacity_incident")
+
+
 def incident_key(trigger):
     """Stable id for an incident, identical across runs for the same ongoing condition.
 
-    concentration is item-scoped (per workspace/item); throttle/pressure/overage are
-    capacity-wide (one capacity in this deployment), so they key on ``capacityId`` if the
-    trigger carries one, else the literal ``capacity``.
+    Design A' (2026-08-09): ALL capacity-family checks (throttle / pressure / overage /
+    extreme_peak / throttle_imminent / capacity_incident composite) share ONE key per
+    capacity — ``capacity::<capId>`` — so multiple signal types firing for the same
+    underlying event coalesce into a single alert instead of paging N times. concentration
+    and cross_user stay item-scoped (per workspace/item); everything else keeps a per-check
+    key.
     """
     check = (trigger or {}).get("check", "unknown")
     if check in ("concentration", "cross_user"):
         ws = trigger.get("workspace") or "?"
         item = trigger.get("item") or "?"
         return f"{check}::{ws}/{item}"
+    if check in _CAPACITY_FAMILY:
+        cap = trigger.get("capacityId") or "capacity"
+        return f"capacity::{cap}"
     cap = trigger.get("capacityId") or "capacity"
     return f"{check}::{cap}"
 
@@ -35,6 +45,10 @@ def incident_key(trigger):
 def severity_of(trigger):
     """Derive ``"warn"`` | ``"info"`` from the trigger's metrics (no severity field exists)."""
     check = (trigger or {}).get("check")
+    if check == "capacity_incident":
+        # Composite: severity is the MAX of its component signals — one warn component wins.
+        comps = trigger.get("signals") or []
+        return "warn" if any(severity_of(c) == "warn" for c in comps) else "info"
     if check == "throttle":
         mins = _num(trigger.get("throttleMinutes"))
         return "warn" if mins is not None and mins >= 5 else "info"
@@ -65,6 +79,13 @@ def severity_of(trigger):
 def primary_metric(trigger):
     """The single numeric metric used for escalation comparison, per check type."""
     check = (trigger or {}).get("check")
+    if check == "capacity_incident":
+        # Composite uses peakCuPct as its primary metric — the single number that best
+        # summarizes overall severity across the merged signals. Escalation logic (see
+        # is_escalation) additionally compares throttleMinutes and whether a new signal
+        # type joined, but the row's scalar metric is peakCuPct so it lines up with
+        # pressure/extreme_peak's scale (both are % of capacity).
+        return _num(trigger.get("peakCuPct"))
     if check == "concentration":
         return _num(trigger.get("sharePct"))
     if check == "throttle":

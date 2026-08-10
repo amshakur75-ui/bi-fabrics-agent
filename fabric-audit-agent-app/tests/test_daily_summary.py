@@ -266,9 +266,11 @@ def test_fixB_capacity_tickets_excluded_from_digest():
     auto-resolve lifecycle and must NOT appear in the daily digest's open tickets — only the
     taxonomy issues the digest exists to roll up."""
     store = create_alerts_store_memory()
-    store["upsert"]({"incidentKey": "throttle::capacity", "status": "active",
+    # Design A' (2026-08-09): all capacity-family checks now share a single unified key,
+    # capacity::<capId> — the digest's exclusion of capacity checkTypes still holds.
+    store["upsert"]({"incidentKey": "capacity::capacity", "status": "active",
                      "checkType": "throttle", "resource": "capacity", "currentlyActive": True})
-    store["upsert"]({"incidentKey": "pressure::capacity", "status": "active",
+    store["upsert"]({"incidentKey": "capacity::capacity", "status": "active",
                      "checkType": "pressure", "resource": "capacity", "currentlyActive": True})
     store["upsert"](_ticket("activity.slow-operation", "alice@x.com"))
     res = run_daily_summary(alerts_store=store, ack_store=None, delivery_sinks=None,

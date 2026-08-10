@@ -60,35 +60,35 @@ def test_full_state_machine():
 
     # run 1: new incident -> 1 LLM, 1 chat, 1 card with deep-link
     a = process_alerts([warn], now_dt=T0, **kw)
-    assert a["new"] == ["pressure::capacity"]
+    assert a["new"] == ["capacity::capacity"]
     assert rc["n"] == 1 and wc["n"] == 1 and len(posts) == 1
     _url = _card(posts)["actions"][0]["url"]
     assert _url.startswith("https://app/chat/chat-1?query=")  # deep-link auto-investigates on open
-    row = store["query_active"]()["pressure::capacity"]
+    row = store["query_active"]()["capacity::capacity"]
     assert row["chatId"] == "chat-1" and row["metric"] == 130.0
 
     # run 2: same, <48h, not escalated -> silent (NO LLM, NO card)
     a = process_alerts([warn], now_dt=T0 + timedelta(minutes=5), **kw)
-    assert a["silent"] == ["pressure::capacity"] and rc["n"] == 1 and len(posts) == 1
+    assert a["silent"] == ["capacity::capacity"] and rc["n"] == 1 and len(posts) == 1
 
     # run 3: +49h, still active -> SILENT, NO Teams re-post (the persistent surface is the
     # notification center now; recurring tickets must not be repeated in Teams).
     a = process_alerts([warn], now_dt=T0 + timedelta(hours=49), **kw)
-    assert a["silent"] == ["pressure::capacity"] and rc["n"] == 1
+    assert a["silent"] == ["capacity::capacity"] and rc["n"] == 1
     assert len(posts) == 1  # still just the one 'new' card — no reminder re-post
 
     # run 4: escalation (peak 130 -> 156) -> re-alert WITH a fresh LLM call (a genuine worsening
     # still breaks through — that is news, not repetition).
     a = process_alerts([{"check": "pressure", "peakCuPct": 156}],
                        now_dt=T0 + timedelta(hours=50), **kw)
-    assert a["escalation"] == ["pressure::capacity"] and rc["n"] == 2
-    assert store["query_active"]()["pressure::capacity"]["escalationCount"] == 1
+    assert a["escalation"] == ["capacity::capacity"] and rc["n"] == 2
+    assert store["query_active"]()["capacity::capacity"]["escalationCount"] == 1
 
     # run 5: trigger gone -> row resolved (internal), but NO Teams "Resolved" card posted (2026-08-09
     # decision: resolution isn't actionable — the state cleared on its own, nothing for a human
     # to do). Broadcasting the auto-close doubled Teams volume without adding signal.
     a = process_alerts([], now_dt=T0 + timedelta(hours=51), **kw)
-    assert a["resolved"] == ["pressure::capacity"]
+    assert a["resolved"] == ["capacity::capacity"]
     assert store["query_active"]() == {}
     assert not any("Resolved" in json.dumps(p) for p in posts)
 
@@ -107,12 +107,12 @@ def test_chat_write_failure_falls_back_to_root_autoinvestigate_link():
     a = process_alerts([{"check": "pressure", "peakCuPct": 130}], now_dt=T0,
                        alerts_store=store, delivery_sinks={"webhook": sink},
                        reasoner=r, chat_writer=failing_writer, app_url="https://app")
-    assert a["new"] == ["pressure::capacity"]
+    assert a["new"] == ["capacity::capacity"]
     url = _card(posts)["actions"][0]["url"]
     assert url.startswith("https://app/?query=")  # root, auto-investigating
     assert "/chat/None" not in url and "/chat/" not in url
     # row carries no chatId (nothing real was written)
-    assert store["query_active"]()["pressure::capacity"]["chatId"] is None
+    assert store["query_active"]()["capacity::capacity"]["chatId"] is None
 
 
 def test_active_incident_never_reposts_to_teams():
@@ -131,10 +131,10 @@ def test_active_incident_never_reposts_to_teams():
     assert len(posts) == 1
     for hrs in (49, 98, 147, 300):                                      # long after any old 48h window
         a = process_alerts([warn], now_dt=T0 + timedelta(hours=hrs), **kw)
-        assert a["silent"] == ["pressure::capacity"] and a["reminder"] == []
+        assert a["silent"] == ["capacity::capacity"] and a["reminder"] == []
     assert len(posts) == 1                                              # still exactly one card, ever
     # the ticket is still open + active for the notification center
-    assert store["query_active"]()["pressure::capacity"]["currentlyActive"] is True
+    assert store["query_active"]()["capacity::capacity"]["currentlyActive"] is True
 
 
 def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():
@@ -152,14 +152,14 @@ def test_attribution_absence_does_not_resolve_or_card_but_capacity_does():
           "users": ["a", "b", "c", "d"], "sharePct": 30}
     pr = {"check": "pressure", "peakCuPct": 130}
     process_alerts([xu, pr], now_dt=T0, **kw)
-    assert set(store["query_active"]()) == {"cross_user::Fin/Sales", "pressure::capacity"}
+    assert set(store["query_active"]()) == {"cross_user::Fin/Sales", "capacity::capacity"}
 
     posts.clear()
     a = process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)   # neither fires now
-    assert a["resolved"] == ["pressure::capacity"]          # capacity auto-resolves
+    assert a["resolved"] == ["capacity::capacity"]          # capacity auto-resolves
     assert a["inactive"] == ["cross_user::Fin/Sales"]       # attribution just goes inactive
     active = store["query_active"]()
-    assert "pressure::capacity" not in active               # capacity resolved (gone from active)
+    assert "capacity::capacity" not in active               # capacity resolved (gone from active)
     assert active["cross_user::Fin/Sales"]["currentlyActive"] is False  # attribution still open
     # 2026-08-09: resolved capacity states no longer send a Teams card (auto-close isn't
     # actionable — nothing for a human to do). The row is still resolved internally, verified above.
@@ -455,7 +455,7 @@ def test_throttle_card_carries_when_fact_from_first_alerted_at():
     process_alerts([thr], now_dt=T0, **kw)
     facts = {f["title"]: f["value"] for f in _card(posts)["body"][1]["facts"]}
     assert "When" in facts
-    first_alerted = store["query_active"]()["throttle::capacity"]["firstAlertedAt"]
+    first_alerted = store["query_active"]()["capacity::capacity"]["firstAlertedAt"]
     assert facts["When"] == (to_display(first_alerted) or first_alerted)
 
 

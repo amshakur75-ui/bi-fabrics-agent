@@ -62,6 +62,12 @@ def classify(trigger, cfg=None):
     check = (trigger or {}).get("check")
     if check == "data_unavailable":
         return "suppress", "data-unavailable is a data gap, not a capacity incident"
+    if check == "capacity_incident":
+        # Composite: fires only when 2+ capacity family signals coalesce, so a fired
+        # composite is always material. Reason names the signals seen.
+        sigs = trigger.get("signalTypes") or []
+        return "report", f"multi-signal capacity incident ({', '.join(sigs)})" if sigs \
+            else "multi-signal capacity incident"
     if _is_recurring(trigger):
         return "report", "recurring condition (matches prior findings)"
     if severity_of(trigger) == "warn":
@@ -127,17 +133,36 @@ def classify(trigger, cfg=None):
 def is_escalation(trigger, prior, cfg=None):
     """True if an active incident has worsened vs its last-alerted state.
 
-    ``prior`` = ``{"severity": str, "metric": float|None}`` from the stored alert row.
+    ``prior`` = ``{"severity": str, "metric": float|None, "signalTypes": list|None}`` from
+    the stored alert row.
     """
     cfg = cfg if cfg is not None else load_cfg()
     ranks = {"info": 0, "warn": 1}
     if ranks.get(severity_of(trigger), 0) > ranks.get((prior or {}).get("severity"), 0):
         return True
+    check = (trigger or {}).get("check")
+    if check == "capacity_incident":
+        # Composite escalates if any of: peak worsened, throttle worsened, a new signal type
+        # joined the incident vs the prior stored composite. New signal joining is a real
+        # worsening even when metrics didn't move — e.g. pressure crosses into throttle.
+        cur = _num(trigger.get("peakCuPct"))
+        pri = _num((prior or {}).get("metric"))
+        if cur is not None and pri is not None and (cur - pri) >= cfg["esc_peak_delta"]:
+            return True
+        cur_thr = _num(trigger.get("throttleMinutes"))
+        pri_thr = _num((prior or {}).get("throttleMinutes"))
+        if cur_thr is not None and pri_thr is not None and cur_thr >= max(
+                cfg["throttle_min"], 2 * pri_thr):
+            return True
+        cur_sigs = set(trigger.get("signalTypes") or [])
+        pri_sigs = set((prior or {}).get("signalTypes") or [])
+        if cur_sigs - pri_sigs:
+            return True
+        return False
     cur = primary_metric(trigger)
     pri = _num((prior or {}).get("metric"))
     if cur is None or pri is None:
         return False
-    check = (trigger or {}).get("check")
     if check == "concentration":
         return (cur - pri) >= cfg["esc_share_delta"]
     if check == "pressure":

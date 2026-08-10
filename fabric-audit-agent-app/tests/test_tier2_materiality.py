@@ -16,8 +16,15 @@ def test_incident_key_concentration_is_item_scoped():
 
 
 def test_incident_key_capacity_scoped():
-    assert incident_key({"check": "throttle"}) == "throttle::capacity"
-    assert incident_key({"check": "pressure"}) == "pressure::capacity"
+    # Design A' (2026-08-09): all five capacity-family checks share ONE key per capacity so
+    # multi-signal firings for the same incident coalesce into one Teams card, not N.
+    assert incident_key({"check": "throttle"}) == "capacity::capacity"
+    assert incident_key({"check": "pressure"}) == "capacity::capacity"
+    assert incident_key({"check": "overage"}) == "capacity::capacity"
+    assert incident_key({"check": "extreme_peak"}) == "capacity::capacity"
+    assert incident_key({"check": "throttle_imminent"}) == "capacity::capacity"
+    # A composite trigger produced by _coalesce_capacity_family shares the same key.
+    assert incident_key({"check": "capacity_incident"}) == "capacity::capacity"
 
 
 def test_incident_key_stable_across_dict_order():
