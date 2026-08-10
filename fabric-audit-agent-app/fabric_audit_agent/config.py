@@ -28,10 +28,27 @@ DEFAULT_CONFIG = {
         "slowOperationSeconds": 300, "highCuSeconds": 100,
         "recurringShapeMinCount": 3, "recurringShapeMinUsers": 2,
         "longRunningSeconds": 300, "longRunningClusterMin": 3,
-        # baselineMinHistory: minimum per-user historical rows before a baseline is trusted
-        # enough to flag against (detectors/user_baseline.py -- not wired into detect_all, see
-        # that module's docstring for why).
+        # baselineMinHistory: minimum per-user samples before a baseline is trusted enough to
+        # flag against. Deliberately <= the floor the nightly bootstrap writes with
+        # (FABRIC_BASELINE_MIN_HISTORY, default 20), i.e. permissive. The dangerous direction is
+        # reader > writer: rows the writer DID emit would fall into the gap and be silently
+        # demoted to the estate baseline instead of used, which is exactly the misattribution
+        # the 3-layer fallback exists to prevent. Keep this at or below the writer's floor.
         "baselineMinHistory": 5,
+        # baselineSpikeMultiplier: an event must exceed the baseline p95 by THIS FACTOR to count
+        # as an anomaly. A bare `cu > p95` comparison is a percentile lookup, not an anomaly
+        # test — it fires on ~5% of all events by construction, forever, on a healthy capacity.
+        # 3x on a long-tailed cost distribution puts it well under 0.1%.
+        "baselineSpikeMultiplier": 3.0,
+        # baselineSpikeFloorCuSeconds: absolute floor, so a user with a tiny baseline can't trip
+        # on noise (p95=0.10 CPU-s -> 0.31 CPU-s is "3x" but meaningless). Reuses the same scale
+        # as highCuSeconds.
+        "baselineSpikeFloorCuSeconds": 100,
+        # baselineMaxAgeDays: refuse a baseline older than this and fall through to the next
+        # fallback layer. The nightly job fails QUIETLY (returns rowsWritten=0 rather than
+        # raising), so without this a three-week-old p95 would keep being presented as
+        # "their own baseline".
+        "baselineMaxAgeDays": 3,
     },
 }
 

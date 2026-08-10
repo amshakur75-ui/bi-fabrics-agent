@@ -1192,8 +1192,8 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
         try:
             from ..detectors.user_baseline import detect_user_baseline_deviation_precomputed
             from .correlation import correlate_user_spikes_with_capacity
-            spikes = detect_user_baseline_deviation_precomputed(facts, config,
-                                                                 baseline_store=baseline_store)
+            spikes = detect_user_baseline_deviation_precomputed(
+                facts, config, baseline_store=baseline_store, now=now_dt)
             window_min = float(mcfg.get("correlation_window_min", 5.0))
             triggers = correlate_user_spikes_with_capacity(
                 spikes, triggers, window_min=window_min, run_at=checked_at)

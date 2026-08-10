@@ -13,23 +13,33 @@ Pure — no I/O. Given a list of user-spike flags (from
 returns triggers annotated with ``correlatedUserSpikes: [{...}, ...]`` for any user spike whose
 timestamp falls within ``window_min`` minutes of the capacity event.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
+
+from ..timefmt import parse_iso_utc
 
 _CAPACITY_FAMILY = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
                     "capacity_incident")
 
+# Upper bound on spikes attached to a single trigger (the card shows 3; the rest ride into the
+# ticket/chat payload). Prevents an unbounded payload during a real incident, when spikes
+# cluster by design.
+_MAX_ATTACHED_SPIKES = 25
+
 
 def _parse_ts(s):
-    """Parse an ISO-8601 timestamp; return a tz-aware datetime or None. Accepts trailing "Z"."""
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    """Parse an ISO-8601 timestamp to a tz-aware datetime (None on failure).
+
+    Delegates to ``timefmt.parse_iso_utc`` rather than calling ``fromisoformat`` directly. Both
+    inputs here are Log Analytics timestamps, which carry SEVEN fractional-second digits
+    (e.g. ``2026-08-05T13:52:07.3079171Z``). ``datetime.fromisoformat`` on Python 3.10 — the
+    version serverless job compute actually runs — rejects both the trailing ``Z`` and >6
+    fraction digits. That returned None for every spike and every capacity anchor, so
+    ``correlate_user_spikes_with_capacity`` dropped all triggers through its
+    ``anchor is None`` path with no log line and no health issue: a completely silent no-op
+    in production while passing on a 3.12 laptop. ``parse_iso_utc`` trims the fraction to
+    microseconds and normalizes ``Z`` first.
+    """
+    return parse_iso_utc(s)
 
 
 def _capacity_anchor(trigger, run_at):
@@ -119,6 +129,11 @@ def correlate_user_spikes_with_capacity(user_spikes, capacity_triggers, *, windo
         matches.sort(key=lambda m: (m.get("cuSeconds") is None,
                                     -(m.get("cuSeconds") or 0)))
         t2 = dict(t)
-        t2["correlatedUserSpikes"] = matches
+        # Cap the attached list. The card only renders the top 3, but the FULL list rides the
+        # trigger into process_alerts -> the Lakebase ticket + chat payload, and spikes cluster
+        # hard during a real incident (that's the whole premise). Keep the true count so the
+        # narrative can still say "and N others" honestly.
+        t2["correlatedUserSpikeCount"] = len(matches)
+        t2["correlatedUserSpikes"] = matches[:_MAX_ATTACHED_SPIKES]
         out.append(t2)
     return out

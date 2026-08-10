@@ -344,13 +344,32 @@ def test_tier2_end_to_end_with_memory_stores_produces_composite_card_and_archive
     assert set(r["signalTypes"]).issuperset({"throttle", "pressure", "extreme_peak"})
 
 
-def test_baseline_bootstrap_main_smoke_no_crash_when_env_absent():
-    """baseline_bootstrap_main is the wheel-task entry Databricks calls with a bare env.
-    Verify it doesn't crash on a missing Delta catalog — it prints a health issue and exits
-    with a valid summary. Simulates the "job scheduled but Delta not yet provisioned" case."""
+def test_baseline_bootstrap_main_FAILS_LOUDLY_when_env_absent():
+    """The wheel-task entry must go RED when it cannot do its job.
+
+    Every internal path returns a summary instead of raising (so a transient outage can't crash
+    mid-write), but a nightly job that writes ZERO rows and still reports SUCCESS is invisible:
+    the 5-min sweep would keep comparing against a weeks-old baseline while the Jobs UI showed
+    green. `baseline_bootstrap_main` therefore re-raises on error / zero rows so the job's
+    failure notification actually fires."""
+    import pytest
     with patch("fabric_audit_agent.job.os.environ", {}):
         with patch("fabric_audit_agent.job._run_startup_preflight"):
             with patch("fabric_audit_agent.job._check_startup_invariant"):
-                res = baseline_bootstrap_main()
-                assert isinstance(res, dict)
-                assert "rowsWritten" in res
+                with patch("fabric_audit_agent.job._alert_failure"):
+                    with pytest.raises(RuntimeError, match="baseline bootstrap"):
+                        baseline_bootstrap_main()
+
+
+def test_baseline_bootstrap_main_raises_on_zero_rows_even_without_error():
+    """A clean run that legitimately found no activity still writes nothing — that is a
+    failure to surface, not a success."""
+    import pytest
+    with patch("fabric_audit_agent.job._run_startup_preflight"), \
+         patch("fabric_audit_agent.job._check_startup_invariant"), \
+         patch("fabric_audit_agent.job._alert_failure"), \
+         patch("fabric_audit_agent.job.run_baseline_bootstrap_job",
+                return_value={"rowsWritten": 0, "users": 0, "hasEstate": False,
+                              "asOf": "t", "health": {}}):
+        with pytest.raises(RuntimeError, match="0 rows"):
+            baseline_bootstrap_main()

@@ -1,164 +1,242 @@
 """B2 (Design A' Phase B) — the precomputed baseline detector + its wiring into detect_all.
 
-Covers the 3-layer fallback (personalized / estate / silent), the ``baselineSource`` evidence
-that tells the reader which layer fired, and the detect_all wiring (safe no-op when the store
-is absent, failure-isolated when the store raises).
+Covers the 3-layer fallback (personalized / estate / silent), the anomaly GATE (a multiple of
+p95 plus an absolute floor — not a bare percentile lookup), the staleness guard, the batched
+store read, and the detect_all wiring.
 """
+from datetime import datetime, timedelta, timezone
+
 from fabric_audit_agent.detectors import detect_all
 from fabric_audit_agent.detectors.user_baseline import (
     detect_user_baseline_deviation_precomputed,
 )
 from fabric_audit_agent.context_user_baseline import create_user_baseline_store_memory
 
+AS_OF = "2026-08-09T00:00:00Z"
+NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)   # 12h after the fixtures' asOf
+
 
 def _event(user, cu, item="Report A", op="ExecuteQuery", ts="2026-08-09T13:52:00Z"):
     return {"user": user, "cuSeconds": cu, "item": item, "operation": op, "ts": ts}
 
 
-def _cfg(min_history=20):
-    return {"activity": {"baselineMinHistory": min_history}}
+def _cfg(min_history=20, multiplier=3.0, floor=100, max_age_days=3):
+    """The gate is ``cu > p95 * multiplier AND cu >= floor``.
+
+    A bare ``cu > p95`` is a percentile lookup, not an anomaly test — it fires on ~5% of ALL
+    events by construction, forever, on a perfectly healthy capacity. Fixtures below therefore
+    use genuine multiples, never p95+1.
+    """
+    return {"activity": {"baselineMinHistory": min_history,
+                         "baselineSpikeMultiplier": multiplier,
+                         "baselineSpikeFloorCuSeconds": floor,
+                         "baselineMaxAgeDays": max_age_days}}
 
 
-def _personalized_baseline(user, count=25, p50=5.0, p95=10.0):
+def _personalized(user, count=25, p50=40.0, p95=100.0, as_of=AS_OF):
     return {"scope": "user", "user": user, "p50": p50, "p95": p95, "count": count,
-            "min": 1.0, "max": p95 * 1.2, "asOf": "2026-08-09T00:00:00Z"}
+            "min": 1.0, "max": p95 * 1.2, "asOf": as_of}
 
 
-def _estate_baseline(count=200, p50=4.0, p95=8.0):
+def _estate(count=200, p50=30.0, p95=80.0, as_of=AS_OF):
     return {"scope": "estate", "user": None, "p50": p50, "p95": p95, "count": count,
-            "min": 0.5, "max": p95 * 1.5, "asOf": "2026-08-09T00:00:00Z"}
+            "min": 0.5, "max": p95 * 1.5, "asOf": as_of}
 
 
-def test_precomputed_no_store_returns_no_flags():
-    """The safe default: nothing wired -> silent. Never fabricate an anomaly before we
-    have data."""
-    facts = {"events": [_event("a@x", 100.0)]}
-    assert detect_user_baseline_deviation_precomputed(facts, _cfg(),
-                                                        baseline_store=None) == []
+def _run(facts, store, cfg=None, now=NOW):
+    return detect_user_baseline_deviation_precomputed(
+        facts, cfg or _cfg(), baseline_store=store, now=now)
 
 
-def test_layer1_personalized_fires_over_user_p95():
-    """The user has a real baseline; today's cost is above their own p95 -> flag."""
-    store = create_user_baseline_store_memory([_personalized_baseline("a@x", p95=10.0)])
-    facts = {"events": [_event("a@x", 25.0)]}                   # 25s >> user p95=10s
-    flags = detect_user_baseline_deviation_precomputed(facts, _cfg(), baseline_store=store)
+# --- the anomaly gate -------------------------------------------------------------------
+
+def test_no_store_returns_no_flags():
+    """Safe default: nothing wired -> silent. Never fabricate an anomaly before we have data."""
+    assert _run({"events": [_event("a@x", 5000.0)]}, None) == []
+
+
+def test_layer1_fires_on_a_genuine_multiple_of_own_p95():
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0)])
+    flags = _run({"events": [_event("a@x", 500.0)]}, store)      # 5x p95, over the floor
     assert len(flags) == 1
     f = flags[0]
     assert f["type"] == "activity.user-baseline-deviation"
     assert f["evidence"]["baselineSource"] == "personalized"
-    assert f["evidence"]["baselineP95"] == 10.0
+    assert f["evidence"]["ratioVsP95"] == 5.0
     assert "their own baseline p95" in f["what"]
 
 
-def test_layer1_stays_silent_when_at_or_below_personal_p95():
-    """A cost at or below the user's own p95 is normal for them — no flag."""
-    store = create_user_baseline_store_memory([_personalized_baseline("a@x", p95=10.0)])
-    facts = {"events": [_event("a@x", 9.5), _event("a@x", 10.0)]}
-    assert detect_user_baseline_deviation_precomputed(facts, _cfg(), baseline_store=store) == []
+def test_layer1_silent_just_above_p95_but_below_the_multiplier():
+    """THE headline fix. 110 CPU-s against a p95 of 100 is the top ~5% by definition and is
+    NOT an anomaly. Under the old `cu > p95` rule this fired; it must now stay silent."""
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0)])
+    assert _run({"events": [_event("a@x", 110.0)]}, store) == []
+    assert _run({"events": [_event("a@x", 299.0)]}, store) == []   # still under 3x
+    assert _run({"events": [_event("a@x", 301.0)]}, store) != []   # over 3x -> fires
 
 
-def test_layer2_estate_fires_when_personalized_missing():
-    """Cold-start user with no personalized row yet — the estate baseline fills in. The
-    resulting flag names the estate layer so the reader knows why."""
-    store = create_user_baseline_store_memory([_estate_baseline(p95=8.0)])
-    facts = {"events": [_event("brandnew@x", 20.0)]}
-    flags = detect_user_baseline_deviation_precomputed(facts, _cfg(), baseline_store=store)
+def test_absolute_floor_suppresses_a_tiny_baseline():
+    """A user whose p95 is 0.10 CPU-s would trip on 0.31 CPU-s ("3x!") without a floor. That
+    is noise, and printing it on a throttle card as '3.1x baseline' teaches people to ignore
+    the card."""
+    store = create_user_baseline_store_memory([_personalized("tiny@x", p95=0.10)])
+    assert _run({"events": [_event("tiny@x", 0.5)]}, store) == []     # 5x but < floor
+    assert _run({"events": [_event("tiny@x", 150.0)]}, store) != []   # clears both
+
+
+def test_floor_is_configurable():
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=1.0)])
+    assert _run({"events": [_event("a@x", 10.0)]}, store, _cfg(floor=5)) != []
+    assert _run({"events": [_event("a@x", 10.0)]}, store, _cfg(floor=500)) == []
+
+
+# --- the 3-layer fallback ---------------------------------------------------------------
+
+def test_layer2_estate_fires_for_a_cold_start_user():
+    store = create_user_baseline_store_memory([_estate(p95=80.0)])
+    flags = _run({"events": [_event("brandnew@x", 400.0)]}, store)
     assert len(flags) == 1
     assert flags[0]["evidence"]["baselineSource"] == "estate"
     assert "estate-wide p95" in flags[0]["what"]
 
 
-def test_layer2_estate_used_when_personalized_undertrained():
-    """A user whose personalized row exists but sample_count is BELOW min_history should
-    fall through to the estate baseline — a 3-sample "personal" p95 is unreliable, we
-    prefer the well-sampled estate p95."""
+def test_layer2_used_when_personalized_is_undertrained():
+    """A 3-sample "personal" p95 is unreliable; prefer the well-sampled estate p95."""
     store = create_user_baseline_store_memory([
-        _personalized_baseline("a@x", count=3, p95=100.0),      # too few samples
-        _estate_baseline(count=500, p95=8.0),
+        _personalized("a@x", count=3, p95=10000.0),   # too few samples to trust
+        _estate(count=500, p95=80.0),
     ])
-    facts = {"events": [_event("a@x", 15.0)]}
-    flags = detect_user_baseline_deviation_precomputed(facts, _cfg(min_history=20),
-                                                        baseline_store=store)
+    flags = _run({"events": [_event("a@x", 400.0)]}, store, _cfg(min_history=20))
     assert len(flags) == 1
-    assert flags[0]["evidence"]["baselineSource"] == "estate"   # fell through to L2
+    assert flags[0]["evidence"]["baselineSource"] == "estate"
 
 
-def test_layer3_silent_when_no_baseline_available():
-    """Neither personalized nor estate is populated (bootstrap job hasn't run, or an empty
-    tenant). Detector stays silent — no false alerts before we have data."""
-    empty_store = create_user_baseline_store_memory()
-    facts = {"events": [_event("a@x", 500.0)]}                  # huge cost, no baseline
-    assert detect_user_baseline_deviation_precomputed(facts, _cfg(),
-                                                        baseline_store=empty_store) == []
+def test_layer3_silent_when_nothing_is_populated():
+    store = create_user_baseline_store_memory()
+    assert _run({"events": [_event("a@x", 99999.0)]}, store) == []
 
 
 def test_ignores_events_missing_user_or_cost():
-    store = create_user_baseline_store_memory([_estate_baseline(p95=8.0)])
+    store = create_user_baseline_store_memory([_estate(p95=80.0)])
     facts = {"events": [
-        {"cuSeconds": 25.0},                                    # no user -> skip
-        _event("a@x", None),                                    # no cost -> skip
-        _event("b@x", "not a number"),                          # non-numeric -> skip
-        _event("c@x", 20.0),                                    # this one fires (estate)
+        {"cuSeconds": 400.0},                 # no user -> skip
+        _event("a@x", None),                  # no cost -> skip
+        _event("b@x", "not a number"),        # non-numeric -> skip
+        _event("c@x", float("inf")),          # non-finite -> skip
+        _event("d@x", 400.0),                 # fires (estate)
     ]}
-    flags = detect_user_baseline_deviation_precomputed(facts, _cfg(), baseline_store=store)
-    assert len(flags) == 1 and flags[0]["resource"] == "c@x"
+    flags = _run(facts, store)
+    assert [f["resource"] for f in flags] == ["d@x"]
 
 
-def test_store_error_on_get_user_is_isolated_and_falls_back_to_estate():
-    """A store that raises on ``get_user`` must not crash the detector — the detector
-    treats it as "personalized unknown" and falls through to the estate layer."""
-    store = create_user_baseline_store_memory([_estate_baseline(p95=8.0)])
+# --- staleness guard --------------------------------------------------------------------
 
-    def raising_get_user(user):
-        raise RuntimeError("connection reset")
-    store["get_user"] = raising_get_user
-    facts = {"events": [_event("a@x", 20.0)]}
-    flags = detect_user_baseline_deviation_precomputed(facts, _cfg(), baseline_store=store)
-    assert len(flags) == 1 and flags[0]["evidence"]["baselineSource"] == "estate"
+def test_stale_personalized_baseline_falls_through_to_estate():
+    """The nightly job fails QUIETLY (rowsWritten=0, no raise) and upsert never deletes, so a
+    stale row would otherwise be presented to a human as 'their own baseline' indefinitely."""
+    old = (NOW - timedelta(days=10)).isoformat().replace("+00:00", "Z")
+    store = create_user_baseline_store_memory([
+        _personalized("a@x", p95=100.0, as_of=old),
+        _estate(p95=80.0),                                # fresh
+    ])
+    flags = _run({"events": [_event("a@x", 400.0)]}, store)
+    assert flags and flags[0]["evidence"]["baselineSource"] == "estate"
 
 
-def test_store_error_on_get_estate_is_isolated_and_stays_silent():
-    """A store that raises on ``get_estate`` (no personalized row + estate unreachable)
-    means the detector has no baseline to compare against — stay silent, don't crash."""
+def test_stale_estate_baseline_silences_the_detector():
+    old = (NOW - timedelta(days=10)).isoformat().replace("+00:00", "Z")
+    store = create_user_baseline_store_memory([_estate(p95=80.0, as_of=old)])
+    assert _run({"events": [_event("cold@x", 400.0)]}, store) == []
+
+
+def test_unstamped_baseline_is_treated_as_fresh():
+    """asOf is advisory. A row with no/unparseable stamp (hand-seeded, or written by an older
+    build) must degrade to the previous behaviour, not silently disable the whole layer."""
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0, as_of=None)])
+    assert _run({"events": [_event("a@x", 400.0)]}, store) != []
+
+
+def test_staleness_check_disabled_when_max_age_not_positive():
+    old = (NOW - timedelta(days=400)).isoformat().replace("+00:00", "Z")
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0, as_of=old)])
+    assert _run({"events": [_event("a@x", 400.0)]}, store, _cfg(max_age_days=0)) != []
+
+
+# --- batched store read -----------------------------------------------------------------
+
+def test_uses_bulk_load_and_never_queries_per_event():
+    """get_user was called once PER EVENT — thousands of Spark round-trips inside a 5-minute
+    job. The detector must issue ONE bulk load regardless of event count."""
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0)])
+    calls = {"bulk": 0, "per_user": 0}
+    real_bulk = store["get_all_users"]
+
+    def counting_bulk():
+        calls["bulk"] += 1
+        return real_bulk()
+
+    def counting_get_user(u):
+        calls["per_user"] += 1
+        return None
+
+    store["get_all_users"] = counting_bulk
+    store["get_user"] = counting_get_user
+    facts = {"events": [_event("a@x", 400.0 + i) for i in range(50)]}
+    flags = _run(facts, store)
+    assert len(flags) == 50
+    assert calls["bulk"] == 1
+    assert calls["per_user"] == 0
+
+
+def test_falls_back_to_per_user_lookup_when_store_lacks_bulk():
+    """An older adapter / custom fake without get_all_users must still work."""
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0)])
+    del store["get_all_users"]
+    assert _run({"events": [_event("a@x", 400.0)]}, store) != []
+
+
+def test_bulk_load_failure_degrades_to_estate():
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0),
+                                               _estate(p95=80.0)])
+
+    def boom():
+        raise RuntimeError("delta unavailable")
+    store["get_all_users"] = boom
+    store["get_user"] = lambda u: (_ for _ in ()).throw(RuntimeError("also down"))
+    flags = _run({"events": [_event("a@x", 400.0)]}, store)
+    assert flags and flags[0]["evidence"]["baselineSource"] == "estate"
+
+
+def test_estate_failure_is_isolated_and_stays_silent():
     store = create_user_baseline_store_memory()
 
-    def raising_get_estate():
+    def boom():
         raise RuntimeError("query timeout")
-    store["get_estate"] = raising_get_estate
-    facts = {"events": [_event("a@x", 20.0)]}
-    assert detect_user_baseline_deviation_precomputed(facts, _cfg(),
-                                                        baseline_store=store) == []
+    store["get_estate"] = boom
+    assert _run({"events": [_event("a@x", 400.0)]}, store) == []
 
+
+# --- detect_all wiring ------------------------------------------------------------------
 
 def test_detect_all_default_does_not_run_baseline_detector():
-    """Existing call sites of ``detect_all(facts, config)`` with no baseline_store must
-    continue to behave EXACTLY as before — the new detector is opt-in via the kwarg.
-    Backwards-compat guarantee: no surprise new flag types firing on older callers."""
-    facts = {"events": [_event("a@x", 500.0)], "items": [], "capacity": {}}
+    """Existing call sites (`detect_all(facts, config)`) must behave EXACTLY as before."""
+    facts = {"events": [_event("a@x", 5000.0)], "items": [], "capacity": {}}
     flags = detect_all(facts, {})
     assert not any(f.get("type") == "activity.user-baseline-deviation" for f in flags)
 
 
 def test_detect_all_wires_baseline_store_when_provided():
-    """With a store threaded in, detect_all now emits baseline flags alongside the
-    existing detector output. Threaded from job.run_job at deploy time."""
-    store = create_user_baseline_store_memory([_personalized_baseline("a@x", p95=10.0)])
-    facts = {"events": [_event("a@x", 25.0)], "items": [], "capacity": {}}
-    flags = detect_all(facts, {}, baseline_store=store)
-    baseline_flags = [f for f in flags if f.get("type") == "activity.user-baseline-deviation"]
-    assert len(baseline_flags) == 1
+    store = create_user_baseline_store_memory([_personalized("a@x", p95=100.0, as_of=None)])
+    facts = {"events": [_event("a@x", 500.0)], "items": [], "capacity": {}}
+    flags = detect_all(facts, _cfg(), baseline_store=store)
+    got = [f for f in flags if f.get("type") == "activity.user-baseline-deviation"]
+    assert len(got) == 1
 
 
-def test_detect_all_isolates_baseline_detector_failure():
-    """A store that raises on EVERY call (both get_user + get_estate) — the sweep must
-    continue and emit the standard meta.detector-error shape, not crash."""
-    bad_store = {"get_user": lambda u: (_ for _ in ()).throw(RuntimeError("boom")),
-                 "get_estate": lambda: (_ for _ in ()).throw(RuntimeError("boom"))}
-    facts = {"events": [_event("a@x", 100.0)], "items": [], "capacity": {}}
-    # The detector itself catches per-call exceptions and falls through gracefully
-    # (returning []), so no meta.detector-error flag is expected here — this test pins
-    # that graceful shape. If future changes make the detector propagate, the outer
-    # detect_all wrapper will still catch and emit meta.detector-error.
-    flags = detect_all(facts, {}, baseline_store=bad_store)
-    baseline_flags = [f for f in flags if f.get("type") == "activity.user-baseline-deviation"]
-    assert baseline_flags == []
+def test_detect_all_isolates_a_totally_broken_store():
+    bad = {"get_user": lambda u: (_ for _ in ()).throw(RuntimeError("boom")),
+           "get_estate": lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+           "get_all_users": lambda: (_ for _ in ()).throw(RuntimeError("boom"))}
+    facts = {"events": [_event("a@x", 5000.0)], "items": [], "capacity": {}}
+    flags = detect_all(facts, _cfg(), baseline_store=bad)
+    assert [f for f in flags if f.get("type") == "activity.user-baseline-deviation"] == []

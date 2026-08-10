@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent"
-version = "0.2.17"
+version = "0.2.18"
 description = "Read-only Fabric/Power BI audit agent — brain, core investigation logic, autonomous jobs, and chat app (Databricks)."
 # >=3.10 (not 3.11): the serverless Job compute that installs this wheel runs Python 3.10, and the
 # wheel's Requires-Python gates install. The core (fabric_audit_agent) is 3.10-safe; only the
@@ -69,7 +69,19 @@ include = ["fabric_audit_agent*", "agent_server*"]
 # `query_library` returns 0 templates even though run_kql's firewall is present. (Local tests pass
 # because they read the source tree, not the wheel.)
 [tool.setuptools.package-data]
-fabric_audit_agent = ["query_library.json"]
+# `data/plugin/catalog/**` is the grounded FIELD catalog (manifest + per-model field lists,
+# ~7.7 MB across 16 files, largest 1.6 MB). Without it the wheel installs but every JOB logs
+#   preflight degraded: catalog-manifest: manifest.json not found at <site-packages>/...
+# and `resolve/catalog.py` silently resolves nothing, so field/measure grounding is dead in
+# production while the local checkout works fine (the files ARE in the repo — this was purely
+# a packaging gap, found 2026-08-10). The App is unaffected either way because it deploys from
+# the synced source path, not the wheel. NOTE: this is the catalog OUTPUT; the 14 MB
+# `enriched-field-catalog.json` INPUT stays out of the package (repo-root plugin-source/).
+fabric_audit_agent = [
+    "query_library.json",
+    "data/plugin/catalog/*.json",
+    "data/plugin/catalog/models/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

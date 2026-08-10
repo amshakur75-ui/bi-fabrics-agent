@@ -32,14 +32,38 @@ TWO detectors live here:
      entirely — safe default before the bootstrap job has populated the table.
 """
 import math
+from datetime import datetime, timedelta, timezone
 
 from ..config import DEFAULT_CONFIG
 from ..investigation.baseline import compute_baseline, compare_to_baseline
+from ..timefmt import parse_iso_utc
 
 
 def _num(v):
     """Reject bool + non-finite (repo numeric-guard convention); else the numeric value."""
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+def _now_utc():
+    return datetime.now(timezone.utc)
+
+
+def _fresh_enough(baseline, now, max_age_days):
+    """True when a baseline row is recent enough to compare against.
+
+    The nightly bootstrap fails QUIETLY (it returns ``rowsWritten=0`` rather than raising), and
+    ``upsert_many`` never deletes, so a user who stops appearing keeps their old row forever.
+    Without an age check a three-week-old p95 keeps getting presented to a human as "their own
+    baseline". A row with no parseable ``asOf`` is treated as fresh: ``asOf`` is advisory and an
+    unstamped row (e.g. hand-seeded, or written by an older build) should degrade to the previous
+    behaviour rather than silently disabling the whole layer.
+    """
+    if not baseline or max_age_days is None or max_age_days <= 0:
+        return True
+    stamped = parse_iso_utc(baseline.get("asOf"))
+    if stamped is None:
+        return True
+    return (now - stamped) <= timedelta(days=max_age_days)
 
 
 def detect_user_baseline_deviation(events, user_history, config=None):
@@ -108,7 +132,8 @@ def detect_user_baseline_deviation(events, user_history, config=None):
     return flags
 
 
-def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_store=None):
+def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_store=None,
+                                                now=None):
     """B2 (Design A' Phase B) — production baseline detector.
 
     Reads precomputed baselines from a ``user_baseline`` store (see B1's
@@ -138,16 +163,50 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
         return []
     config = config or DEFAULT_CONFIG
     events = (facts or {}).get("events") or []
-    thr = (config.get("activity") or DEFAULT_CONFIG["activity"])
-    min_history = (thr["baselineMinHistory"] if thr.get("baselineMinHistory") is not None
-                   else DEFAULT_CONFIG["activity"]["baselineMinHistory"])
+    if not events:
+        return []
+    _dflt = DEFAULT_CONFIG["activity"]
+    thr = (config.get("activity") or _dflt)
 
-    # Fetch the estate baseline once — it's used across all layer-2 lookups this run and
-    # is a single row, so caching avoids N Delta queries when many events fall through.
+    def _cfg(key):
+        v = thr.get(key)
+        return _dflt[key] if v is None else v
+
+    min_history = _cfg("baselineMinHistory")
+    multiplier = float(_cfg("baselineSpikeMultiplier"))
+    floor_cu = float(_cfg("baselineSpikeFloorCuSeconds"))
+    max_age_days = float(_cfg("baselineMaxAgeDays"))
+
+    # Load the WHOLE baseline set once per run. Both lookups used to be per-event; the estate
+    # row was already hoisted but get_user was not, which meant one Spark query per event.
     try:
         estate = baseline_store["get_estate"]()
-    except Exception:
+    except Exception as exc:
+        print(f"[baseline] estate lookup failed ({type(exc).__name__}: {exc})")
         estate = None
+    per_user = {}
+    if "get_all_users" in baseline_store:
+        try:
+            per_user = baseline_store["get_all_users"]() or {}
+        except Exception as exc:
+            print(f"[baseline] bulk user load failed ({type(exc).__name__}: {exc})")
+            per_user = {}
+
+    # ``now`` is injectable so a test can pin it: the staleness check compares against
+    # wall-clock, which would make any historical fixture look stale.
+    now = now if now is not None else _now_utc()
+    if not _fresh_enough(estate, now, max_age_days):
+        estate = None
+
+    def _lookup(user):
+        """Personalized baseline for ``user``, from the bulk map when available."""
+        if per_user:
+            return per_user.get(user)
+        # Fallback for a store without get_all_users (older adapter / a custom fake).
+        try:
+            return baseline_store["get_user"](user)
+        except Exception:
+            return None
 
     flags = []
     for ev in events:
@@ -158,34 +217,38 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
         if cu is None:
             continue
 
-        # LAYER 1: personalized baseline.
-        try:
-            personalized = baseline_store["get_user"](user)
-        except Exception:
-            personalized = None
+        # LAYER 1: personalized baseline — enough samples, has a p95, and not stale.
+        personalized = _lookup(user)
         baseline = None
         source = None
         if (personalized and personalized.get("count") is not None
                 and personalized["count"] >= min_history
-                and personalized.get("p95") is not None):
+                and personalized.get("p95") is not None
+                and _fresh_enough(personalized, now, max_age_days)):
             baseline = personalized
             source = "personalized"
-        # LAYER 2: estate-wide fallback for cold-start users.
+        # LAYER 2: estate-wide fallback for cold-start / under-sampled / stale users.
         elif (estate and estate.get("count") is not None
               and estate.get("p95") is not None):
             baseline = estate
             source = "estate"
-        # LAYER 3: silent — no baseline available yet, no alert.
+        # LAYER 3: silent — no usable baseline, no alert. Never invent an anomaly.
         if baseline is None:
             continue
 
-        comparison = compare_to_baseline(cu, baseline)
-        if not comparison.get("shifted"):
+        # ANOMALY TEST (not a percentile lookup). `cu > p95` alone fires on ~5% of all events
+        # by construction — see config.baselineSpikeMultiplier. Require BOTH a multiple of the
+        # baseline AND an absolute floor, so neither a tiny baseline nor a big-but-normal user
+        # generates noise.
+        p95 = baseline["p95"]
+        if not (cu > p95 * multiplier and cu >= floor_cu):
             continue
 
+        comparison = compare_to_baseline(cu, baseline)
         item = ev.get("item") or "unknown item"
         operation = ev.get("operation") or "operation"
-        p95 = round(baseline["p95"], 2)
+        ratio = round(cu / p95, 2) if p95 else None
+        p95_out = round(p95, 2)
         cu_out = round(cu, 2)
         source_phrase = ("their own baseline p95" if source == "personalized"
                          else "the estate-wide p95 (their personalized baseline isn't ready yet)")
@@ -199,11 +262,12 @@ def detect_user_baseline_deviation_precomputed(facts, config=None, baseline_stor
                 "cuSeconds": ev.get("cuSeconds"),
                 "baselineP50": baseline.get("p50"), "baselineP95": baseline.get("p95"),
                 "baselineCount": baseline.get("count"),
-                "baselineSource": source,
+                "baselineSource": source, "baselineAsOf": baseline.get("asOf"),
+                "spikeMultiplier": multiplier, "ratioVsP95": ratio,
                 "deltaVsP50Pct": comparison.get("deltaVsP50Pct"),
             },
             "what": (f"{user} ran \"{operation}\" on \"{item}\" costing {cu_out} CPU-s — "
-                     f"above {source_phrase} of {p95} CPU-s "
+                     f"{ratio}x {source_phrase} of {p95_out} CPU-s "
                      f"(from {baseline.get('count')} historical operations)."),
         })
     return flags

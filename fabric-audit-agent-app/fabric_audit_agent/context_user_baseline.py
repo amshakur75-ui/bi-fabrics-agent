@@ -54,6 +54,9 @@ def create_user_baseline_store_memory(initial=None):
     def get_estate():
         return dict(data[("estate", "")]) if ("estate", "") in data else None
 
+    def get_all_users():
+        return {k[1]: dict(v) for k, v in data.items() if k[0] == "user"}
+
     def upsert_many(rows):
         for r in rows or []:
             data[_key(r)] = dict(r)
@@ -62,6 +65,7 @@ def create_user_baseline_store_memory(initial=None):
         return [dict(r) for r in data.values()]
 
     return {"get_user": get_user, "get_estate": get_estate,
+            "get_all_users": get_all_users,
             "upsert_many": upsert_many, "all": all_rows, "_data": data}
 
 
@@ -125,8 +129,14 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
     def get_user(user):
         s = _get_spark()
         _ensure_table(s)
+        # Escape single quotes: `user` comes from Log Analytics ExecutingUser /
+        # EffectiveUsername, and XMLA / Analyze-in-Excel sessions routinely carry a DISPLAY
+        # name rather than a UPN (e.g. "O'Brien, Sean"). An unescaped apostrophe produced a
+        # malformed query whose exception the detector swallowed, silently demoting that user
+        # to the estate baseline forever. Prefer get_all_users() in hot paths.
+        safe = str(user).replace("'", "''")
         rows = s.sql(
-            f"SELECT * FROM {table} WHERE scope = 'user' AND user_id = '{user}'"
+            f"SELECT * FROM {table} WHERE scope = 'user' AND user_id = '{safe}'"
         ).collect()
         return _from_row(rows[0].asDict()) if rows else None
 
@@ -135,6 +145,25 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
         _ensure_table(s)
         rows = s.sql(f"SELECT * FROM {table} WHERE scope = 'estate' LIMIT 1").collect()
         return _from_row(rows[0].asDict()) if rows else None
+
+    def get_all_users():
+        """Load EVERY per-user baseline in ONE query, keyed by user id.
+
+        The per-event ``get_user`` path issued one Spark query + driver collect PER EVENT. At a
+        few thousand events per 5-minute sweep that is thousands of round-trips — minutes of
+        wall time inside a job scheduled every 5 minutes, causing overlapping runs and
+        heartbeat gaps. The table is one row per active user (thousands at most), so a single
+        load is strictly cheaper and takes no user input (no injection seam)."""
+        s = _get_spark()
+        _ensure_table(s)
+        rows = s.sql(f"SELECT * FROM {table} WHERE scope = 'user'").collect()
+        out = {}
+        for r in rows:
+            d = r.asDict()
+            uid = d.get("user_id")
+            if uid:
+                out[uid] = _from_row(d)
+        return out
 
     def upsert_many(rows):
         if not rows:
@@ -156,4 +185,5 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
             "WHEN NOT MATCHED THEN INSERT *"
         )
 
-    return {"get_user": get_user, "get_estate": get_estate, "upsert_many": upsert_many}
+    return {"get_user": get_user, "get_estate": get_estate,
+            "get_all_users": get_all_users, "upsert_many": upsert_many}

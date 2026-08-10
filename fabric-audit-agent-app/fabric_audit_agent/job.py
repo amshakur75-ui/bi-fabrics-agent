@@ -744,6 +744,23 @@ def _build_tier2_collector(env, window="5m"):
             la_cfg["workspace"] = env["FABRIC_LA_WORKSPACE_LABEL"]
         collectors.append(create_log_analytics_collector(la_query, la_cfg))
 
+        # RAW per-event stream (Design A' B2/B3). The attribution collector above SUMMARIZES per
+        # (workspace, item, user) and emits `items`/`users` — it never emits `events`. Without
+        # this, `facts["events"]` does not exist in the Tier-2 sweep, so
+        # `detect_user_baseline_deviation_precomputed` iterates an empty list and the correlation
+        # booster no-ops: B2 and B3 were DEAD CODE in production (found 2026-08-10; every test
+        # injected the key by hand, so nothing caught it).
+        #
+        # `window=window` is passed EXPLICITLY and must stay that way: _build_events_collector
+        # defaults to FABRIC_LA_WINDOW ("1d"), which on a 5-minute sweep would re-pull a full day
+        # of events every run and re-flag the same spikes ~288 times a day.
+        # Fail-open at collect time, so an LA outage degrades the correlation booster rather than
+        # breaking the capacity gates.
+        try:
+            collectors.append(_build_events_collector(env, window=window))
+        except Exception as exc:
+            print(f"[tier2] events collector skipped ({type(exc).__name__}: {exc})")
+
     if not collectors:
         return {"collect": lambda: {"capacity": None, "items": [], "models": []}}
     if len(collectors) == 1:
@@ -941,21 +958,36 @@ def run_baseline_bootstrap_job(env=None, *, collector=None, baseline_store=None,
             min_history = int(env.get("FABRIC_BASELINE_MIN_HISTORY", "20"))
         except (TypeError, ValueError):
             min_history = 20
-    if collector is None:
-        # Wrap _build_events_collector (which returns {"events": [...]}) to unwrap into a
-        # flat list of events — build_baselines' expected input shape. Guarded against
-        # missing env (FABRIC_TENANT_ID etc.) so a job scheduled before secrets are set
-        # degrades to an empty-write summary rather than an unhandled exception.
-        try:
-            _inner = _build_events_collector(env, window=lookback)
+    if as_of is None:
+        from datetime import datetime, timezone
+        as_of = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-            def _flat_collect():
-                return (_inner["collect"]() or {}).get("events") or []
-            collector = {"collect": _flat_collect}
+    aggregate = False
+    if collector is None:
+        # Server-side percentile aggregation (adapters/collector_baseline_la). This REPLACES the
+        # old reuse of _build_events_collector, which capped at the 5,000 costliest events and
+        # therefore computed a "p95" that was really the ~99.9th percentile of the true
+        # distribution (measured: estate p95 = 1052 CPU-s). Aggregating in KQL has no row cap and
+        # returns a few hundred summary rows instead of a 700k-row pull.
+        # Guarded against missing env so a job scheduled before secrets exist degrades to an
+        # empty-write summary rather than an unhandled exception.
+        try:
+            from .adapters.clients import build_log_analytics_query
+            from .adapters.collector_baseline_la import create_baseline_collector
+            la_query = build_log_analytics_query(
+                env["FABRIC_LA_WORKSPACE_ID"], _require(env, "FABRIC_TENANT_ID"),
+                _require(env, "FABRIC_CLIENT_ID"), _require(env, "FABRIC_CLIENT_SECRET"),
+            )
+            collector = create_baseline_collector(la_query, {
+                "window": f"| where TimeGenerated > ago({lookback})",
+                "minHistory": min_history,
+                "asOf": as_of,
+            })
+            aggregate = True
         except Exception as exc:
-            print(f"[baseline] events collector init failed "
+            print(f"[baseline] aggregate collector init failed "
                   f"({type(exc).__name__}: {exc})")
-            health.record_issue(f"baseline events collector init failed: "
+            health.record_issue(f"baseline aggregate collector init failed: "
                                 f"{type(exc).__name__}: {exc}")
             return {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
                     "error": f"{type(exc).__name__}: {exc}",
@@ -974,14 +1006,16 @@ def run_baseline_bootstrap_job(env=None, *, collector=None, baseline_store=None,
                         "error": f"{type(exc).__name__}: {exc}",
                         "health": health.to_dict()}
 
-    if as_of is None:
-        from datetime import datetime, timezone
-        as_of = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-    from .automation.user_baseline_bootstrap import run_bootstrap
+    from .automation.user_baseline_bootstrap import run_bootstrap, run_bootstrap_aggregate
     try:
-        summary = run_bootstrap(collector, min_history=min_history, as_of=as_of,
-                                baseline_store=baseline_store)
+        if aggregate:
+            # Collector already returns finished baseline rows (percentiles computed in KQL).
+            summary = run_bootstrap_aggregate(collector, as_of=as_of,
+                                              baseline_store=baseline_store)
+        else:
+            # Injected raw-event collector (tests / an explicit override): reduce in Python.
+            summary = run_bootstrap(collector, min_history=min_history, as_of=as_of,
+                                    baseline_store=baseline_store)
     except Exception as exc:
         print(f"[baseline] bootstrap failed ({type(exc).__name__}: {exc})")
         health.record_issue(f"baseline bootstrap failed: {type(exc).__name__}: {exc}")
@@ -1011,6 +1045,19 @@ def baseline_bootstrap_main():
     line = render_health_line(health)
     if line:
         print(f"[baseline] {line}")
+    # Fail LOUDLY. Every internal error path returns a summary rather than raising (so a
+    # transient outage can't crash the wheel task mid-write), but a nightly job that writes
+    # nothing and still reports SUCCESS is invisible: the sweep would keep comparing against
+    # a stale baseline for weeks. Surface it as a red run so the job's failure notification
+    # fires and the detector's staleness guard isn't the only backstop.
+    err = result.get("error")
+    if err:
+        raise RuntimeError(f"baseline bootstrap failed: {err}")
+    if not result.get("rowsWritten"):
+        raise RuntimeError(
+            "baseline bootstrap wrote 0 rows — Log Analytics returned no usable activity for "
+            "the window, or the Delta write was rejected. The previous baseline (if any) is "
+            "untouched; investigate before the next tier2 sweep relies on it.")
     return result
 
 

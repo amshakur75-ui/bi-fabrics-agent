@@ -111,6 +111,28 @@ def build_baselines(events, *, min_history=20, as_of=None):
     return rows
 
 
+def run_bootstrap_aggregate(collector, *, as_of=None, baseline_store=None):
+    """Upsert baseline rows that were ALREADY aggregated by the source.
+
+    Companion to ``run_bootstrap`` for ``adapters.collector_baseline_la``, which computes the
+    percentiles server-side in KQL and returns finished rows. There is no Python reduction and no
+    row cap, which is the point: the raw-row path had to be capped, and a cost-ordered cap turned
+    p95 into ~p99.9 (see that module's docstring).
+
+    ``as_of`` is re-stamped onto every row here so the timestamp is authoritative even if the
+    collector was built with a different one. Returns the same summary shape as ``run_bootstrap``.
+    """
+    rows = list(collector["collect"]() or [])
+    if as_of is not None:
+        for r in rows:
+            r["asOf"] = as_of
+    if baseline_store is not None and rows:
+        baseline_store["upsert_many"](rows)
+    users = sum(1 for r in rows if r.get("scope") == "user")
+    return {"rowsWritten": len(rows), "users": users,
+            "hasEstate": any(r.get("scope") == "estate" for r in rows), "asOf": as_of}
+
+
 def run_bootstrap(collector, *, min_history=20, as_of=None, baseline_store=None):
     """Wire-together: pull 14 days of events via ``collector["collect"]()``, aggregate, and
     upsert the resulting rows through the injected store. Returns a summary dict for logging.
