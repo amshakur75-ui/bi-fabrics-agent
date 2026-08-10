@@ -807,7 +807,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            + " and has now RECURRED. First decide whether the same cause returned or "
                            "a new driver is behind it this time.")
                 row = dict(prior, currentlyActive=True, status="active", lastAlertedAt=now_iso,
-                           runAt=now_iso, investigationSummary=summary)
+                           runAt=now_iso, investigationSummary=summary, absenceCount=0)
                 row["delivered"] = _send("new", t, row, summary, investigate_prefix=_prefix)
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
@@ -817,7 +817,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                                     "throttleMinutes": prior.get("throttleMinutes")}, cfg):
                 inv = reasoner(t) if reasoner else {"markdown": "", "summary": "", "report": True}
                 row = dict(prior, severity=sev, metric=metric, lastAlertedAt=now_iso, runAt=now_iso,
-                           currentlyActive=True,
+                           currentlyActive=True, absenceCount=0,
                            escalationCount=(prior.get("escalationCount") or 0) + 1,
                            investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
                 # Composite state: carry signal set + primary metrics so the next tick can
@@ -839,7 +839,9 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 # A genuine WORSENING still breaks through (escalation, checked above), and a
                 # recurrence AFTER a human resolve still re-alerts (reopen branch, checked above).
                 if prior.get("currentlyActive") is not True:
-                    row = dict(prior, runAt=now_iso, currentlyActive=True)
+                    # Re-fire during the quiet-grace window: same incident, no new card. Reset
+                    # absenceCount so the next absent tick starts the grace clock from scratch.
+                    row = dict(prior, runAt=now_iso, currentlyActive=True, absenceCount=0)
                     alerts_store["upsert"](row)
                     _write_ticket(row, t)
                 actions["silent"].append(key)
@@ -930,17 +932,31 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     # resolution: incidents that were active but no longer fire this run
     _CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
                         "capacity_incident")
+    quiet_ticks = int(cfg.get("quiet_ticks", 12))
     for key, prior in active.items():
         if key in seen:
             continue
         if prior.get("checkType") in _CAPACITY_CHECKS:
-            # Genuine physical capacity state that comes and goes -> auto-resolve internally, but do
-            # NOT push a "resolved" card to Teams. Resolution isn't actionable — the state cleared
-            # on its own, nothing for a human to do. Broadcasting the auto-close doubled Teams
-            # volume without adding signal (found 2026-08-09). Notification-center + audit_alerts
-            # still record the resolve state so the ticket lifecycle stays intact.
-            alerts_store["resolve"](key, now_iso)
-            actions["resolved"].append(key)
+            # Design A' quiet-to-resolve (2026-08-09): a capacity incident is held open through
+            # up to ``quiet_ticks`` consecutive absent sweeps (default 12 = 60 min clean) before
+            # actually resolving. A re-fire during that grace window is treated as the SAME
+            # incident (no fresh card). This kills the resolve-then-re-fire flap that shipped a
+            # duplicate card each time an event bounced across two adjacent sweep windows.
+            absence = int(prior.get("absenceCount") or 0) + 1
+            if absence < quiet_ticks:
+                _row = dict(prior, absenceCount=absence, currentlyActive=False, runAt=now_iso)
+                alerts_store["upsert"](_row)
+                _write_ticket(_row, {"workspace": prior.get("workspace")})
+                actions["inactive"].append(key)
+            else:
+                # Genuine physical capacity state that comes and goes -> auto-resolve internally,
+                # but do NOT push a "resolved" card to Teams. Resolution isn't actionable — the
+                # state cleared on its own, nothing for a human to do. Broadcasting the auto-close
+                # doubled Teams volume without adding signal (found 2026-08-09). Notification-
+                # center + audit_alerts still record the resolve state so the ticket lifecycle
+                # stays intact.
+                alerts_store["resolve"](key, now_iso)
+                actions["resolved"].append(key)
         else:
             # Attribution / user-item finding (Step 8): its absence does NOT mean resolved and must
             # NOT send a "Resolved" card — that card + the next tick's re-fire IS the flapping. The

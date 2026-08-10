@@ -15,9 +15,14 @@ T0 = datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc)
 
 def _cfg_no_hysteresis():
     """Config with hysteresis disabled — for tests exercising absence/reopen in isolation, where
-    the attribution incident must go active on the first run (hysteresis is covered separately)."""
+    the attribution incident must go active on the first run (hysteresis is covered separately).
+
+    Also pins quiet_ticks=1 (Design A' default is 12, but the tests below assert the state
+    transition after a single absent tick — the 60-min quiet-grace behavior is covered in
+    test_tier2_design_a_prime.py)."""
     c = load_cfg()
     c["hysteresis_ticks"] = 1
+    c["quiet_ticks"] = 1
     return c
 
 
@@ -56,7 +61,12 @@ def test_full_state_machine():
     posts, sink = _sink()
     sinks = {"webhook": sink}
     warn = {"check": "pressure", "peakCuPct": 130}  # derived warn -> report
-    kw = dict(alerts_store=store, delivery_sinks=sinks, reasoner=r, chat_writer=w, app_url="https://app")
+    # Design A' quiet_ticks=1 pins the state-machine test to immediate resolve on absence — the
+    # 60-min quiet-grace behavior is covered separately in test_tier2_design_a_prime.py.
+    _cfg = load_cfg()
+    _cfg["quiet_ticks"] = 1.0
+    kw = dict(alerts_store=store, delivery_sinks=sinks, reasoner=r, chat_writer=w, app_url="https://app",
+              cfg=_cfg)
 
     # run 1: new incident -> 1 LLM, 1 chat, 1 card with deep-link
     a = process_alerts([warn], now_dt=T0, **kw)

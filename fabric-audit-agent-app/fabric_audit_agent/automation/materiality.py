@@ -32,6 +32,13 @@ _DEFAULTS = {
     # Design A' (Aug 2026) — additional capacity signals beyond throttle/pressure/overage:
     "extreme_peak_pct": 200.0,      # single-window CU peak at/above this = report even w/o throttle
     "throttle_imminent_pct": 80.0,  # Fabric threshold pct at/above this = early-warning alert
+    # Design A' quiet-to-resolve: a capacity incident holds open through brief clear-and-return
+    # gaps rather than resolving on the first absent tick. Auto-resolve fires only after
+    # ``quiet_ticks`` CONSECUTIVE absences (default 12 x 5-min sweep = 60 minutes clean). A
+    # re-fire while in the grace period is treated as the SAME incident (no new card, escalation
+    # rules still apply). Kills the resolve-then-re-fire flap that appeared on Aug 5 when the
+    # same event bounced across two adjacent sweep windows.
+    "quiet_ticks": 12.0,
 }
 
 

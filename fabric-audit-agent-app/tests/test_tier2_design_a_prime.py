@@ -6,15 +6,16 @@ crossed (`throttle_imminent`). Detector + integration surfaces (title/facts/seve
 incident-key) are pinned so a fired signal produces a well-formed, deduped alert the same way
 the existing capacity checks do.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fabric_audit_agent.automation.tier2_check import (
-    _check_extreme_peak, _check_throttle_imminent, _title_for, _facts_for,
+    _check_extreme_peak, _check_throttle_imminent, _title_for, _facts_for, process_alerts,
 )
 from fabric_audit_agent.automation.incident import (
     incident_key, severity_of, primary_metric,
 )
 from fabric_audit_agent.automation.materiality import classify, is_escalation, load_cfg
+from fabric_audit_agent.context_alerts import create_alerts_store_memory
 
 
 def test_extreme_peak_fires_at_or_above_threshold():
@@ -284,12 +285,111 @@ def test_end_to_end_multi_signal_produces_one_teams_card():
     assert set(row["signalTypes"]) == {"throttle", "pressure", "extreme_peak"}
 
 
+def _quiet_cfg(**overrides):
+    """cfg with hysteresis disabled + quiet_ticks whatever the test wants (default 3 for speed)."""
+    c = load_cfg()
+    c["hysteresis_ticks"] = 1
+    c["quiet_ticks"] = 3
+    c.update(overrides)
+    return c
+
+
+def test_capacity_incident_holds_open_through_brief_absence():
+    """A capacity incident that clears for one tick MUST NOT auto-resolve — it stays as the
+    same incident (currentlyActive=False during the grace period, no new Teams card if it
+    re-fires). This is the resolve-then-re-fire flap the Design A' quiet_ticks knob fixes."""
+    T0 = datetime(2026, 8, 9, 13, 52, 0, tzinfo=timezone.utc)
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink},
+              reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True},
+              app_url="https://app", cfg=_quiet_cfg(quiet_ticks=3))
+    trig = {"check": "throttle", "throttleMinutes": 5.0, "peakCuPct": 105.0}
+
+    process_alerts([trig], now_dt=T0, **kw)                                # fire
+    assert len(posts) == 1
+    process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)             # absence 1
+    process_alerts([], now_dt=T0 + timedelta(minutes=10), **kw)            # absence 2
+    active = store["query_active"]()
+    # Row is still open (not resolved), just marked currentlyActive=False during the grace.
+    assert "capacity::capacity" in active
+    assert active["capacity::capacity"]["absenceCount"] == 2
+    assert active["capacity::capacity"]["currentlyActive"] is False
+
+
+def test_capacity_incident_resolves_after_quiet_ticks_expire():
+    """Once absent for quiet_ticks consecutive sweeps the incident auto-resolves — the
+    fabric state actually cleared and the ticket lifecycle should reflect it."""
+    T0 = datetime(2026, 8, 9, 13, 52, 0, tzinfo=timezone.utc)
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink},
+              reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True},
+              app_url="https://app", cfg=_quiet_cfg(quiet_ticks=3))
+    trig = {"check": "throttle", "throttleMinutes": 5.0, "peakCuPct": 105.0}
+
+    process_alerts([trig], now_dt=T0, **kw)                                # fire
+    for i in range(1, 3):                                                   # absences 1, 2
+        process_alerts([], now_dt=T0 + timedelta(minutes=5 * i), **kw)
+    # third absence hits quiet_ticks — auto-resolve fires now
+    a = process_alerts([], now_dt=T0 + timedelta(minutes=15), **kw)
+    assert a["resolved"] == ["capacity::capacity"]
+    assert "capacity::capacity" not in store["query_active"]()
+    # still exactly ONE Teams card ever — the auto-resolve is silent (no Resolved card)
+    assert len(posts) == 1
+
+
+def test_refire_during_grace_stays_same_incident_no_new_card():
+    """The Aug 5 shape: a capacity event clears for 1-2 sweeps, then re-fires. Under Design A'
+    that stays the SAME incident (same key, no new Teams card), not a resolve-then-new-card
+    flap. Escalation logic still applies if the metrics genuinely worsened, but a same-shape
+    re-fire is silent."""
+    T0 = datetime(2026, 8, 9, 13, 52, 0, tzinfo=timezone.utc)
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink},
+              reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True},
+              app_url="https://app", cfg=_quiet_cfg(quiet_ticks=6))
+    trig = {"check": "throttle", "throttleMinutes": 5.0, "peakCuPct": 105.0}
+
+    process_alerts([trig], now_dt=T0, **kw)                                # fire (1 card)
+    process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)             # absent, grace=1
+    process_alerts([], now_dt=T0 + timedelta(minutes=10), **kw)            # absent, grace=2
+    # re-fire with the same shape while still in grace
+    a = process_alerts([trig], now_dt=T0 + timedelta(minutes=15), **kw)
+    assert a["silent"] == ["capacity::capacity"]                            # same incident
+    assert len(posts) == 1                                                  # still one card
+    row = store["query_active"]()["capacity::capacity"]
+    assert row["absenceCount"] == 0 and row["currentlyActive"] is True     # grace clock reset
+
+
+def test_refire_after_quiet_period_is_a_fresh_incident():
+    """Once the incident actually resolves (quiet_ticks elapsed), a later re-fire is a NEW
+    incident — a fresh Teams card. This is the correct behavior: the capacity was clean for
+    a full quiet window; the return is a distinct event."""
+    T0 = datetime(2026, 8, 9, 13, 52, 0, tzinfo=timezone.utc)
+    store = create_alerts_store_memory()
+    posts, sink = _sink()
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": sink},
+              reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True},
+              app_url="https://app", cfg=_quiet_cfg(quiet_ticks=2))
+    trig = {"check": "throttle", "throttleMinutes": 5.0, "peakCuPct": 105.0}
+
+    process_alerts([trig], now_dt=T0, **kw)                                # fire (1 card)
+    process_alerts([], now_dt=T0 + timedelta(minutes=5), **kw)             # absence 1
+    process_alerts([], now_dt=T0 + timedelta(minutes=10), **kw)            # absence 2 -> resolved
+    assert "capacity::capacity" not in store["query_active"]()
+
+    # a later re-fire is a fresh incident + a fresh card
+    a = process_alerts([trig], now_dt=T0 + timedelta(minutes=60), **kw)
+    assert a["new"] == ["capacity::capacity"]
+    assert len(posts) == 2                                                  # two distinct cards
+
+
 def test_new_checks_do_push_to_teams():
     # unlike attribution (concentration / cross_user) which is notification-center only, both
     # new capacity signals are hard capacity emergencies — they belong on Teams alongside
     # throttle/pressure/overage.
-    from fabric_audit_agent.automation.tier2_check import process_alerts
-    from fabric_audit_agent.context_alerts import create_alerts_store_memory
     T0 = datetime(2026, 8, 9, 10, 0, 0, tzinfo=timezone.utc)
     store = create_alerts_store_memory()
     posts, sink = _sink()
