@@ -33,6 +33,41 @@ def _export_dir():
     return d
 
 
+def _download_fields(download_id, path, kind, title, n_rows, n_cols, extra=""):
+    """Result fields for a built export, telling the truth about whether it can be FETCHED.
+
+    The tools wrote the artifact into the agent container's temp dir and unconditionally returned
+    `downloadId` + "Download id: <file>." -- which the model relays verbatim as success. There is no
+    download route in the server (routes are alerts/chat/config/feedback/history/messages/session)
+    and the only static mount is the client build, so the file is unreachable, in a different
+    container from the browser, and gone on restart. FABRIC_EXPORT_DIR -- the one way to point this
+    at somewhere servable -- is set in neither databricks.yml nor app.yaml.
+
+    Rather than delete a working report builder, this reports the artifact honestly: when no served
+    location is configured, there is NO downloadId (so nothing can relay a fake handle) and the
+    summary says the file cannot be downloaded in this deployment.
+    """
+    servable = bool(os.environ.get("FABRIC_EXPORT_DIR"))
+    out = {
+        "format": kind, "filename": download_id, "title": title,
+        "rowCount": n_rows, "columnCount": n_cols,
+        "downloadable": servable,
+    }
+    if servable:
+        out["downloadId"] = download_id
+        out["downloadPath"] = path
+        out["summary"] = (f"Built {title!r} ({n_rows:,} rows x {n_cols} columns{extra}). "
+                          f"Download id: {download_id}.")
+    else:
+        out["serverPath"] = path
+        out["note"] = ("no download endpoint is configured in this deployment "
+                       "(FABRIC_EXPORT_DIR unset), so this file cannot be retrieved by the user")
+        out["summary"] = (f"Built {title!r} ({n_rows:,} rows x {n_cols} columns{extra}), but this "
+                          "deployment has no download endpoint configured, so the file cannot be "
+                          "delivered — report the numbers in the chat instead of offering a file.")
+    return out
+
+
 def _coerce_columns(columns):
     """Normalize columns to the builders' ``[{"name","type"}, ...]`` shape. Tolerates a plain
     list of column-name strings and dicts missing a type. Returns ``(columns, None)`` or
@@ -119,20 +154,9 @@ def export_html_report_result(inp):
         return {"error": f"HTML report builder unavailable: {exc}"}
     html = build_html_report(columns, rows, title)
     download_id, path = _write_export(html, _safe_filename(title, "html"))
-    return {
-        "format": "html",
-        "downloadId": download_id,
-        "downloadPath": path,
-        "filename": download_id,
-        "title": title,
-        "rowCount": len(rows),
-        "columnCount": len(columns),
-        "byteCount": len(html.encode("utf-8")),
-        "summary": (
-            f"Built a Newell-branded HTML report '{title}' ({len(rows):,} rows x {len(columns)} "
-            f"columns). Download id: {download_id}."
-        ),
-    }
+    out = _download_fields(download_id, path, "html", title, len(rows), len(columns))
+    out["byteCount"] = len(html.encode("utf-8"))
+    return out
 
 
 def export_xlsx_report_result(inp):
@@ -150,20 +174,10 @@ def export_xlsx_report_result(inp):
     except ImportError as exc:  # openpyxl resolved lazily inside the builder
         return {"error": f"Excel report builder unavailable: {exc}"}
     download_id, path = _write_export(bytes(data), _safe_filename(title, "xlsx"))
-    return {
-        "format": "xlsx",
-        "downloadId": download_id,
-        "downloadPath": path,
-        "filename": download_id,
-        "title": title,
-        "rowCount": len(rows),
-        "columnCount": len(columns),
-        "byteCount": len(data),
-        "summary": (
-            f"Built a typed Excel report '{title}' ({len(rows):,} rows x {len(columns)} columns, "
-            f"auto-selected chart). Download id: {download_id}."
-        ),
-    }
+    out = _download_fields(download_id, path, "xlsx", title, len(rows), len(columns),
+                           extra=", auto-selected chart")
+    out["byteCount"] = len(data)
+    return out
 
 
 _COLUMNS_SCHEMA = {

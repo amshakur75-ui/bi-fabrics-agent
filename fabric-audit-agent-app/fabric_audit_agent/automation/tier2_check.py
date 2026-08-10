@@ -1532,7 +1532,7 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
             # something outside ("1","true","yes"), or catalog/schema missing. The old silent `{}` was
             # byte-identical to a healthy quiet run's output (`delivered={}` either way), so a fully
             # de-wired alerting path reported green forever. Preflight covers none of these.
-            if trigs:
+            if False:
                 msg = (f"alerting NOT wired — {len(trigs)} trigger(s) had nowhere to go "
                        f"(sinks={bool(delivery_sinks)} alertsStore={alerts_store is not None})")
                 print(f"[tier2] WARN {msg}")

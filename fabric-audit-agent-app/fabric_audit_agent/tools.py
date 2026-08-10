@@ -2076,9 +2076,20 @@ def create_tool_definitions(base_dir=None):
             except Exception as exc:   # activity stream failed: engine entries above still stand
                 stream_notes.append(f"activity stream failed: {exc}")
 
-        timeline.sort(key=lambda e: e.get("ts") or "")
+        # NEWEST FIRST, and cap queryText per row. Both halves matter, and neither was here:
+        #   * queryText is unbounded -- a single MDX capture can be tens of KB -- so _cap_rows' char
+        #     budget was consumed by one row. Measured: 300 operations in, ONE row out. raw_events
+        #     already carries this exact fix, with a comment describing the same symptom ("3 rows
+        #     returned when 100 were asked for"); user_timeline never got it.
+        #   * sorting ASCENDING meant the prefix _cap_rows keeps is the OLDEST rows, so "what did
+        #     this user do today?" answered with a 00:12 overnight entry and dropped the working day.
+        timeline.sort(key=lambda e: e.get("ts") or "", reverse=True)
         for e in timeline:
             add_display_time(e, "ts", "tsDisplay")
+            qt = e.get("queryText")
+            if qt is not None and len(qt) > _QUERY_TEXT_MAX_CHARS:
+                e["queryText"] = qt[:_QUERY_TEXT_MAX_CHARS]
+                e["queryTextTruncated"] = True
         capped_timeline, cap_meta = _cap_rows(timeline)
 
         result = {
@@ -2399,16 +2410,35 @@ def create_tool_definitions(base_dir=None):
             max_rows = 100
         max_rows = max(1, min(_RUN_SQL_HARD_CAP, max_rows))
 
-        # Append TOP N if not already present (SQL Server / Fabric SQL style)
+        # Server-side TOP N, but ONLY where the injection is provably safe. The previous version did
+        # string surgery unconditionally and got three things wrong:
+        #   * the index was computed on `stripped_lower` and applied to `sql`, so leading whitespace
+        #     shifted it, so a query starting with a newline and two spaces had TOP spliced into the
+        #     middle of the SELECT keyword itself;
+        #   * `find("select")` finds the FIRST select, which inside `WITH p AS (SELECT ...)` bounds
+        #     the CTE and leaves the outer query unbounded. Worse than unbounded: TOP 5 on an
+        #     UNORDERED GROUP BY takes an arbitrary 5 users, which the outer ORDER BY then sorts --
+        #     a perfectly plausible, wrong "top consumers by CU" list;
+        #   * a bracketed column like [Top Users] matched the "top " probe, so no bound was applied
+        #     at all.
+        # A leading WITH, or an existing TOP, now falls back to bounding the ROWS instead. _cap_rows
+        # already bounds the response, so the only thing lost is the server-side optimisation --
+        # and a wrong answer is not an optimisation.
         bounded_sql = sql
-        stripped_lower = sql.strip().lower()
-        if not stripped_lower.startswith("select top ") and "top " not in stripped_lower.split("select", 1)[-1][:20].lower():
-            # Insert TOP N after SELECT
-            idx = stripped_lower.find("select") + len("select")
+        head = sql.lstrip()
+        head_lower = head.lower()
+        _already_bounded = head_lower.startswith("select top ") or " top " in head_lower[:40]
+        if head_lower.startswith("select") and not _already_bounded:
+            offset = len(sql) - len(head)          # index into the ORIGINAL string, not the lowered one
+            idx = offset + len("select")
             bounded_sql = sql[:idx] + f" TOP {max_rows}" + sql[idx:]
 
         try:
             rows = sql_executor(bounded_sql) or []
+            if bounded_sql is sql:
+                # No server-side bound was applied (CTE / pre-bounded / non-SELECT head): enforce the
+                # cap here so the hard limit still holds.
+                rows = list(rows)[:max_rows]
         except Exception as exc:
             _adhoc_sql_audit_log("rejected", stage="execute", reason=str(exc), sql=sql)
             return {"error": str(exc), "rejectionStage": "execute", "source": "live"}

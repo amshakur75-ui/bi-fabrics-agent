@@ -126,16 +126,37 @@ def pretool_pbi_usage_redirect(name: str, inp: Any) -> Optional[Dict]:
 
 
 # ── Hook (b): ExecutingUser identity-display normalization ───────────────────────────
+# A bare UPN local part: letters, digits and the punctuation Entra actually allows. Deliberately
+# EXCLUDES the hyphen, because the values this must not touch are dashed GUIDs.
+_BARE_UPN_LOCAL_PART = re.compile(r"^[A-Za-z0-9._%+]+$")
+# Service-principal object ids arrive as 8-4-4-4-12 hex, with or without braces.
+_GUID_SHAPE = re.compile(r"^\{?[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\}?$")
+
+
 def normalize_executing_user_display(raw: Any) -> str:
     """Self-contained port of format.ts normalizeExecutingUserDisplay (kept in sync with
-    fabric_audit_agent.export). Bare username -> ``@newellco.com`` appended; already an address
-    -> unchanged; None/empty -> ``""``. Never synthesizes a fake address."""
+    fabric_audit_agent.export). A bare USERNAME gets ``@newellco.com``; anything else is passed
+    through unchanged; None/empty -> ``""``.
+
+    The docstring used to promise "Never synthesizes a fake address" while the code was
+    ``s if "@" in s else s + domain`` -- i.e. it appended the domain to ANY value without an "@".
+    ExecutingUser / EffectiveUsername legitimately carry service-principal object GUIDs and non-UPN
+    service identities (collector_events_la documents exactly this for XMLA sessions), so an XMLA
+    refresh row rendered in the chat table -- and in every export -- as
+    ``b3f2c1d4-...-9e8f@newellco.com``: a person-shaped identity that does not exist, attached to
+    real capacity cost. The mutation happens in place before caching, so it propagated to
+    tool_results and the export path too. Only a plausible bare UPN local part is completed now.
+    """
     if raw is None:
         return ""
     s = str(raw).strip()
     if s == "":
         return ""
-    return s if "@" in s else f"{s}{_NEWELL_EMAIL_DOMAIN}"
+    if "@" in s:
+        return s
+    if _GUID_SHAPE.match(s) or not _BARE_UPN_LOCAL_PART.match(s):
+        return s          # a GUID, a service identity, a display name -- not ours to complete
+    return f"{s}{_NEWELL_EMAIL_DOMAIN}"
 
 
 def _normalize_executing_user_rows(result: Dict) -> bool:

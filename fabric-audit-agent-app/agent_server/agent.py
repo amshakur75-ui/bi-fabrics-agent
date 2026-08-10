@@ -153,6 +153,18 @@ async def _run_tool_loop(client, *, model, system, messages, tools, dispatch, ma
             # Shared with the sync twin via loop_hooks so the two loops cannot drift.
             redirect = pretool_pbi_usage_redirect(b.name, b.input)
             key = (b.name, json.dumps(b.input, sort_keys=True, ensure_ascii=False))
+            # Unparsable arguments must NEVER reach a handler. Every read tool has defaults, and
+            # they are load-bearing -- capacity_peaks with no input runs the CURRENT UTC day -- so
+            # executing on a failed parse answers a different question than the one asked, in a
+            # well-formed table, with nothing marking the substitution. Return the error to the
+            # model so it re-issues the call. NOT cached: a retry must be allowed to succeed.
+            if isinstance(b.input, dict) and "__argumentParseError__" in b.input:
+                result = {"error": b.input["__argumentParseError__"], "tool": b.name}
+                trajectory.append({"tool": b.name, "input": {}})
+                results.append({"type": "tool_result", "tool_use_id": b.id,
+                                "content": _wrap_untrusted(
+                                    json.dumps(result, ensure_ascii=False))})
+                continue
             if redirect is not None:
                 result = redirect
             elif key in cache:
@@ -289,8 +301,20 @@ def _build_claude_client(ws):
             for tc in (msg.get("tool_calls") or []):
                 inp = tc["function"].get("arguments", "{}")
                 if isinstance(inp, str):
-                    try: inp = _json.loads(inp)
-                    except: inp = {}
+                    try:
+                        inp = _json.loads(inp)
+                    except Exception as exc:
+                        # NOT `{}`. An empty dict means "the model asked for the defaults", and the
+                        # defaults are load-bearing: capacity_peaks({}) runs the CURRENT UTC DAY at
+                        # topN=20, so a question about last Tuesday was silently answered with
+                        # today's data in a well-formed table with nothing marking the substitution.
+                        # Truncated arguments are the realistic trigger (finish_reason "length"
+                        # against max_tokens), i.e. exactly when the model was mid-way through
+                        # writing the parameters that mattered. Surfacing the parse failure lets the
+                        # model retry instead of confidently answering the wrong question.
+                        inp = {"__argumentParseError__":
+                               f"could not parse tool arguments as JSON ({type(exc).__name__}); "
+                               "re-issue this tool call with complete, valid arguments"}
                 blocks.append(_Block(type="tool_use", id=tc.get("id",""),
                                      name=tc["function"]["name"], input=inp))
             stop_map = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
