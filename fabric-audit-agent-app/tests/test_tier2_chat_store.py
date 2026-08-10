@@ -122,14 +122,64 @@ def test_lakebase_conn_uses_autoscaling_postgres_api(monkeypatch):
 # 16a: Postgres connecting-user identity resolution
 # ---------------------------------------------------------------------------
 
+_SP_CLIENT_ID = "3f7c1e02-9a4b-4d1e-8f60-2b5c7a9d1e44"   # UUID-shaped, like a real one
+
+
+class _FakeMe:
+    def __init__(self, user_name):
+        self.user_name = user_name
+
+
+class _FakeClient:
+    """Minimal WorkspaceClient stand-in exposing current_user.me()."""
+    def __init__(self, user_name=None, raises=False):
+        self._raises = raises
+        outer = self
+
+        class _CU:
+            def me(self):
+                if outer._raises:
+                    raise RuntimeError("workspace unreachable")
+                return _FakeMe(user_name)
+        self.current_user = _CU()
+
+
 def test_resolve_pg_user_prefers_execution_identity_over_hardcoded_override():
-    """The job's own service-principal identity (DATABRICKS_CLIENT_ID) MUST win over a hardcoded
+    """The App's own service-principal client id (DATABRICKS_CLIENT_ID) MUST win over a hardcoded
     FABRIC_LAKEBASE_USER — Postgres token auth requires the connecting user to match whoever
-    actually generated the token, which is always the execution identity, never a stray env var
-    (this was Part 7's root cause: a hardcoded human email out-precedenced the real job identity)."""
+    actually generated the token, which is the execution identity, never a stray env var
+    (Part 7's root cause: a hardcoded human email out-precedenced the real job identity)."""
     env = {"FABRIC_LAKEBASE_USER": "svc-user@example.com",
-           "DATABRICKS_CLIENT_ID": "sp-1234-execution-identity"}
-    assert _resolve_pg_user(env) == "sp-1234-execution-identity"
+           "DATABRICKS_CLIENT_ID": _SP_CLIENT_ID}
+    assert _resolve_pg_user(env) == _SP_CLIENT_ID
+
+
+def test_resolve_pg_user_ignores_spark_session_id_on_job_compute():
+    """THE 2026-08-10 PROD BUG. Serverless JOB compute sets DATABRICKS_CLIENT_ID to a Spark
+    session identifier, not a principal. Connecting as it fails every write with
+    ``password authentication failed for user 'spark-...'``. It must be rejected in favour of
+    asking the SDK who the run identity really is."""
+    env = {"DATABRICKS_CLIENT_ID": "spark-dcd781fd-2241-4bd5-ba14-8c2b3e281ae8"}
+    client = _FakeClient(user_name="abdishakur.mohamed@newellco.com")
+    assert _resolve_pg_user(env, client) == "abdishakur.mohamed@newellco.com"
+
+
+def test_resolve_pg_user_uses_sdk_identity_for_a_service_principal_run_as():
+    """When run_as is a service principal, current_user.me().user_name is the SP's application
+    id — exactly the role Postgres expects."""
+    env = {"DATABRICKS_CLIENT_ID": "spark-abc123"}
+    assert _resolve_pg_user(env, _FakeClient(user_name=_SP_CLIENT_ID)) == _SP_CLIENT_ID
+
+
+def test_resolve_pg_user_falls_back_when_sdk_lookup_fails():
+    """A workspace-API failure must not crash the connection path — fall through to the
+    local-dev override, then to whatever the env had."""
+    env = {"DATABRICKS_CLIENT_ID": "spark-abc123",
+           "FABRIC_LAKEBASE_USER": "someone@example.com"}
+    assert _resolve_pg_user(env, _FakeClient(raises=True)) == "someone@example.com"
+    # No override at all -> last resort is the raw env value (previous behavior preserved).
+    assert _resolve_pg_user({"DATABRICKS_CLIENT_ID": "spark-abc"},
+                            _FakeClient(raises=True)) == "spark-abc"
 
 
 def test_resolve_pg_user_falls_back_to_local_dev_override():

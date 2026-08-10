@@ -8,6 +8,7 @@ Auth/connection is isolated in ``_lakebase_conn`` (validated live at deploy); te
 """
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -199,18 +200,42 @@ def _endpoint_path():
     return f"projects/{instance}/branches/{branch}/endpoints/{endpoint}"
 
 
-def _resolve_pg_user(env):
+_CLIENT_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _resolve_pg_user(env, client=None):
     """Resolve the Postgres connecting user for a Lakebase token-auth connection (16a).
 
-    Postgres token auth requires the connecting ``user`` to match the identity that generated the
-    token. ``generate_database_credential()`` always mints a token for the identity actually
-    running the code — the job/App's own service-principal identity, exposed as
-    ``DATABRICKS_CLIENT_ID`` — so that identity MUST win whenever it's present; a hardcoded human
-    email in ``FABRIC_LAKEBASE_USER`` would otherwise silently out-precedence it and every
-    automated connection attempt becomes a guaranteed identity mismatch (tightening.md Part 16a).
-    ``FABRIC_LAKEBASE_USER`` is kept only as a local-dev fallback for when no execution identity
-    (no ``DATABRICKS_CLIENT_ID``) is present at all, e.g. running the CLI on a laptop."""
-    return env.get("DATABRICKS_CLIENT_ID") or env.get("FABRIC_LAKEBASE_USER")
+    Postgres token auth requires the connecting ``user`` to match the identity that generated
+    the token. ``generate_database_credential()`` always mints a token for the identity actually
+    running the code, so the connecting user must be that same principal.
+
+    ``DATABRICKS_CLIENT_ID`` is the right answer in the App runtime, where it holds the App's
+    service-principal client id (a UUID). It is the WRONG answer on serverless JOB compute,
+    which sets it to a Spark session identifier like ``spark-dcd781fd-2241-4bd5-ba14-8c...``.
+    Postgres has no such role, so every ticket/ack write failed with::
+
+        password authentication failed for user 'spark-dcd781fd-2241-4bd5-ba14-8c'
+
+    (observed live on the tier2 job, 2026-08-10). So the env var is only trusted when it is
+    actually shaped like a client id; otherwise we ask the SDK who we really are, which returns
+    the SP's application id for a service principal and the user name for a human run_as —
+    exactly what Postgres expects in both cases. ``FABRIC_LAKEBASE_USER`` remains the last-
+    resort local-dev override for a laptop with no execution identity at all.
+    """
+    cid = env.get("DATABRICKS_CLIENT_ID")
+    if cid and _CLIENT_ID_RE.match(cid):
+        return cid
+    if client is not None:
+        try:
+            who = client.current_user.me()
+            name = getattr(who, "user_name", None)
+            if name:
+                return name
+        except Exception as exc:
+            print(f"[lakebase] current_user lookup failed ({type(exc).__name__}: {exc})")
+    return env.get("FABRIC_LAKEBASE_USER") or cid
 
 
 def _lakebase_conn(*, client=None, connect=None):
@@ -224,10 +249,12 @@ def _lakebase_conn(*, client=None, connect=None):
     """
     host = os.environ["FABRIC_LAKEBASE_HOST"]
     db = os.environ.get("FABRIC_LAKEBASE_DB", "databricks_postgres")
-    user = _resolve_pg_user(os.environ)
     if client is None:
         from databricks.sdk import WorkspaceClient
         client = WorkspaceClient()
+    # Client is built BEFORE resolving the user: on job compute the env var is a Spark session
+    # id, so _resolve_pg_user needs the SDK to ask who the run identity actually is.
+    user = _resolve_pg_user(os.environ, client)
     cred = client.postgres.generate_database_credential(_endpoint_path())
     token = getattr(cred, "token", None) or cred["token"]
     if connect is None:
