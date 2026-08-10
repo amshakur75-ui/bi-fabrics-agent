@@ -206,7 +206,7 @@ def _top_users_lines(ranked, source):
 
 def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
                         app_url="", ack_url=None, unacked_prior=0, informational=None,
-                        events=None, health=None, stale_open=None):
+                        events=None, health=None, stale_open=None, capacity_open=None):
     """Build the digest as ``(markdown, card, summary)``. Pure — no I/O.
 
     ``open_tickets``: active ``audit_alerts`` rows (digest AND capacity rows already excluded —
@@ -242,6 +242,15 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     n_taxonomy = sum(len(buckets[k]) for k in ("refresh", "query_recurring", "query_other",
                                                 "slow_ops", "xmla", "other"))
     has_issues = n_taxonomy > 0
+    # Distinct from has_issues: the taxonomy count deliberately stays capacity-free (capacity has
+    # its own real-time Teams cards, and counting it here re-creates the "Open tickets: 161" flood),
+    # but "is anything wrong at all?" must include capacity or the headline lies. Dropping capacity
+    # from both lists meant that on a day whose only problem was an open, still-firing capacity
+    # incident, the digest read "No significant issues found" -- and the mitigating "Capacity
+    # context" line was itself gated on has_issues, so that was dropped too. A digest that denies a
+    # live incident is worse than no digest.
+    capacity_open = list(capacity_open or [])
+    anything_wrong = has_issues or bool(capacity_open)
     ranked_users, users_source = _top_users(open_tickets, events)
 
     # ---- markdown (the pre-created chat body; also a plain-text fallback) ----
@@ -263,6 +272,10 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     if has_issues:
         warn, info = _sev_counts(open_tickets)
         md.append(f"**Findings today:** {n_taxonomy} ({warn} warning, {info} info)")
+    elif capacity_open:
+        n = len(capacity_open)
+        md.append(f"**{n} capacity incident{'s' if n != 1 else ''} open and still firing** — "
+                  "see the capacity alerts for detail.")
     else:
         md.append("**No significant issues found in today's activity.**")
 
@@ -311,7 +324,7 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         if len(informational) > _MAX_TICKET_LINES:
             md.append(f"- …and {len(informational) - _MAX_TICKET_LINES} more")
 
-    if has_issues and (peak is not None or throttle is not None):
+    if anything_wrong and (peak is not None or throttle is not None):
         bits = []
         if peak is not None:
             bits.append(f"{peak:.0f}% peak true CU%".replace("%%", "%"))
@@ -340,6 +353,10 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         for key in ("refresh", "query_recurring", "query_other", "slow_ops", "xmla", "other"):
             if buckets[key]:
                 facts.append({"title": _SECTION_TITLES[key], "value": str(len(buckets[key]))})
+    elif capacity_open:
+        n = len(capacity_open)
+        facts = [{"title": "Findings today",
+                  "value": f"⚠️ {n} capacity incident{'s' if n != 1 else ''} open and firing"}]
     else:
         facts = [{"title": "Findings today", "value": "No significant issues found ✅"}]
     if coverage_gaps:
@@ -448,6 +465,12 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     _is_active_now = lambda v: v.get("currentlyActive") is not False
     open_tickets = [v for k, v in active.items()
                     if v.get("checkType") not in _EXCLUDE and _is_active_now(v)]
+    # Kept OUT of open_tickets/stale_open (and so out of the taxonomy count) but surfaced in the
+    # headline by build_daily_summary — see the note beside `anything_wrong` there.
+    _CAPACITY_FAMILY = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
+                        "capacity_incident")
+    capacity_open = [v for k, v in active.items()
+                     if v.get("checkType") in _CAPACITY_FAMILY and _is_active_now(v)]
     stale_open = [v for k, v in active.items()
                   if v.get("checkType") not in _EXCLUDE and not _is_active_now(v)]
 
@@ -473,7 +496,7 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
             open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
             date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
             informational=informational, ack_url=ack_url, events=events, health=health,
-            stale_open=stale_open)
+            stale_open=stale_open, capacity_open=capacity_open)
 
     # Pre-create the digest chat FIRST (its body is ack-independent) so the card's "Review &
     # acknowledge" action can deep-link to THAT chat — the app has no /alerts route, so the old

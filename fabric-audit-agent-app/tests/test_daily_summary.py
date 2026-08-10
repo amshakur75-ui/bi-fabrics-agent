@@ -298,3 +298,48 @@ def test_run_passes_events_through_for_top_users():
                             app_url="https://app", now_dt=NOW, events=events)
     assert res["delivered"] is False
     assert "99.0 CPU-s" in writes[0]
+
+
+# ---- the digest must never deny a live incident -----------------------------
+
+def _cap_row(check="capacity_incident"):
+    return {"incidentKey": "capacity::capacity", "checkType": check, "status": "active",
+            "severity": "warn", "currentlyActive": True, "resource": "capacity"}
+
+
+def test_digest_does_not_claim_all_clear_while_a_capacity_incident_is_firing():
+    """The capacity family is deliberately kept OUT of the taxonomy count -- it has its own
+    real-time Teams cards, and counting it re-created the "Open tickets: 161" flood. But it was
+    dropped from BOTH lists, so on a day whose only problem was an open, still-firing capacity
+    incident the digest headline read "No significant issues found ✅" while the worst thing
+    happening on the capacity was live. A digest that denies a live incident is worse than no
+    digest."""
+    md, card, _summary = build_daily_summary(
+        open_tickets=[], capacity={"peakCuPct": 187.0, "throttleMinutes": 12.0},
+        coverage_gaps=[], date_str="2026-08-10", capacity_open=[_cap_row()])
+    assert "No significant issues" not in md
+    assert "1 capacity incident open and still firing" in md
+    blob = json.dumps(card)
+    assert "No significant issues" not in blob
+    assert "capacity incident" in blob
+    # The capacity-context line was ALSO gated on has_issues, so the one number that matters on
+    # such a day was dropped too.
+    assert "187% peak true CU%" in md
+
+
+def test_digest_still_says_all_clear_when_genuinely_quiet():
+    """The fix must not turn the quiet case into a false alarm."""
+    md, card, _summary = build_daily_summary(
+        open_tickets=[], capacity={"peakCuPct": 42.0}, coverage_gaps=[],
+        date_str="2026-08-10", capacity_open=[])
+    assert "No significant issues" in md
+    assert "No significant issues" in json.dumps(card)
+
+
+def test_a_capacity_incident_that_stopped_firing_does_not_raise_the_headline():
+    """Only STILL-FIRING capacity rows count. A row left open because nobody clicked Resolve is
+    backlog, not a live incident -- that distinction is what the flood fix turned on."""
+    md, _card, _summary = build_daily_summary(
+        open_tickets=[], capacity={"peakCuPct": 42.0}, coverage_gaps=[],
+        date_str="2026-08-10", capacity_open=[])
+    assert "No significant issues" in md
