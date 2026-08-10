@@ -42,9 +42,41 @@ Suite: 2014 → 2142. Prod verified by RUNNING the jobs, not just by "Deployment
 
 ---
 
-## Round 1 — IN PROGRESS
+## Round 1 — COMPLETE, NOT CLEAN (fixed in `c7eae04` + `4fc7d91`, shipped `0.2.19`)
 
-Four parallel deep audits: (a) baseline/correlation semantics, (b) alert state machine
-regression, (c) deploy wiring + packaging, (d) cross-cutting consistency + docs-vs-reality.
+Four parallel deep audits + note-taker. **~30 findings.** Highlights, all "works but not as
+intended":
 
-Result: _pending_
+| Sev | Finding |
+|---|---|
+| HIGH | A capacity **IMPROVEMENT** fired an escalation card and DOWNGRADED the ticket. `is_escalation` used set-DIFFERENCE, which also fires when the signal set merely ROTATES — {pressure,throttle} -> {throttle_imminent} when throttling STOPS. Now strict superset + monotonic high-water severity/metric/signal-set. |
+| HIGH | **Case mismatch (regression I introduced):** baseline KQL didn't lowercase the user id but `normalize_event` does, so EVERY mixed-case user silently fell back to the estate baseline while the card claimed "their personalized baseline isn't ready yet". |
+| HIGH | **5m LA window = permanent blind hole.** LA ingests with minutes of latency while the KQL filters on event time, so events beside a capacity peak were missed by both the sweep that was too early and the one that was too late. Now 15m. |
+| HIGH | Estate-layer gate: with a correct (small) estate p95, `3 x p95` sits under the 100 CPU-s floor, so the floor alone decided — duplicating `absolute_cost` and naming routine heavy users as the throttle's cause. Added a 25x estate multiplier. |
+| HIGH | `if per_user:` gated the bulk load on TRUTHINESS — an empty-but-successful load reopened the per-event Spark storm. |
+| HIGH | Missing catalog/schema didn't return early: job collected rows, skipped the upsert, reported `rowsWritten=427`, exited GREEN having written nothing. |
+| HIGH | No `email_notifications.on_failure` on ANY job — the loud `raise` was decoration. |
+| HIGH | Raw-events LA pull ran UNGATED: a third LA query 288x/day feeding detectors that were off. |
+| HIGH | `activity.user-baseline-deviation` had no severity branch, no KB playbook, no digest bucket — would have been dropped as `skipped_minor` the moment it was wired. |
+| MED | Recurrence was PERMANENTLY DEAD for pressure/extreme_peak/overage — mapped to finding types no detector emits. |
+| MED | Burndown collapse (50min -> 2min) produced NO alert; added as a fourth escalation axis. |
+| MED | `signalTypes` had no TYPE guard: a non-list would iterate CHARACTERS (card every tick) or raise and silence EVERY alert that sweep. |
+| MED | `recurrence` dropped by the composite AND by `_facts_for`'s early return. |
+| MED | Baseline job reported "degraded" on EVERY run (preflight expected Kusto vars it deliberately omits) — permanently yellow. Added `expect=`. |
+| MED | Dead Teams-card path in `sweep_delivery` + a log line claiming "delivered N" for findings that were only ticketed. |
+| MED | `sustained`/`rate_change` counted in the digest while excluded from the notification centre — the CU-chatter the redesign claimed to remove. |
+| MED | `silent_failure` ("alerts cannot be trusted") invisible on BOTH primary surfaces. |
+| MED | `audit_alerts` DDL missing all four Design A' columns — the review surface couldn't show the drift that caused the P0. |
+| P0 docs | The runbook said B2/B3 are INERT and "do NOT run Stage 4" — all four cited blockers were already fixed. It also queried the WRONG table in 3 places, which returns empty-but-valid and reads as "B4 is broken". |
+| — | Deleted `scripts/__init__.py` (the landmine behind the 5.5 h outage); `__version__` drift; `rowsWritten` lying; SDK pin parity. |
+
+Also: 0.2.18 had been deployed from a DIRTY tree with a failing test (audit F1). Corrected —
+0.2.19 ships from a clean SHA with a clean tree.
+
+**Live verification of 0.2.19:** `TERMINATED SUCCESS`,
+`preflight: ok (log-analytics, capacity-events, csv-paths, catalog-manifest)` — no degraded line
+at all. Baseline job: 1,391 rows / 1,390 users (vs 51/50 under the biased pull). Suite 2145.
+
+---
+
+## Round 2 — IN PROGRESS
