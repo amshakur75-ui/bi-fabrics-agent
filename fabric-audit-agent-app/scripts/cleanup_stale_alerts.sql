@@ -48,3 +48,50 @@ SELECT check_type, count(*) AS n,
 FROM `shakur-main`.`bi-fabrics-audit`.audit_alerts
 WHERE status = 'active'
 GROUP BY check_type ORDER BY n DESC;
+
+
+-- ---------------------------------------------------------------------------
+-- SECTION 2 (added 2026-08-10, round 5): the rest of the same legacy backlog.
+--
+-- Section 1 above scopes on `check_type = 'sweep'`, which is only how the FIRST batch of these
+-- rows was tagged. The same `capacity.user-concentration::<user>` key was written under THREE
+-- different check_types as _family() evolved: 'sweep' (146 rows), 'capacity' (15) and
+-- 'concentration' (1). The detector that produced them no longer exists in the codebase, so all of
+-- them are dead history.
+--
+-- The 'concentration' row is the one that actually matters: `concentration` is a checkType TIER2
+-- OWNS, so every 5-minute tier2 run picks that row up in its ownership filter and re-marks it
+-- inactive -- it appeared in the live `inactive` list of every single run.
+--
+-- SCOPED BY incident_key, NOT by check_type. Do NOT blanket-resolve `check_type = 'capacity'`:
+-- `capacity.contention` and `capacity.oversized-model` are LIVE detectors that legitimately family
+-- to `capacity` now, and resolving their findings would hide real problems.
+--
+-- Still safe: only rows that are already-open AND no-longer-firing. Never touches a firing
+-- incident. Idempotent.
+
+-- 2a. Preview (RUN FIRST):
+SELECT check_type, count(*) AS to_resolve
+FROM `shakur-main`.`bi-fabrics-audit`.audit_alerts
+WHERE status = 'active'
+  AND currently_active = false
+  AND incident_key LIKE 'capacity.user-concentration%'
+GROUP BY check_type;
+
+-- 2b. Resolve them:
+UPDATE `shakur-main`.`bi-fabrics-audit`.audit_alerts
+   SET status         = 'resolved',
+       resolved_at    = date_format(current_timestamp(), "yyyy-MM-dd'T'HH:mm:ss'Z'"),
+       materiality_reason = coalesce(materiality_reason, '') ||
+                            ' [auto-resolved 2026-08-10: legacy capacity.user-concentration ticket;'
+                            ' the detector that produced it no longer exists]'
+ WHERE status = 'active'
+   AND currently_active = false
+   AND incident_key LIKE 'capacity.user-concentration%';
+
+-- 2c. Confirm (should return 0 rows):
+SELECT count(*) AS remaining
+FROM `shakur-main`.`bi-fabrics-audit`.audit_alerts
+WHERE status = 'active'
+  AND currently_active = false
+  AND incident_key LIKE 'capacity.user-concentration%';
