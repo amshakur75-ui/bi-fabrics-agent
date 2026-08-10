@@ -133,9 +133,14 @@ def test_ticket_still_written_when_chat_writer_returns_none():
     assert "refresh.contention::WS" in tickets
 
 
-def test_user_ranking_finding_delivered_as_actionable_concentration_checktype():
-    # a "capacity.user-ranking" key (the top-consumers info flag) surfaces as the actionable
-    # 'concentration' checkType (not the bare 'capacity' family the notification center filters out)
+def test_user_ranking_finding_families_to_capacity_not_a_tier2_owned_name():
+    # This used to assert checkType 'concentration', chosen because the notification center filtered
+    # out the bare 'capacity' family. Both halves of that reasoning are now wrong: 'capacity' IS
+    # displayable (live detectors capacity.contention / capacity.oversized-model need it), and
+    # 'concentration' is a checkType TIER2 OWNS. Since tier2 decides what it may touch by checkType
+    # alone on the shared audit_alerts table, borrowing a tier2 name for visibility made tier2 mark
+    # this sweep row inactive within five minutes -- dropping it out of the Open tab it had just been
+    # renamed to reach. A family must be displayable AND not tier2-owned.
     store = create_alerts_store_memory()
     posts, sink = _sink()
     f = [_f("capacity.user-ranking::top-users", "Warning", what="No single user is over 30%...",
@@ -143,7 +148,7 @@ def test_user_ranking_finding_delivered_as_actionable_concentration_checktype():
     out = deliver_new_findings(f, alerts_store=store, delivery_sinks={"webhook": sink},
                                app_url="https://app", chat_writer=lambda m, t: "c1")
     assert out["delivered"] == ["capacity.user-ranking::top-users"]
-    assert store["query_active"]()["capacity.user-ranking::top-users"]["checkType"] == "concentration"
+    assert store["query_active"]()["capacity.user-ranking::top-users"]["checkType"] == "capacity"
 
 
 def test_investigate_query_anchors_to_the_fire_time():

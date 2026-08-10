@@ -89,12 +89,24 @@ def _investigate_query(what, when=None):
 
 # Compound keys whose first segment ("capacity") is NOT a UI-actionable checkType — map them to the
 # specific type the app's notification center recognises.
-_FAMILY_MAP = {"capacity.user-ranking": "concentration"}
+# Deliberately EMPTY. It used to hold {"capacity.user-ranking": "concentration"}, mapped that way
+# so the row would land in the notification center's ACTIONABLE set. That was self-defeating:
+# `concentration` is a checkType TIER2 OWNS, and tier2's ownership filter identifies what it may
+# touch by checkType alone (there is no producer column on the shared audit_alerts table). So the
+# mapping made the row visible and simultaneously made tier2 mark it inactive within five minutes,
+# which drops it out of the Open tab -- the exact P0 the ownership filter exists to prevent, walked
+# back in through a name. `capacity.user-ranking` now families to plain `capacity`, which is in
+# ACTIONABLE and is not tier2-owned. See test_no_sweep_family_collides_with_a_tier2_owned_checktype.
+_FAMILY_MAP = {}
 
 
 def _family(key):
-    """The finding family (checkType) from its key: ``model.bidirectional`` -> ``model``;
-    ``capacity.user-ranking`` -> ``concentration`` (an actionable notification-center type)."""
+    """The finding family (checkType) from its key: ``model.bidirectional`` -> ``model``.
+
+    A family must be BOTH displayable (present in the notification center's ACTIONABLE set) and NOT
+    tier2-owned. Those two constraints pull in opposite directions if you reach for a tier2 name to
+    get visibility -- see the note on _FAMILY_MAP above.
+    """
     k = str(key or "")
     for prefix, check_type in _FAMILY_MAP.items():
         if k.startswith(prefix):

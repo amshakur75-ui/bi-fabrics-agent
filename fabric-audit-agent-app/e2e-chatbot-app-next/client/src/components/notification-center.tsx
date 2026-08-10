@@ -71,6 +71,11 @@ const ACTIONABLE = new Set([
   // written under the old assumption still renders.
   'blast_radius',
   'lineage',
+  // `capacity.contention` and `capacity.oversized-model` are LIVE detectors whose family is plain
+  // `capacity` (only capacity.concentration / capacity.throttle are Tier-2-owned and skipped), so
+  // without this they were ticketed warn-severity and invisible. Found by querying audit_alerts,
+  // not by reading code -- 16 such rows were already sitting in the table.
+  'capacity',
   // `meta.detector-error` -> family `meta`. A DETECTOR CRASH was likewise ticketed and invisible,
   // which is the worst thing to hide: it means the estate sweep silently stopped covering
   // something and the only surface said nothing.

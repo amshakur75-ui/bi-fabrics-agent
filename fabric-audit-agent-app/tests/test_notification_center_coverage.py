@@ -42,6 +42,11 @@ _DETECTOR_KEYS = [
     "model.bidirectional", "pattern.cross-workspace", "pipeline.contention",
     "refresh.failure", "report.visual-count", "security.external-share",
     "query.dax-antipattern", "xmla.error",
+    # Only capacity.concentration / capacity.throttle are Tier-2-owned; every OTHER capacity.*
+    # key is ticketed by the sweep under the plain `capacity` family. Omitting these two from an
+    # earlier draft of this list is why the gap survived the first pass -- the list has to be
+    # driven by what the detectors emit, not by which names came to mind.
+    "capacity.contention", "capacity.oversized-model",
 ]
 
 # Tier-2 checkTypes that are meant to be USER-ACTIONABLE tickets. The early-warning signals
@@ -90,3 +95,36 @@ def test_the_early_warning_signals_are_excluded_on_purpose_but_can_still_resolve
         assert check not in _actionable(), f"{check} is meant to stay out of the center"
         assert check in auto_resolving, (
             f"{check} is invisible in the app AND cannot auto-resolve — it would sit open forever")
+
+
+def test_no_sweep_family_collides_with_a_tier2_owned_checktype():
+    """The shared-table hazard from the other direction.
+
+    audit_alerts is shared between the hourly sweep and the 5-minute tier2 job. Tier2's ownership
+    filter decides what it may touch by checkType alone -- there is no producer column -- so if a
+    SWEEP finding is ever written under a checkType tier2 owns, tier2 will mark it inactive within
+    five minutes and the notification center will hide it from the Open tab. That is verbatim the
+    P0 the ownership filter was added to fix, and it can come back through a naming collision
+    rather than through the filter itself.
+
+    This is not hypothetical: audit_alerts today holds a `capacity.user-concentration` row written
+    under checkType `concentration` (a tier2-owned name) by a since-deleted detector, and the live
+    tier2 run marks it inactive on every sweep.
+    """
+    import inspect
+
+    from fabric_audit_agent.automation import tier2_check
+    src = inspect.getsource(tier2_check.process_alerts)
+    m = re.search(r"_TIER2_OWNED = set\(_CAPACITY_CHECKS\) \| \{(.*?)\}", src, re.DOTALL)
+    assert m, "could not locate _TIER2_OWNED"
+    owned = set(re.findall(r'"([^"]+)"', m.group(1)))
+    m2 = re.search(r"_CAPACITY_CHECKS = \((.*?)\)", src, re.DOTALL)
+    owned |= set(re.findall(r'"([^"]+)"', m2.group(1)))
+
+    for key in _DETECTOR_KEYS:
+        if _tier2_owned(key):
+            continue                    # deliberately never ticketed by the sweep
+        family = _family(key)
+        assert family not in owned, (
+            f"sweep finding {key!r} tickets as checkType {family!r}, which tier2 OWNS — tier2 will "
+            "deactivate it within 5 minutes and the app will hide it")
