@@ -159,6 +159,15 @@ def create_capacity_events_collector(query, config=None):
         }
         if cap_id:
             cap["capacityId"] = cap_id
+        # Design A': carry the MAX of each Fabric throttle-threshold pct across windows so the
+        # throttle-imminent detector (tier2_check._check_throttle_imminent) can fire on
+        # "approaching throttle" without waiting for the actual throttle signal. These are
+        # already scaled ×100 by ``_windows`` (0-100+ range). Omitted when the source has no
+        # threshold data (rare — but the check just doesn't fire, no fallback fabrication).
+        for f in ("interactiveDelayPct", "interactiveRejectionPct", "backgroundRejectionPct"):
+            vals = [w[f] for w in windows if w.get(f) is not None]
+            if vals:
+                cap["max" + f[0].upper() + f[1:]] = round(max(vals), 2)
         return {"capacity": cap}
 
     return {"collect": collect}

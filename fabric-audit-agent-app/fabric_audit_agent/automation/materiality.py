@@ -29,6 +29,9 @@ _DEFAULTS = {
     "roc_delta": 15.0,              # rate-of-change: CU% rose >= this many points in one 5-min window
     "silent_fail_runs": 3.0,        # silent-failure: collector blind for >= this many runs
     "hysteresis_ticks": 3.0,        # attribution must persist >= this many consecutive checks before it alerts
+    # Design A' (Aug 2026) — additional capacity signals beyond throttle/pressure/overage:
+    "extreme_peak_pct": 200.0,      # single-window CU peak at/above this = report even w/o throttle
+    "throttle_imminent_pct": 80.0,  # Fabric threshold pct at/above this = early-warning alert
 }
 
 
@@ -95,6 +98,14 @@ def classify(trigger, cfg=None):
         if mtb is not None and mtb < cfg["overage_burndown"]:
             return "report", f"burndown in {mtb:.0f}m < {cfg['overage_burndown']:.0f}m"
         return "ambiguous", "overage accumulating, burndown not urgent"
+    if check == "extreme_peak":
+        peak = _num(trigger.get("peakCuPct"))
+        # detector only fires when peak >= threshold, so a fired trigger is always material
+        return "report", f"extreme CU peak {peak:.0f}%" if peak else "extreme CU peak"
+    if check == "throttle_imminent":
+        worst = _num(trigger.get("worstPct"))
+        # detector only fires when >= threshold, so a fired trigger is always material
+        return "report", f"Fabric throttle threshold at {worst:.0f}%" if worst else "throttle imminent"
     if check == "cross_user":
         # already gated on >= N users each >= X% share, so a fired trigger is material
         n = _num(trigger.get("userCount"))
@@ -134,5 +145,9 @@ def is_escalation(trigger, prior, cfg=None):
     if check == "throttle":
         return cur >= max(cfg["throttle_min"], 2 * pri)
     if check == "overage":
+        return (cur - pri) >= cfg["esc_peak_delta"]
+    if check == "extreme_peak":
+        return (cur - pri) >= cfg["esc_peak_delta"]
+    if check == "throttle_imminent":
         return (cur - pri) >= cfg["esc_peak_delta"]
     return False

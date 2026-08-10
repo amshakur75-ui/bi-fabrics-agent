@@ -112,6 +112,61 @@ def _check_pressure(facts):
     return []
 
 
+def _check_extreme_peak(facts, mcfg=None):
+    """Design A' — a single window peaking >= extreme_peak_pct (default 200%) is worth an alert
+    on its own, even if the smoothing absorbed it and no throttle actually fired. Catches the
+    "huge query hits 300% for one window but Fabric ate it" case — Fabric got lucky this time,
+    but the load was real."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    threshold = float(mcfg.get("extreme_peak_pct", 200.0))
+    cap = (facts or {}).get("capacity") or {}
+    try:
+        peak = float(cap.get("peakCuPct"))
+    except (TypeError, ValueError):
+        return []
+    if peak < threshold:
+        return []
+    trig = {"check": "extreme_peak", "peakCuPct": round(peak, 1),
+            "extremeThreshold": threshold,
+            "normalityHint": (f"CU peaked at {peak:.0f}% (>= {threshold:.0f}%) — a very large spike; "
+                              "Fabric smoothing may have absorbed it this time, but the underlying "
+                              "load was real and could throttle on a smaller capacity or a longer "
+                              "sustained window.")}
+    if cap.get("capacityId"):
+        trig["capacityId"] = cap["capacityId"]
+    return [trig]
+
+
+def _check_throttle_imminent(facts, mcfg=None):
+    """Design A' — Fabric's own throttle-threshold pcts (interactiveDelay/interactiveRejection/
+    backgroundRejection) sitting at or above throttle_imminent_pct (default 80%) means throttling
+    is approaching but has not fired yet. An early-warning that lets a human intervene BEFORE
+    users see slow queries/refresh delays — Fabric's own signal that headroom is exhausting."""
+    from .materiality import load_cfg
+    mcfg = mcfg if mcfg is not None else load_cfg()
+    threshold = float(mcfg.get("throttle_imminent_pct", 80.0))
+    cap = (facts or {}).get("capacity") or {}
+    pcts = {"interactiveDelay": cap.get("maxInteractiveDelayPct"),
+            "interactiveRejection": cap.get("maxInteractiveRejectionPct"),
+            "background": cap.get("maxBackgroundRejectionPct")}
+    breached = {k: v for k, v in pcts.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= threshold}
+    if not breached:
+        return []
+    worst = max(breached.values())
+    label = ", ".join(f"{k}={round(v, 1)}%" for k, v in breached.items())
+    trig = {"check": "throttle_imminent", "worstPct": round(worst, 1),
+            "imminentThreshold": threshold, "thresholdPcts": {k: round(v, 2) for k, v in breached.items()},
+            "peakCuPct": cap.get("peakCuPct"),
+            "normalityHint": (f"Fabric throttle threshold(s) at {label} — approaching but not yet "
+                              "throttling. Investigate the current load before Fabric starts "
+                              "delaying interactive queries or rejecting refreshes.")}
+    if cap.get("capacityId"):
+        trig["capacityId"] = cap["capacityId"]
+    return [trig]
+
+
 def _check_overage(facts):
     """Check for nonzero overage (burndown accumulating).
 
@@ -301,6 +356,8 @@ def _cross_reference_recurrence(triggers, findings_store, scope=None, tenant=Non
                 "cross_user": "capacity.concentration",
                 "throttle": "capacity.throttle",
                 "pressure": "capacity.pressure",
+                "extreme_peak": "capacity.pressure",
+                "throttle_imminent": "capacity.throttle",
                 "overage": "capacity.overage",
             }
             prefix = key_prefixes.get(check)
@@ -335,6 +392,10 @@ def _build_tier2_alert_summary(triggers):
             parts.append(f"Throttling: {t.get('throttleMinutes', '?')} min")
         elif check == "pressure":
             parts.append(f"CU pressure: peak {t.get('peakCuPct', '?')}%")
+        elif check == "extreme_peak":
+            parts.append(f"Extreme peak: {t.get('peakCuPct', '?')}%")
+        elif check == "throttle_imminent":
+            parts.append(f"Throttle imminent: {t.get('worstPct', '?')}% threshold")
         elif check == "overage":
             parts.append(f"Overage: {t.get('overageTotalMs', '?')} ms cumulative")
         elif check == "data_unavailable":
@@ -392,6 +453,10 @@ def _title_for(t):
         return f"Throttling on capacity ({t.get('throttleMinutes', '?')} min)"
     if check == "pressure":
         return f"CU pressure: peak {t.get('peakCuPct', '?')}%"
+    if check == "extreme_peak":
+        return f"Extreme CU peak: {t.get('peakCuPct', '?')}%"
+    if check == "throttle_imminent":
+        return f"Throttle imminent: threshold at {t.get('worstPct', '?')}%"
     if check == "overage":
         return "Capacity overage accumulating"
     if check == "cross_user":
@@ -421,6 +486,14 @@ def _facts_for(t):
         f = [("Throttle", f"{t.get('throttleMinutes')} min"), ("Peak CU", f"{t.get('peakCuPct')}%")]
     elif check == "pressure":
         f = [("Peak CU", f"{t.get('peakCuPct')}%")]
+    elif check == "extreme_peak":
+        f = [("Peak CU", f"{t.get('peakCuPct')}%"),
+             ("Extreme threshold", f"{t.get('extremeThreshold')}%")]
+    elif check == "throttle_imminent":
+        pcts = t.get("thresholdPcts") or {}
+        f = [("Worst threshold pct", f"{t.get('worstPct')}%"),
+             ("Peak CU", f"{t.get('peakCuPct')}%" if t.get("peakCuPct") is not None else None),
+             ("Signals", ", ".join(f"{k}={v}%" for k, v in pcts.items()) if pcts else None)]
     elif check == "overage":
         f = [("Overage", f"{t.get('overageTotalMs')} ms"),
              ("Burndown", f"{t.get('minutesToBurndown')} min")]
@@ -532,7 +605,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     _ATTR_CHECKS = ("concentration", "cross_user")
     # Only these hard capacity incidents are pushed to Teams. Attribution / coverage findings are
     # notification-center-only (see _send) — Teams stays reserved for genuine capacity emergencies.
-    _TEAMS_CHECKS = ("throttle", "pressure", "overage")
+    _TEAMS_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent")
     hysteresis_ticks = int(cfg.get("hysteresis_ticks", 3))
     pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
     pending_seen = set()
@@ -882,6 +955,8 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     triggers.extend(_check_concentration(facts, config))
     triggers.extend(_check_throttle(facts))
     triggers.extend(_check_pressure(facts))
+    triggers.extend(_check_extreme_peak(facts, mcfg))
+    triggers.extend(_check_throttle_imminent(facts, mcfg))
     triggers.extend(_check_overage(facts))
     triggers.extend(_check_same_item_cross_user(facts))
     triggers.extend(_check_cross_source_blind_spot(facts))

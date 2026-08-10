@@ -44,6 +44,12 @@ def severity_of(trigger):
     if check == "pressure":
         pct = _num(trigger.get("peakCuPct"))
         return "warn" if pct is not None and pct >= 120 else "info"
+    if check == "extreme_peak":
+        # any fired extreme_peak (>= 200% by default) is warn-severity by definition
+        return "warn"
+    if check == "throttle_imminent":
+        worst = _num(trigger.get("worstPct"))
+        return "warn" if worst is not None and worst >= 90 else "info"
     if check == "overage":
         mtb = _num(trigger.get("minutesToBurndown"))
         return "warn" if mtb is not None and mtb < 60 else "info"
@@ -65,6 +71,10 @@ def primary_metric(trigger):
         return _num(trigger.get("throttleMinutes"))
     if check == "pressure":
         return _num(trigger.get("peakCuPct"))
+    if check == "extreme_peak":
+        return _num(trigger.get("peakCuPct"))
+    if check == "throttle_imminent":
+        return _num(trigger.get("worstPct"))
     if check == "overage":
         return _num(trigger.get("overageCumulativePct"))
     if check == "cross_user":
