@@ -79,14 +79,29 @@ def _schema():
         return None
 
 
+_CREATE_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS {table} ("
+    "scope STRING, user_id STRING, p50 DOUBLE, p95 DOUBLE, "
+    "sample_count BIGINT, min_cu_seconds DOUBLE, max_cu_seconds DOUBLE, "
+    "as_of STRING"
+    ") USING DELTA "
+    "TBLPROPERTIES ("
+    "'delta.autoOptimize.optimizeWrite' = 'true', "
+    "'delta.autoOptimize.autoCompact' = 'true'"
+    ")"
+)
+
+
 def create_user_baseline_store_delta(catalog, schema, *, spark=None):
     """Delta-backed store on ``user_baseline`` (Spark MERGE upsert). Use in production.
 
-    Table shape is defined by ``scripts/create_user_baseline_delta.sql`` — the bootstrap job
-    can create it lazily via ``upsert_many`` on first run (autoMerge enabled) but the SQL
-    script is the canonical spec for a schema review or a manual re-provision.
+    Table shape is defined by ``scripts/create_user_baseline_delta.sql`` — kept as the
+    canonical spec for schema review, but the store itself also does an idempotent
+    ``CREATE TABLE IF NOT EXISTS`` on first write so the bootstrap job succeeds even when
+    the table hasn't been pre-provisioned. Same pattern as ``context_alerts._ensure_schema``.
     """
     table = f"`{catalog}`.`{schema}`.user_baseline"
+    _ensured = {"done": False}
 
     def _get_spark():
         nonlocal spark
@@ -98,8 +113,18 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
             raise RuntimeError("No active SparkSession")
         return spark
 
+    def _ensure_table(s):
+        if _ensured["done"]:
+            return
+        try:
+            s.sql(_CREATE_TABLE_SQL.format(table=table))
+        except Exception as exc:
+            print(f"[user_baseline] table ensure skipped ({type(exc).__name__}: {exc})")
+        _ensured["done"] = True
+
     def get_user(user):
         s = _get_spark()
+        _ensure_table(s)
         rows = s.sql(
             f"SELECT * FROM {table} WHERE scope = 'user' AND user_id = '{user}'"
         ).collect()
@@ -107,6 +132,7 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
 
     def get_estate():
         s = _get_spark()
+        _ensure_table(s)
         rows = s.sql(f"SELECT * FROM {table} WHERE scope = 'estate' LIMIT 1").collect()
         return _from_row(rows[0].asDict()) if rows else None
 
@@ -114,6 +140,7 @@ def create_user_baseline_store_delta(catalog, schema, *, spark=None):
         if not rows:
             return
         s = _get_spark()
+        _ensure_table(s)
         try:
             s.sql("SET spark.databricks.delta.schema.autoMerge.enabled = true")
         except Exception:

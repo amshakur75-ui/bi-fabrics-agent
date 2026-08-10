@@ -15,7 +15,7 @@
 -- table lazily on first upsert (Delta autoMerge is enabled), but this SQL is the canonical
 -- schema for review / manual re-provision.
 
-CREATE TABLE IF NOT EXISTS {catalog}.{schema}.user_baseline (
+CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.user_baseline (
     scope           STRING   COMMENT 'user | estate — controls which layer of the 3-layer fallback',
     user_id         STRING   COMMENT 'user email/UPN when scope=user; NULL for the estate row',
     p50             DOUBLE   COMMENT '50th percentile CPU-seconds across the trailing 14 days',

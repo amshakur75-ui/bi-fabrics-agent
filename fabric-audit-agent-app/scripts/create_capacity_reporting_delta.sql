@@ -14,7 +14,7 @@
 -- without needing an array column. Empty list ``"[]"`` means the sweep ran but nothing
 -- fired; NULL means the row predates B4 (older sweeps).
 
-CREATE TABLE IF NOT EXISTS {catalog}.{schema}.capacity_reporting (
+CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.capacity_reporting (
     run_at                          STRING   COMMENT 'ISO-8601 sweep run timestamp',
     capacity_id                     STRING   COMMENT 'Fabric capacity id when the collector reported one',
     peak_cu_pct                     DOUBLE   COMMENT 'Peak CU% across the sweep window',

@@ -29,6 +29,9 @@ variables:
   daily_summary_tz:
     description: Timezone for the daily digest schedule (6pm local business time).
     default: "America/New_York"
+  baseline_cron:
+    description: Quartz cron for the nightly user_baseline rebuild (default 02:00 UTC).
+    default: "0 0 2 * * ?"
 
 artifacts:
   default:
@@ -129,6 +132,43 @@ resources:
               - databricks-sdk>=0.81 # Lakebase credential (w.postgres — Autoscaling project)
       schedule:
         quartz_cron_expression: "0 */5 * * * ?"   # every 5 minutes
+        timezone_id: UTC
+        pause_status: UNPAUSED
+
+    # ---- Design A' Phase B (2026-08-09): nightly user_baseline rebuild ----
+    # Pulls 14 days of Log Analytics activity and rebuilds per-user + estate-wide p95 into
+    # ``user_baseline``. The 5-min tier2 sweep reads whatever this job last wrote. Scheduled
+    # 02:00 UTC daily — a full 14-day pull runs in a few minutes on serverless.
+    # TIER2_BASELINE_ENABLED is left OFF on the tier2 job until this job has populated the
+    # table at least once (see docs/runbooks/deploy-design-a-prime-phase-b.md Stage 4).
+    fabric_audit_baseline:
+      name: fabric-audit-baseline
+      tasks:
+        - task_key: baseline_bootstrap
+          python_wheel_task:
+            package_name: fabric_audit_agent
+            entry_point: fabric-audit-baseline
+            named_parameters:
+              FABRIC_DELTA_CATALOG: ${var.catalog}
+              FABRIC_DELTA_SCHEMA: ${var.schema}
+              FABRIC_BASELINE_WINDOW: "14d"
+              FABRIC_BASELINE_MIN_HISTORY: "20"
+              # Log Analytics per-user activity source (same secret bundle the sweep uses)
+              FABRIC_TENANT_ID: "{{secrets/fabric-audit/FABRIC_TENANT_ID}}"
+              FABRIC_CLIENT_ID: "{{secrets/fabric-audit/FABRIC_CLIENT_ID}}"
+              FABRIC_CLIENT_SECRET: "{{secrets/fabric-audit/FABRIC_CLIENT_SECRET}}"
+              FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ./dist/*.whl
+              - requests
+              - msal>=1.24
+      schedule:
+        quartz_cron_expression: ${var.baseline_cron}
         timezone_id: UTC
         pause_status: UNPAUSED
 
