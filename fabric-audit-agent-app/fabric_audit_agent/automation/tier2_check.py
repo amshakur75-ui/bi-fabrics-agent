@@ -1002,8 +1002,14 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
     _ATTR_CHECKS = ("concentration", "cross_user")
     # Only these hard capacity incidents are pushed to Teams. Attribution / coverage findings are
     # notification-center-only (see _send) — Teams stays reserved for genuine capacity emergencies.
+    # ``silent_failure`` is included deliberately: it is the BLINDNESS detector ("the collector has
+    # returned nothing for N runs, so no capacity alert can be trusted"). Leaving it out of Teams
+    # meant the one alarm that says "this agent has stopped working" was reachable only by opening
+    # the app and reading the notification center -- i.e. the failure mode hid the alarm for the
+    # failure mode. The "keep Teams for genuine emergencies" rationale does not apply to a
+    # meta-alarm about the alerting pipeline itself.
     _TEAMS_CHECKS = ("throttle", "pressure", "overage", "extreme_peak",
-                     "capacity_incident")
+                     "capacity_incident", "silent_failure")
     hysteresis_ticks = int(cfg.get("hysteresis_ticks", 3))
     pending = alerts_store["query_pending"]() if "query_pending" in alerts_store else {}
     # Informational rows must be visible here too. They are NOT in query_pending (different
@@ -1073,7 +1079,21 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                           facts=facts, summary=summary, chat_url=chat_url,
                           disclosure=disclosure)
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
-        return bool(res.get("delivered"))
+        ok = bool(res.get("delivered"))
+        if not ok:
+            # The webhook sink does NOT raise on an HTTP 500/429 or a network error -- it returns
+            # {"delivered": False, "status": ...}. Every caller assigns that straight into
+            # row["delivered"] and moves on, so the row goes status=active/currentlyActive=True and
+            # the next tick takes the "already active, stay silent" branch. A capacity emergency's
+            # card was lost FOREVER: no exception, no log line, no health record, and the job still
+            # reported TERMINATED SUCCESS. Record it loudly; the retry is driven off the persisted
+            # delivered=False (see the already-active branch below).
+            msg = (f"Teams card NOT delivered ({kind} / {trigger.get('check')}): "
+                   f"status={res.get('status')} dispatched={res.get('dispatched')}")
+            print(f"[tier2] WARN {msg}")
+            if health is not None:
+                health.record_delivery("webhook", False, msg)
+        return ok
 
     _SEV_RANK = {"info": 0, "warn": 1}
 
@@ -1242,6 +1262,17 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                     row = dict(prior, runAt=now_iso, currentlyActive=True, absenceCount=0)
                     alerts_store["upsert"](row)
                     _write_ticket(row, t)
+                elif (prior.get("delivered") is False
+                      and t.get("check") in _TEAMS_CHECKS):
+                    # RETRY, not a re-alert. delivered=False on a row whose check is in
+                    # _TEAMS_CHECKS can only mean the POST itself failed -- non-Teams checks never
+                    # reach _send's dispatch at all -- so this is the one case where the incident is
+                    # still firing and the human has never actually been told. Retrying respects the
+                    # load-bearing invariant above: `prior` is carried forward untouched apart from
+                    # `delivered`, so signalTypes/metric/severity keep their last-ALERTED values and
+                    # a flapping signal set still cannot manufacture an escalation.
+                    if _send("new", t, prior, prior.get("investigationSummary")):
+                        alerts_store["upsert"](dict(prior, delivered=True))
                 actions["silent"].append(key)
             continue
 
@@ -1496,6 +1527,17 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
 
     def _deliver(trigs):
         if not (delivery_sinks and alerts_store is not None):
+            # Reaching here WITH triggers means the agent detected a real incident and had nowhere to
+            # send it: POWER_AUTOMATE_ALERT_URL rotated to empty, TIER2_WEBHOOK_ENABLED set to
+            # something outside ("1","true","yes"), or catalog/schema missing. The old silent `{}` was
+            # byte-identical to a healthy quiet run's output (`delivered={}` either way), so a fully
+            # de-wired alerting path reported green forever. Preflight covers none of these.
+            if trigs:
+                msg = (f"alerting NOT wired — {len(trigs)} trigger(s) had nowhere to go "
+                       f"(sinks={bool(delivery_sinks)} alertsStore={alerts_store is not None})")
+                print(f"[tier2] WARN {msg}")
+                if health is not None:
+                    health.record_issue(msg)
             return {}
         try:
             return process_alerts(trigs, alerts_store=alerts_store, delivery_sinks=delivery_sinks,

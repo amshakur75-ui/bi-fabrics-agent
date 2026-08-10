@@ -363,7 +363,12 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         facts.append({"title": "Coverage gaps", "value": str(len(coverage_gaps))})
     if informational:
         facts.append({"title": "Stable patterns (info)", "value": str(len(informational))})
-    if has_issues and (peak is not None or throttle is not None):
+    # anything_wrong, matching the markdown path ten lines up. Left on has_issues, the
+    # adaptive CARD showed "1 capacity incident open and firing" and then dropped the
+    # "Capacity context" fact -- the one number (e.g. 187% peak) a reader needs -- while the
+    # chat body included it. The test asserted only on the markdown, which is why the same
+    # defect survived ten lines from the line that fixed it.
+    if anything_wrong and (peak is not None or throttle is not None):
         bits = []
         if peak is not None:
             bits.append(f"{peak:.0f}%".replace("%%", "%"))

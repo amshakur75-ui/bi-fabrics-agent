@@ -119,3 +119,105 @@ def test_reaching_urgency_without_halving_is_not_an_escalation():
     prior = {"severity": "warn", "metric": 118.0, "minutesToBurndown": 15.0,
              "signalTypes": ["overage"]}
     assert is_escalation(trigger, prior, CFG) is False
+
+
+# ---- a card that never arrived must not be recorded as delivered -----------
+
+def test_a_failed_teams_card_is_recorded_and_retried_next_tick():
+    """The single worst hole in the alerting path, and it went MISSING once already.
+
+    The webhook sink returns {"delivered": False, "status": 500} rather than raising, so callers
+    assigned that into row["delivered"], the row went active, and the next tick took the
+    "already active, stay silent" branch — losing a capacity emergency's card FOREVER with no
+    exception, no log, no health record, and a green job.
+
+    This test exists because a round-3 commit MESSAGE claimed this fix while the diff contained only
+    an unrelated change: the edit had been silently reverted by a subagent's worktree restore, and I
+    repaired only the damage visible in that diff rather than re-checking every edit in the commit.
+    A commit message is not evidence. A test is.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from fabric_audit_agent.automation.health import HealthReport
+    from fabric_audit_agent.automation.tier2_check import process_alerts
+    from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+    t0 = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    store = create_alerts_store_memory()
+    health = HealthReport()
+    attempts = []
+
+    def failing(body):
+        attempts.append(body)
+        return {"delivered": False, "status": 500}
+
+    trig = [{"check": "throttle", "throttleMinutes": 8.5, "peakCuPct": 210.0},
+            {"check": "pressure", "peakCuPct": 210.0}]
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": {"deliver": failing}},
+              reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True}, health=health)
+
+    process_alerts(trig, now_dt=t0, **kw)
+    assert len(attempts) == 1, "the first card must be attempted"
+    row = store["_data"]["capacity::capacity"]
+    assert row["delivered"] is False, "a 500 must not be recorded as delivered"
+    assert health.degraded is True and "NOT delivered" in health.summary
+
+    # Still firing, still never told -> retry rather than the silent already-active branch.
+    process_alerts(trig, now_dt=t0 + timedelta(minutes=5), **kw)
+    assert len(attempts) == 2, "a card that never landed must be retried while the incident fires"
+
+
+def test_a_delivered_card_is_not_retried():
+    """The retry must not become a card-every-tick bug for the healthy case."""
+    from datetime import datetime, timedelta, timezone
+
+    from fabric_audit_agent.automation.tier2_check import process_alerts
+    from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+    t0 = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    store = create_alerts_store_memory()
+    attempts = []
+
+    def ok(body):
+        attempts.append(body)
+        return {"delivered": True, "status": 200}
+
+    trig = [{"check": "throttle", "throttleMinutes": 8.5, "peakCuPct": 210.0},
+            {"check": "pressure", "peakCuPct": 210.0}]
+    kw = dict(alerts_store=store, delivery_sinks={"webhook": {"deliver": ok}},
+              reasoner=lambda t: {"markdown": "m", "summary": "s", "report": True})
+    process_alerts(trig, now_dt=t0, **kw)
+    process_alerts(trig, now_dt=t0 + timedelta(minutes=5), **kw)
+    assert len(attempts) == 1, "a still-firing incident that WAS delivered must stay silent"
+
+
+# ---- the guards that were silently reverted once already --------------------
+
+def test_the_blindness_detector_can_reach_teams():
+    """silent_failure is a META-alarm about the alerting pipeline, not attribution noise. Left out of
+    _TEAMS_CHECKS, the one alarm saying "this agent has stopped working" was reachable only by
+    opening the app — the failure mode hid the alarm for the failure mode."""
+    import inspect
+    import re
+
+    from fabric_audit_agent.automation import tier2_check
+    src = inspect.getsource(tier2_check.process_alerts)
+    m = re.search(r"_TEAMS_CHECKS = \((.*?)\)", src, re.DOTALL)
+    assert m, "could not locate _TEAMS_CHECKS"
+    assert "silent_failure" in set(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+def test_triggers_with_nowhere_to_go_are_recorded_not_swallowed():
+    """Alerting silently OFF produced `delivered={}` — byte-identical to a healthy quiet run — so a
+    fully de-wired alerting path reported green forever. Preflight checks none of the alerting env."""
+    from fabric_audit_agent.automation.health import HealthReport
+    from fabric_audit_agent.automation.tier2_check import run_tier2_check
+
+    health = HealthReport()
+    collector = {"collect": lambda: {"capacity": {"peakCuPct": 210.0, "throttleMinutes": 9.0},
+                                     "items": []}}
+    # No delivery sinks and no alerts store: the incident is real and has nowhere to go.
+    out = run_tier2_check(collector, delivery_sinks=None, health=health)
+    assert out["triggered"] is True, "the incident itself must still be detected"
+    assert health.degraded is True
+    assert "alerting NOT wired" in health.summary

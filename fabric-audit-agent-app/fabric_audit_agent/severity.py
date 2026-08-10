@@ -7,6 +7,21 @@ domain it needs — so a partial config never fails an unrelated branch).
 from .config import DEFAULT_CONFIG
 
 
+def _num(v):
+    """Numeric or None. Rejects bool/None/non-numeric, mirroring the repo's other numeric guards.
+
+    Needed because `.get(k, 0)` defaults only a MISSING key: a key present with an explicit None
+    (which several mappers emit) sails through and then raises inside a comparison.
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
 def score_severity(flag, config=None):
     config = config or DEFAULT_CONFIG
     e = flag.get("evidence") or {}
@@ -14,8 +29,19 @@ def score_severity(flag, config=None):
 
     if t == "capacity.throttle":
         cap = config["capacity"]
-        if e.get("peakCuPct", 0) >= cap["throttleCritPct"] and e.get("throttleMinutes", 0) > cap["throttleCritMinutes"]:
-            return {"level": "Critical", "reason": f"CU peaked {e.get('peakCuPct')}% with {e.get('throttleMinutes')} min throttled"}
+        # `.get(k, 0)` only defaults a MISSING key -- a key present and explicitly None still yields
+        # None, and `None > 30` raises. The REST mapper emits `c.get("throttledMinutes")`, i.e. None
+        # whenever the payload omits it, while detectors/capacity.py still fires at peak >= 80. And
+        # score_severity is called from the reasoners OUTSIDE detect_all's failure-isolation shell,
+        # so that TypeError took out the ENTIRE finding batch, not just this one finding.
+        peak = _num(e.get("peakCuPct"))
+        mins = _num(e.get("throttleMinutes"))
+        if (peak is not None and peak >= cap["throttleCritPct"]
+                and mins is not None and mins > cap["throttleCritMinutes"]):
+            return {"level": "Critical",
+                    "reason": f"CU peaked {e.get('peakCuPct')}% with {e.get('throttleMinutes')} min throttled"}
+        if peak is None:
+            return {"level": "Warning", "reason": "CU peak unknown (no capacity reading)"}
         return {"level": "Warning", "reason": f"CU peaked {e.get('peakCuPct')}%"}
 
     if t == "capacity.contention":
@@ -24,7 +50,18 @@ def score_severity(flag, config=None):
         return {"level": level, "reason": f"{n} models refresh at {e.get('time')}"}
 
     if t == "capacity.oversized-model":
-        if e.get("sizeGB", 0) >= (config["capacity"]["oversizedCritPct"] / 100) * e.get("memoryGB", 0):
+        # The capacity memory figure is genuinely UNKNOWN on most paths: importers/map.py defaults
+        # memoryGB to 0 when the export has no memory column (the Capacity Metrics timepoint export
+        # has none), and the REST mapper passes None. With 0, the right-hand side collapses to 0 and
+        # EVERY model over the 4 GB detector gate scored Critical "model 4GB vs 0GB capacity"
+        # unconditionally; with None it raised. Unknown capacity cannot justify a Critical -- the
+        # comparison is meaningless without a denominator, so say so instead of inventing a verdict.
+        size = _num(e.get("sizeGB"))
+        mem = _num(e.get("memoryGB"))
+        if mem is None or mem <= 0:
+            return {"level": "Warning",
+                    "reason": f"model {e.get('sizeGB')}GB; capacity memory unknown, cannot size it"}
+        if size is not None and size >= (config["capacity"]["oversizedCritPct"] / 100) * mem:
             return {"level": "Critical", "reason": f"model {e.get('sizeGB')}GB vs {e.get('memoryGB')}GB capacity"}
         return {"level": "Warning", "reason": f"model {e.get('sizeGB')}GB on {e.get('memoryGB')}GB capacity"}
 

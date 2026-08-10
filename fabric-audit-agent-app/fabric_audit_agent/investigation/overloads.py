@@ -30,8 +30,17 @@ def _op_window_contributions(op):
     in its start window."""
     start = op.get("startEpoch")
     end = op.get("endEpoch")
-    cu = op.get("cuSeconds") or 0.0
+    # `or 0.0` treats a cost-less op as a FREE op. Tier-1 activity events carry cuSeconds=None on
+    # every row, so slot["cu"] summed to 0, interactiveCuPct became 0.0, and background absorbed the
+    # entire overage -- which then read as "system/refresh work, do NOT blame a user". Every user was
+    # exonerated of every overload, and watch.py's `inter >= back` was permanently False, so a 420%
+    # overage rendered as severity "info" / "peak 420% (no concern) ... nothing to act on". Yield the
+    # None so the caller can tell "contributed nothing" from "we do not know what this cost".
+    cu = op.get("cuSeconds")
     if start is None or end is None:
+        return
+    if cu is None:
+        yield window_start(start), None
         return
     if end <= start:
         yield window_start(start), cu
@@ -64,7 +73,14 @@ def overload_windows(series, ops, *, base_cu, min_cu_pct=100.0, top_windows=50,
         if not isinstance(op, dict):
             continue
         for w, cu_in in _op_window_contributions(op):
-            slot = by_window.setdefault(w, {"cu": 0.0, "ops": []})
+            slot = by_window.setdefault(w, {"cu": 0.0, "ops": [], "costless": 0})
+            if cu_in is None:
+                slot["costless"] += 1
+                slot["ops"].append({
+                    "user": op.get("user"), "item": op.get("item"),
+                    "operation": op.get("operation"), "cuInWindow": None,
+                })
+                continue
             slot["cu"] += cu_in
             slot["ops"].append({
                 "user": op.get("user"), "item": op.get("item"),
@@ -80,16 +96,30 @@ def overload_windows(series, ops, *, base_cu, min_cu_pct=100.0, top_windows=50,
         if total is None or total < min_cu_pct:
             continue
         w = pt.get("epoch")
-        slot = by_window.get(window_start(w) if w is not None else None, {"cu": 0.0, "ops": []})
-        interactive = (slot["cu"] / budget * 100) if budget else None
+        slot = by_window.get(window_start(w) if w is not None else None,
+                             {"cu": 0.0, "ops": [], "costless": 0})
+        # An interactive/background SPLIT requires that the ops carry costs. If any op in the window
+        # is cost-less, the split would understate interactive by exactly that op's unknown cost and
+        # hand the difference to "background" -- i.e. silently exonerate a user. Report the split as
+        # unknown instead, the same way it already does for a missing base_cu.
+        splittable = budget is not None and slot.get("costless", 0) == 0
+        interactive = (slot["cu"] / budget * 100) if splittable else None
         background = max(0.0, total - interactive) if interactive is not None else None
-        contributors = sorted(slot["ops"], key=lambda o: o["cuInWindow"], reverse=True)[:top_contributors]
-        out.append({
+        contributors = sorted(slot["ops"], key=lambda o: (o["cuInWindow"] is not None,
+                                                          o["cuInWindow"] or 0.0),
+                              reverse=True)[:top_contributors]
+        row = {
             "windowEpoch": w,
             "totalCuPct": round(total, 1),
             "interactiveCuPct": round(interactive, 1) if interactive is not None else None,
             "backgroundCuPct": round(background, 1) if background is not None else None,
             "contributors": contributors,
-        })
+        }
+        if not splittable:
+            row["splitNote"] = ("interactive/background split unavailable — "
+                                + ("base capacity units unknown" if budget is None
+                                   else f"{slot['costless']} operation(s) in this window carry no "
+                                        "cost signal, so no user can be credited or cleared"))
+        out.append(row)
     out.sort(key=lambda r: r["totalCuPct"], reverse=True)
     return out[:top_windows]

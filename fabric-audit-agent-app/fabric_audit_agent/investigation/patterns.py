@@ -162,6 +162,14 @@ def capacity_patterns(
         item = ev.get("item") if ev.get("item") is not None else ""
         kind = ev.get("kind") if ev.get("kind") is not None else "interactive"
         cu = ev.get("cuSeconds") if ev.get("cuSeconds") is not None else 0.0
+        # Track whether ANY event in this bucket carried a real cost. Tier-1 activity events
+        # (adapters/collector_activity_events.py) emit cuSeconds=None for EVERY row, so every
+        # item_cu/user_cu total was 0.0 and the `(value, name)` tiebreak below silently decided the
+        # "driver" ALPHABETICALLY -- a 25-event spike, 21 of them one user on one item, was reported
+        # as driven by the alphabetically-last pair, with a confident narrative naming them. That is
+        # a fabricated accusation about a named person, which is worse than no answer.
+        if ev.get("cuSeconds") is not None:
+            b["has_cost"] = True
 
         if user:
             b["users"].add(user)
@@ -220,21 +228,20 @@ def capacity_patterns(
         if cu_peak_pct < cu_spike_pct:
             continue  # no CU spike nearby
 
-        # ------ Driving item: highest cumulative cuSeconds in this bucket ------
-        # Stable tiebreak: alphabetical item name (deterministic)
-        driving_item = max(
-            b["item_cu"],
-            key=lambda k: (b["item_cu"][k], k),
-            default=None,
-        )
-
-        # ------ Driving user: highest cumulative cuSeconds in this bucket ------
-        # Stable tiebreak: alphabetical user name (deterministic)
-        driving_user = max(
-            b["user_cu"],
-            key=lambda k: (b["user_cu"][k], k),
-            default=None,
-        )
+        # ------ Driving item / user: highest cumulative cuSeconds in this bucket ------
+        # Stable tiebreak: alphabetical name (deterministic) -- but ONLY when there is a real cost
+        # signal to rank by. With no cost, every total is 0.0 and the tiebreak IS the answer, i.e.
+        # pure alphabetical order dressed up as attribution. Mirrors what overloads.py does for a
+        # missing base_cu: report None and say why, rather than emit a confident wrong name.
+        if b.get("has_cost"):
+            driving_item = max(b["item_cu"], key=lambda k: (b["item_cu"][k], k), default=None)
+            driving_user = max(b["user_cu"], key=lambda k: (b["user_cu"][k], k), default=None)
+            driver_note = None
+        else:
+            driving_item = None
+            driving_user = None
+            driver_note = ("no per-event cost signal in this window (operation-level data only) — "
+                           "the driving item/user cannot be determined, only that a spike occurred")
 
         # ------ kind: majority kind (interactive / refresh / mixed) ------
         kind_counts = b["kind_counts"]
@@ -251,15 +258,20 @@ def capacity_patterns(
         window_start = _minutes_to_iso(bk, b["ref_ts"])
 
         # ------ Narrative ------
-        item_label = driving_item if driving_item is not None else "unknown"
-        user_label = driving_user if driving_user is not None else "unknown"
         cu_label = f"{cu_peak_pct:.1f}" if cu_peak_pct != int(cu_peak_pct) else f"{int(cu_peak_pct)}"
-        narrative = (
-            f"~{active_users} users active at {window_start} "
-            f"→ {cu_label}% CU spike driven by {item_label} (top user: {user_label})"
-        )
+        if driver_note:
+            # No "driven by <name>" clause at all. It previously read "driven by unknown (top user:
+            # unknown)" ONLY when the bucket was empty; with cost-less events it named a real person
+            # picked alphabetically. Neither belongs in a narrative a human acts on.
+            narrative = (f"~{active_users} users active at {window_start} "
+                         f"→ {cu_label}% CU spike; {driver_note}")
+        else:
+            narrative = (
+                f"~{active_users} users active at {window_start} "
+                f"→ {cu_label}% CU spike driven by {driving_item} (top user: {driving_user})"
+            )
 
-        patterns.append({
+        entry = {
             "windowStart": window_start,
             "activeUsers": active_users,
             "cuPeakPct": cu_peak_pct,
@@ -267,7 +279,10 @@ def capacity_patterns(
             "drivingUser": driving_user,
             "kind": kind,
             "narrative": narrative,
-        })
+        }
+        if driver_note:
+            entry["driverNote"] = driver_note
+        patterns.append(entry)
 
     # Already sorted by windowStart (ascending) because we iterated sorted(buckets.keys())
     if return_diagnostics:
