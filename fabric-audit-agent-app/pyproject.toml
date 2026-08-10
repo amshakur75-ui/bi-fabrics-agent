@@ -1,6 +1,6 @@
 [project]
 name = "fabric-audit-agent"
-version = "0.2.15"
+version = "0.2.16"
 description = "Read-only Fabric/Power BI audit agent — brain, core investigation logic, autonomous jobs, and chat app (Databricks)."
 # >=3.10 (not 3.11): the serverless Job compute that installs this wheel runs Python 3.10, and the
 # wheel's Requires-Python gates install. The core (fabric_audit_agent) is 3.10-safe; only the
@@ -45,7 +45,7 @@ fabric-audit-tier2 = "fabric_audit_agent.job:tier2_main"   # Phase 9 Tier 2: che
 fabric-audit-daily = "fabric_audit_agent.job:daily_summary_main"  # Step 10: daily 6pm capacity digest
 fabric-audit-baseline = "fabric_audit_agent.job:baseline_bootstrap_main"  # B1: nightly user_baseline rebuild
 fabric-audit-watch = "fabric_audit_agent.watch_run:main"   # autonomous 5-min watcher (Job entry)
-start-app          = "scripts.start_app:main"
+start-app          = "agent_server.start_app:main"
 start-server       = "agent_server.start_server:main"
 
 [build-system]
@@ -54,11 +54,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-# `scripts` is included because [project.scripts]'s `start-app` entry point resolves to
-# ``scripts.start_app:main``. Without this, the wheel installs the entry-point shim but not the
-# ``scripts`` module, and ``uv run start-app`` crashes on boot with
-# ``ModuleNotFoundError: No module named 'scripts'`` (Databricks App crash, 2026-08-09 22:13 UTC).
-include = ["fabric_audit_agent*", "agent_server*", "scripts"]
+# NEVER add a top-level `scripts` package here. It was added 2026-08-09 22:13 UTC so the App's
+# `start-app` entry point could resolve `scripts.start_app:main`, and it took every Databricks
+# JOB down from 23:55 UTC until 2026-08-10 05:20 UTC — ~5.5 hours of no capacity alerting.
+# Databricks' own Python shell does `from scripts.db_ipykernel_launcher_wrapper import ...`
+# against its internal /databricks/python_shell/scripts/; a top-level `scripts` on the wheel
+# SHADOWS it, so the Python kernel dies at startup with ERROR_RESTART_PYTHON and the task never
+# reaches our code. `start_app` now lives at `agent_server.start_app` — a namespaced package
+# that cannot collide. Keep every shipped package under a distinctive top-level name.
+include = ["fabric_audit_agent*", "agent_server*"]
 
 # Ship the grounded KQL template catalog INSIDE the wheel. Without this, setuptools excludes
 # the non-.py file and `_load_query_library` finds nothing in the installed package (prod), so
