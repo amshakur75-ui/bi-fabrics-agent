@@ -1068,7 +1068,8 @@ def _record_reading(readings_store, *, run_at, facts=None, collector_ok, health=
 def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                     heartbeat_store=None, readings_store=None, config=None, tenant=None, scope=None,
                     alerts_store=None, reasoner=None, chat_writer=None, app_url="", now_dt=None,
-                    ack_store=None, ticket_writer=None, health=None, baseline_store=None):
+                    ack_store=None, ticket_writer=None, health=None, baseline_store=None,
+                    reporting_store=None):
     """Run one Tier 2 deterministic check. Zero LLM calls.
 
     ``collector``: a collector port ``{"collect": fn}`` — at minimum the Capacity Events collector.
@@ -1085,6 +1086,9 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     precomputed baseline detector on ``facts["events"]`` and correlates any spikes against
     capacity triggers (B3 correlation booster). Spikes overlapping an active capacity incident
     are attached to the composite trigger so the ONE Teams card names the likely driver.
+    ``reporting_store``: optional B4 capacity_reporting store — when provided, appends a
+    per-sweep archival row (capacity metrics + which tier2 checks fired) for long-tail trend
+    reports and post-incident review. Best-effort: a store failure never blocks the sweep.
 
     Returns ``{"triggered": bool, "triggers": list, "delivered": dict, "checkedAt": str}``.
     """
@@ -1181,6 +1185,23 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
                 health.record_issue(f"correlation booster failed: {type(exc).__name__}: {exc}")
 
     triggered = any(t.get("check") != "data_unavailable" for t in triggers)
+
+    # B4 capacity_reporting: append one row per sweep with the full capacity snapshot + the
+    # list of tier2 checks that fired. Runs BEFORE delivery so a delivery failure doesn't
+    # cost us the historical row (the reporting archive is independent of alert lifecycle).
+    # Best-effort: any store error degrades to a warning + health issue, never fails the sweep.
+    if reporting_store is not None:
+        try:
+            from ..context_capacity_reporting import _extract_from_facts
+            signal_types = sorted({t.get("check") for t in triggers
+                                    if t.get("check") and t.get("check") != "data_unavailable"})
+            reporting_store["append"](_extract_from_facts(
+                facts, run_at=checked_at, signal_types=signal_types, collector_ok=_ok))
+        except Exception as exc:
+            print(f"[tier2] capacity_reporting append failed ({type(exc).__name__}: {exc})")
+            if health is not None:
+                health.record_issue(f"capacity_reporting append failed: "
+                                    f"{type(exc).__name__}: {exc}")
 
     # Delivery: sub-project #2 wires the Tier-2 -> Teams alert path when the job provides a sink +
     # an alerts store (gated on TIER2_WEBHOOK_ENABLED upstream). Otherwise stays silent (no-op).
