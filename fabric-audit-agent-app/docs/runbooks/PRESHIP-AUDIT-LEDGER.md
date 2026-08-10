@@ -80,3 +80,62 @@ at all. Baseline job: 1,391 rows / 1,390 users (vs 51/50 under the biased pull).
 ---
 
 ## Round 2 — IN PROGRESS
+
+## Round 2 — COMPLETE, NOT CLEAN (fixed in `a332b26`, shipped `0.2.20` + `0.2.20` KQL hotfix)
+
+~30 more findings; the counter is still **0 of 3 clean sweeps**. Worst five:
+
+| Sev | Finding |
+|---|---|
+| P0 | **Tier2 was hiding every hourly-sweep finding within 5 min.** The resolution loop iterated ALL rows in the shared alerts table with no ownership check, marking sweep findings `currentlyActive=False` — the notification center hides those from the Open tab. This was the ~300-row `inactive` list visible in the live logs. Fixed; **verified in prod: the list dropped from ~300 to 7.** |
+| P0 | **`throttle_imminent` RETIRED** — built on a misread field. The `*ThresholdPercentage` columns are the throttle SETTING (`metric_type: "reference"`, "confirmed constant = 1"), not utilization; the live value scales to 123.71, so `>= 80` was true on EVERY window. Would have minted one permanent warn incident firing 288x/day and poisoned that capacity's peak-escalation axis forever. Only stayed hidden because the deployed KQL projected the columns away. |
+| P0 | **Coalescing manufactured alerts.** A composite returned `report` unconditionally, so one 30-s window at 100.5% CU — which both components individually SUPPRESS as momentary — merged into a guaranteed card. The dedup mechanism was inventing noise. Now requires a component to be material on its own. |
+| P0 | Deployed KQL dropped the overage chain in all 3 stanzas, AND the collector never hoisted overage onto `cap` — `_check_overage` was dead, the burndown axis had nothing to compare, archive columns permanently NULL. Both halves fixed. |
+| P0 | Multi-capacity contamination: peak taken across ALL capacities but `capacityId` from whichever appeared first, over-100% windows counted from both. A trial capacity's 4000% spike was attributed to healthy prod, and the resulting high-water metric meant no real event there could ever escalate. |
+
+Plus: `query_informational` defined but never exported (digest section dead in prod); informational
+rows flapping every 3 ticks and resetting `firstAlertedAt`; a round-1 fix of mine that left
+reopened incidents unable to escalate; "new signal joined" firing for a WEAKER signal; baseline
+`upsert_many` able to crash the nightly job on a mixed-case user (Kusto `summarize by` is
+case-sensitive, `tolower()` collapses the groups, Delta MERGE rejects duplicate source rows);
+total alert-path failure returning a dict nobody reads.
+
+**Self-inflicted regression, caught live:** the P0-1 KQL fix added overage columns to `project`
+without adding them to the `extend` that unpacks the `data` envelope. Kusto returned
+`Failed to resolve scalar expression named 'overageAddCapacityUnitMs'`, failing the WHOLE capacity
+collector (`peakCuPct=None`, every gate blind). Found on the first live run after deploy and fixed
+in the same session. Post-fix run: `peakCuPct=70.2 throttleMinutes=0.0 overageTotalMs=0.0`.
+
+---
+
+## OPEN — top follow-up (blocks the notification center)
+
+**`alert_ticket` is missing its unique constraint in the LIVE Lakebase.** Ticket writes now fail:
+
+```
+InvalidColumnReference: there is no unique or exclusion constraint matching the
+ON CONFLICT specification
+```
+
+`scripts/create_lakebase_alert_ticket.sql` already declares `incident_key text PRIMARY KEY` and
+carries an idempotent migration for tables created before that change — but the migration was
+never run against the live database, which still has the old `chat_id` PK. So
+`ON CONFLICT (incident_key)` has nothing to match.
+
+This is PRE-EXISTING and was masked until now: the writer previously failed earlier, on
+`password authentication failed` (the Spark-session-id bug fixed in `583d32e`). Fixing auth
+revealed the next layer down. Net effect either way: **tier-2 tickets have never reached the app's
+notification center.**
+
+Fix — run the migration block at the bottom of `scripts/create_lakebase_alert_ticket.sql` against
+the Lakebase instance (`databricks psql --project fabrics-audit-agent-memory`), then re-run tier2
+and confirm the Degraded ticket-write line is gone. Consider also making `create_ticket_writer`
+fall back to UPDATE-then-INSERT so it cannot depend on DDL state.
+
+## Audit loop status
+
+Rounds 1 and 2 both found P0-class logic errors, and round 2's were worse than round 1's. Clean
+sweeps: **0 of 3.** The recurring pattern is *tests exercise the default/mock path while
+production runs an override* — deployed KQL vs default KQL, memory store vs Delta store, injected
+`facts["events"]` vs the real collector. Three of round 2's P0s were that shape. Assume more
+exists until a sweep returns clean.
