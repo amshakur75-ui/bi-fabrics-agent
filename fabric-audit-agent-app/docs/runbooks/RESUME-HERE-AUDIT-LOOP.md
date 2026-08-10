@@ -1,4 +1,4 @@
-# RESUME HERE — pre-ship audit loop (updated 2026-08-10, end of round 4)
+# RESUME HERE — pre-ship audit loop (updated 2026-08-10, end of round 5)
 
 Read this first, then `PRESHIP-AUDIT-LEDGER.md` for the full finding history.
 
@@ -52,6 +52,20 @@ override · dead-man switch response was `pass` · no job had `timeout_seconds` 
 user rows) · findings ticketed under families the notification center filters out (`lineage`,
 `meta`, `capacity`) · `_FAMILY_MAP` mapped a sweep finding onto a tier2-OWNED checkType, so tier2
 deactivated it within 5 minutes of creation.
+
+## INCIDENT (escalated in round 5) — a subagent revert destroyed THREE guards, not one
+
+Round 3's `246a937` claimed three fixes to `tier2_check.py` that were never committed. A subagent's
+worktree restore had reverted that ONE FILE to its snapshot, discarding every edit made to it; only
+two hunks showed in the diff (the two the agent re-added), so the damage looked contained. The three
+lost guards were live for two days while a commit message said otherwise — including **the worst hole
+in the alerting path** (a failed Teams card recorded as delivered and never retried). A round-5
+mutation agent went looking for one of them and found nothing.
+
+**The rule:** after any subagent touches a shared tree, re-verify every claim in your own recent
+commits by grepping the FILE, not by reading the diff. A diff cannot show an edit reverted before
+HEAD was written. Prefer a test over a commit message as the record. Every edit in OTHER files
+survived, which is exactly what made the loss look limited.
 
 ## INCIDENT — a guard deletion was committed by accident
 
