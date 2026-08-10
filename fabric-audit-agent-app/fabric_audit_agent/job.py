@@ -810,6 +810,38 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         except Exception as exc:
             print(f"[tier2] readings store init skipped ({type(exc).__name__}: {exc})")
 
+    # B1/B2 user_baseline store (Design A' Phase B). OFF by default until the nightly
+    # bootstrap has populated the table at least once — a store that's wired but empty is
+    # safe (the detector's 3-layer fallback lands on the silent layer), but keeping the
+    # flip explicit avoids surprising empty rows on the first sweep. Flip on with
+    # ``TIER2_BASELINE_ENABLED=1`` after ``fabric-audit-baseline`` has run.
+    baseline_store = None
+    _baseline_on = str(env.get("TIER2_BASELINE_ENABLED", "")).strip().lower() in (
+        "1", "true", "yes")
+    if _baseline_on and _rcat and _rsch:
+        try:
+            from .context_user_baseline import create_user_baseline_store_delta
+            baseline_store = create_user_baseline_store_delta(_rcat, _rsch)
+        except Exception as exc:
+            print(f"[tier2] baseline store init skipped ({type(exc).__name__}: {exc})")
+            health.record_issue(f"baseline store init skipped: "
+                                f"{type(exc).__name__}: {exc}")
+
+    # B4 capacity_reporting store. Passive archival (append-only) — safe to leave on by
+    # default, but gated on the same catalog/schema being configured. Turn OFF for a run
+    # with ``TIER2_REPORTING_ENABLED=0`` if a specific investigation needs to skip archives.
+    reporting_store = None
+    _reporting_on = str(env.get("TIER2_REPORTING_ENABLED", "1")).strip().lower() in (
+        "1", "true", "yes")
+    if _reporting_on and _rcat and _rsch:
+        try:
+            from .context_capacity_reporting import create_capacity_reporting_store_delta
+            reporting_store = create_capacity_reporting_store_delta(_rcat, _rsch)
+        except Exception as exc:
+            print(f"[tier2] reporting store init skipped ({type(exc).__name__}: {exc})")
+            health.record_issue(f"reporting store init skipped: "
+                                f"{type(exc).__name__}: {exc}")
+
     alerts_store = reasoner = chat_writer = ack_store = ticket_writer = None
     app_url = env.get("APP_URL", "")
     enabled = str(env.get("TIER2_WEBHOOK_ENABLED", "")).strip().lower() in ("1", "true", "yes")
@@ -854,6 +886,8 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         ack_store=ack_store,
         ticket_writer=ticket_writer,
         health=health,
+        baseline_store=baseline_store,
+        reporting_store=reporting_store,
     )
     result["health"] = health.to_dict()
     return result
@@ -878,6 +912,105 @@ def tier2_main():
     line = render_health_line(health)
     if line:
         print(f"[tier2] {line}")
+    return result
+
+
+# ---- B1 nightly baseline bootstrap (Design A' Phase B) ----
+
+def run_baseline_bootstrap_job(env=None, *, collector=None, baseline_store=None,
+                                min_history=None, as_of=None, health=None):
+    """Nightly job entry: pull the last N days of activity events and rebuild the
+    ``user_baseline`` Delta table (per-user p95 + one estate-wide row).
+
+    Reads env:
+      - FABRIC_BASELINE_WINDOW (default ``14d``) — LA lookback window.
+      - FABRIC_BASELINE_MIN_HISTORY (default 20) — per-user sample floor.
+      - FABRIC_DELTA_CATALOG / FABRIC_DELTA_SCHEMA — target of the Delta upsert.
+
+    All ports DI'd for tests. Fail-open: an events-collector outage yields a summary
+    with rowsWritten=0 rather than crashing the job — the OLD baseline stays live until
+    the next successful run.
+    """
+    env = env if env is not None else os.environ
+    if health is None:
+        from .automation.health import HealthReport
+        health = HealthReport()
+    lookback = env.get("FABRIC_BASELINE_WINDOW", "14d")
+    if min_history is None:
+        try:
+            min_history = int(env.get("FABRIC_BASELINE_MIN_HISTORY", "20"))
+        except (TypeError, ValueError):
+            min_history = 20
+    if collector is None:
+        # Wrap _build_events_collector (which returns {"events": [...]}) to unwrap into a
+        # flat list of events — build_baselines' expected input shape. Guarded against
+        # missing env (FABRIC_TENANT_ID etc.) so a job scheduled before secrets are set
+        # degrades to an empty-write summary rather than an unhandled exception.
+        try:
+            _inner = _build_events_collector(env, window=lookback)
+
+            def _flat_collect():
+                return (_inner["collect"]() or {}).get("events") or []
+            collector = {"collect": _flat_collect}
+        except Exception as exc:
+            print(f"[baseline] events collector init failed "
+                  f"({type(exc).__name__}: {exc})")
+            health.record_issue(f"baseline events collector init failed: "
+                                f"{type(exc).__name__}: {exc}")
+            return {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "health": health.to_dict()}
+    if baseline_store is None:
+        cat, sch = env.get("FABRIC_DELTA_CATALOG"), env.get("FABRIC_DELTA_SCHEMA")
+        if cat and sch:
+            try:
+                from .context_user_baseline import create_user_baseline_store_delta
+                baseline_store = create_user_baseline_store_delta(cat, sch)
+            except Exception as exc:
+                print(f"[baseline] store init failed ({type(exc).__name__}: {exc})")
+                health.record_issue(f"baseline store init failed: "
+                                    f"{type(exc).__name__}: {exc}")
+                return {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "health": health.to_dict()}
+
+    if as_of is None:
+        from datetime import datetime, timezone
+        as_of = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    from .automation.user_baseline_bootstrap import run_bootstrap
+    try:
+        summary = run_bootstrap(collector, min_history=min_history, as_of=as_of,
+                                baseline_store=baseline_store)
+    except Exception as exc:
+        print(f"[baseline] bootstrap failed ({type(exc).__name__}: {exc})")
+        health.record_issue(f"baseline bootstrap failed: {type(exc).__name__}: {exc}")
+        summary = {"rowsWritten": 0, "users": 0, "hasEstate": False, "asOf": as_of,
+                   "error": f"{type(exc).__name__}: {exc}"}
+    summary["health"] = health.to_dict()
+    return summary
+
+
+def baseline_bootstrap_main():
+    """Databricks wheel-task entry for the nightly baseline bootstrap (pyproject:
+    fabric-audit-baseline). Schedule this ONCE PER DAY (e.g. 02:00 UTC); the 5-min tier2
+    sweep reads whatever the last successful run wrote."""
+    _merge_named_params_into_env()
+    from .automation.health import HealthReport, render_health_line
+    health = HealthReport()
+    _check_startup_invariant(health)
+    env = os.environ
+    _run_startup_preflight(env, health)
+    try:
+        result = run_baseline_bootstrap_job(env=env, health=health)
+    except Exception as exc:
+        _alert_failure(exc, env)
+        raise
+    print(f"[baseline] rowsWritten={result.get('rowsWritten')} users={result.get('users')} "
+          f"hasEstate={result.get('hasEstate')} asOf={result.get('asOf')}")
+    line = render_health_line(health)
+    if line:
+        print(f"[baseline] {line}")
     return result
 
 
