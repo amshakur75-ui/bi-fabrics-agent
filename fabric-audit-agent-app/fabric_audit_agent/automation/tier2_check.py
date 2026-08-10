@@ -25,7 +25,7 @@ from ..investigation.gates import (
     pressure_claim_gate,
     null_data_gate,
 )
-from .incident import incident_key, severity_of, primary_metric
+from .incident import incident_key, severity_of, primary_metric, signal_set
 from .materiality import classify, is_escalation, load_cfg
 from ..timefmt import to_display
 
@@ -197,12 +197,21 @@ def _check_overage(facts):
         except (TypeError, ValueError):
             return []
         if overage > 0:
-            return [{"check": "overage", "overageTotalMs": overage,
-                     "overageCumulativePct": cap.get("overageCumulativePct"),
-                     "minutesToBurndown": cap.get("minutesToBurndown"),
-                     "normalityHint": "Overage is accumulating — if this is a one-off large "
-                                      "job it will burn down; if it persists across multiple "
-                                      "checks it's a pattern"}]
+            trig = {"check": "overage", "overageTotalMs": overage,
+                    "overageCumulativePct": cap.get("overageCumulativePct"),
+                    "minutesToBurndown": cap.get("minutesToBurndown"),
+                    "normalityHint": "Overage is accumulating — if this is a one-off large "
+                                     "job it will burn down; if it persists across multiple "
+                                     "checks it's a pattern"}
+            # Design A': MUST carry capacityId like every other capacity check. Without it
+            # _coalesce_capacity_family groups overage under the literal "capacity" bucket
+            # while throttle/pressure group under the real id — producing TWO incidents
+            # (capacity::C1 + capacity::capacity) and two Teams cards for one event.
+            if cap.get("peakAt"):
+                trig["peakAt"] = cap["peakAt"]
+            if cap.get("capacityId"):
+                trig["capacityId"] = cap["capacityId"]
+            return [trig]
     return []
 
 
@@ -808,6 +817,25 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         res = dispatch_outbound("tier2_alert", {"attachments": [card]}, sinks=delivery_sinks)
         return bool(res.get("delivered"))
 
+    def _capacity_state(row, trigger):
+        """Stamp the capacity-family escalation state onto a row (Design A').
+
+        Applies to EVERY capacity-family trigger, not just composites: ``signal_set`` treats a
+        lone trigger as a set of one, so the single -> composite transition (pressure crossing
+        into throttle) is visible to the next tick's ``is_escalation``. Also refreshes
+        ``checkType`` so the stored row can't drift from the card (a row that began as
+        ``throttle`` and became ``capacity_incident`` used to keep the stale family forever).
+        All three fields are persisted — they are in ``context_alerts._FIELDS``.
+        """
+        sigs = signal_set(trigger)
+        if not sigs:
+            return row
+        row["signalTypes"] = sigs
+        row["checkType"] = trigger.get("check")
+        if trigger.get("throttleMinutes") is not None:
+            row["throttleMinutes"] = trigger["throttleMinutes"]
+        return row
+
     def _write_ticket(row, trigger):
         """Step 9: mirror this ticket's descriptive metadata into the app-readable store (Lakebase
         ``alert_ticket``) keyed by the stable incidentKey (chat_id is carried along but nullable),
@@ -874,6 +902,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            "a new driver is behind it this time.")
                 row = dict(prior, currentlyActive=True, status="active", lastAlertedAt=now_iso,
                            runAt=now_iso, investigationSummary=summary, absenceCount=0)
+                _capacity_state(row, t)
                 row["delivered"] = _send("new", t, row, summary, investigate_prefix=_prefix)
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
@@ -886,12 +915,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                            currentlyActive=True, absenceCount=0,
                            escalationCount=(prior.get("escalationCount") or 0) + 1,
                            investigationSummary=inv.get("summary") or prior.get("investigationSummary"))
-                # Composite state: carry signal set + primary metrics so the next tick can
-                # decide "new signal joined" or "throttle worsened" without re-fetching.
-                if t.get("check") == "capacity_incident":
-                    row["signalTypes"] = t.get("signalTypes") or []
-                    if t.get("throttleMinutes") is not None:
-                        row["throttleMinutes"] = t["throttleMinutes"]
+                _capacity_state(row, t)
                 row["delivered"] = _send("new", t, row, inv.get("summary"))
                 alerts_store["upsert"](row)
                 _write_ticket(row, t)
@@ -983,13 +1007,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                "lastRemindedAt": None, "resolvedAt": None, "escalationCount": 0,
                "materialityReason": reason, "investigationSummary": summary,
                "delivered": False, "runAt": now_iso, "currentlyActive": True}
-        # Composite state: carry signal set + primary metrics so the next tick's is_escalation
-        # can decide "new signal joined" without a fresh trigger. Only for capacity_incident;
-        # single-signal triggers keep the pre-Design-A' row shape.
-        if t.get("check") == "capacity_incident":
-            row["signalTypes"] = t.get("signalTypes") or []
-            if t.get("throttleMinutes") is not None:
-                row["throttleMinutes"] = t["throttleMinutes"]
+        _capacity_state(row, t)
         row["delivered"] = _send("new", t, row, summary)
         alerts_store["upsert"](row)
         _write_ticket(row, t)
@@ -1193,6 +1211,11 @@ def run_tier2_check(collector, *, delivery_sinks=None, findings_store=None,
     if reporting_store is not None:
         try:
             from ..context_capacity_reporting import _extract_from_facts
+            # NOTE: these are the RAW component checks as detected, BEFORE process_alerts
+            # coalesces them into a `capacity_incident` composite. That is intentional for an
+            # analytics archive — "throttle + pressure + extreme_peak fired at 13:52" is the
+            # queryable fact; the composite is a delivery-layer concept. The composite name
+            # therefore never appears in this column, so don't filter on it.
             signal_types = sorted({t.get("check") for t in triggers
                                     if t.get("check") and t.get("check") != "data_unavailable"})
             reporting_store["append"](_extract_from_facts(

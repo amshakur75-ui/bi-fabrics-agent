@@ -1,14 +1,61 @@
 # Deploy runbook — Design A' Phase B (2026-08-09)
 
-**What this ships**
-- B6 unified capacity-incident dedup (one composite Teams card per event, 5 signal types collapse)
-- B1 nightly `user_baseline` bootstrap (per-user + estate-wide 14-day p95)
-- B2 precomputed baseline detector with 3-layer fallback wired into `detect_all`
-- B3 correlation booster (user spike overlapping capacity event → named on the composite card)
-- B4 `capacity_reporting` Delta populated on every 5-min sweep
-
 **Read this end-to-end before running any command.**
-Rollout is INTENTIONALLY staged so a bad flag flip cannot generate live Teams noise before we've watched a day of dry runs.
+
+## What actually ships (post-audit, 2026-08-10)
+
+A deep audit before deploy found and fixed several defects, and established that **two of the
+five features are inert in production**. Be honest with yourself about this table — it is the
+difference between "quiet because it works" and "quiet because it never runs."
+
+| | Status on deploy | Notes |
+|---|---|---|
+| **B6** unified capacity-incident dedup | **LIVE the moment the wheel lands** | This is the Teams-noise fix. No feature flag. |
+| **B4** sweep archive → `tier2_capacity_reporting` | **LIVE on deploy** (`TIER2_REPORTING_ENABLED` defaults on) | Passive append-only. Renamed table — see below. |
+| **B1** nightly `user_baseline` bootstrap | Runs nightly, **writes biased data** | See "Known-broken" below. Harmless while B2 is off. |
+| **B2** per-user baseline detector | **INERT** — cannot fire | `facts["events"]` does not exist in the Tier-2 sweep. |
+| **B3** correlation booster | **INERT** — depends on B2 | Cards will never show "Correlated user spikes". |
+
+### B6 goes live at deploy, NOT at a flag flip
+
+The new `extreme_peak` / `throttle_imminent` detectors and the composite dedup have **no
+feature flag**. Teams card volume and card *shape* change the moment the wheel deploys. Expect
+capacity alerts to arrive titled `Capacity incident (throttling + CU pressure) — peak N%`
+instead of separate per-signal cards. Brief whoever is on call.
+
+To soften the first 24h, set these absurdly high on the `fabric_audit_tier2` stanza and lower
+them later: `FABRIC_TIER2_EXTREME_PEAK_PCT: "100000"`,
+`FABRIC_TIER2_THROTTLE_IMMINENT_PCT: "100000"`.
+
+### Known-broken — do NOT run Stage 4 on this build
+
+`TIER2_BASELINE_ENABLED=1` will not do anything useful, and shouldn't be flipped until these
+are fixed:
+
+1. **B2/B3 are unreachable.** `job._build_tier2_collector` composes only the capacity-events
+   and LA-attribution collectors; neither emits an `events` key, and `_build_events_collector`
+   (the only producer) is wired into the *unified* sweep, not Tier-2. The detector iterates an
+   empty list every run.
+2. **The baseline population is wrong.** `run_baseline_bootstrap_job` reuses
+   `_build_events_collector`, which caps at the **5,000 costliest** events (`_EVENTS_CAP`,
+   `order="cost"`). Over a 14-day window that keeps roughly the top 1%, so the computed `p95`
+   is closer to the true 99.9th percentile. Correct fix is a server-side
+   `summarize percentile(CpuTimeMs, 95) by ExecutingUser` instead of pulling raw rows.
+3. **The threshold is a percentile lookup, not an anomaly test.** `compare_to_baseline` returns
+   `shifted = cu > p95`, which fires on ~5% of all events by construction. Needs a multiplier
+   (e.g. `> 3 × p95`) plus an absolute floor before it means anything.
+4. **One Spark query per event.** `get_user` is called inside the per-event loop with no
+   batching; a few thousand events would blow the 5-minute job budget. Needs a single
+   `get_all_users()` load.
+
+None of these can bite while `TIER2_BASELINE_ENABLED` is unset, which is the default.
+
+### Table rename
+
+The B4 archive writes to **`tier2_capacity_reporting`**, not `capacity_reporting`.
+`scripts/create_delta_tables.sql` already provisions `capacity_reporting` at a different grain
+(one row per 30-second window); reusing that name would have failed every write on schema
+mismatch. Update any query you were planning against the old name.
 
 ---
 
@@ -30,7 +77,12 @@ If any step fails, **stop and fix locally first**. Do not deploy a partial state
 
 ---
 
-## Stage 1 — Provision the two new Delta tables
+## Stage 1 — (OPTIONAL) Provision the two new Delta tables
+
+**You can skip this.** Both stores now self-create their table on first write
+(`_ensure_table` / `_ensure_schema`, same pattern `context_alerts` uses in prod), and both
+self-heal missing columns via `ALTER TABLE ADD COLUMNS`. The SQL scripts below remain the
+canonical schema for review or a manual re-provision.
 
 Run these SQL scripts once against the Fabric-audit catalog/schema (the one `FABRIC_DELTA_CATALOG` + `FABRIC_DELTA_SCHEMA` already point at — same one used by `audit_alerts`, `tier2_readings`, etc.):
 

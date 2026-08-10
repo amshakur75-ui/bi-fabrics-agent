@@ -76,15 +76,34 @@ def severity_of(trigger):
     return "info"
 
 
-def primary_metric(trigger):
-    """The single numeric metric used for escalation comparison, per check type."""
+def signal_set(trigger):
+    """The sorted set of capacity signals a trigger represents, as a list.
+
+    A composite carries its merged ``signalTypes``; a lone capacity trigger is a set of one
+    (itself). Design A' shares ONE incident key across the whole capacity family, so this is
+    what lets ``is_escalation`` answer "did a new signal join this incident?" uniformly —
+    including the single-signal -> multi-signal transition (e.g. pressure crossing into
+    throttle), which is a genuine worsening even when the metrics barely move.
+    """
     check = (trigger or {}).get("check")
     if check == "capacity_incident":
-        # Composite uses peakCuPct as its primary metric — the single number that best
-        # summarizes overall severity across the merged signals. Escalation logic (see
-        # is_escalation) additionally compares throttleMinutes and whether a new signal
-        # type joined, but the row's scalar metric is peakCuPct so it lines up with
-        # pressure/extreme_peak's scale (both are % of capacity).
+        return sorted(trigger.get("signalTypes") or [])
+    return [check] if check in _CAPACITY_FAMILY else []
+
+
+def primary_metric(trigger):
+    """The single numeric metric used for escalation comparison, per check type.
+
+    UNIT SAFETY (Design A'): every capacity-family check reports ``peakCuPct`` so the stored
+    ``metric`` has ONE stable unit across the shared ``capacity::<id>`` key. Before this,
+    throttle stored minutes while pressure stored percent, so a tick that switched check type
+    compared minutes against percent — which both invented escalations (throttle 2.0 -> pressure
+    110 read as "+108 points") and swallowed real ones (a 30-minute throttle after a 250% peak
+    failed ``30 >= 2*250`` and went silent). Throttle severity is still tracked, on its own axis,
+    via the row's ``throttleMinutes``.
+    """
+    check = (trigger or {}).get("check")
+    if check in _CAPACITY_FAMILY:
         return _num(trigger.get("peakCuPct"))
     if check == "concentration":
         return _num(trigger.get("sharePct"))

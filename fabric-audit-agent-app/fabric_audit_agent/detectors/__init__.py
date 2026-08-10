@@ -30,11 +30,20 @@ _DETECTORS = [
 def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
     """Run every registered detector and flatten the flags.
 
-    ``baseline_store`` (Design A' B2, 2026-08-09): when provided, also runs the per-user
-    baseline-deviation detector with a 3-layer fallback (personalized / estate / silent).
-    Threaded from ``job.run_job`` at deploy time; ``None`` here is the safe default — the
-    detector is simply skipped and no alerts fire until the nightly bootstrap job has
-    populated the store.
+    ``baseline_store`` (Design A' B2): when provided, also runs the per-user baseline-deviation
+    detector with a 3-layer fallback (personalized / estate / silent).
+
+    NOT WIRED INTO THE SWEEP — read this before threading a store in. Every current caller
+    (``pipeline.run_audit``, ``diagnosis``, ``entrypoints``) passes no store, so the detector
+    does not run in the hourly sweep. The ONLY live caller is the Tier-2 path, which calls the
+    detector directly and feeds its flags to the correlation booster rather than into findings.
+
+    Threading a store in here would turn every flag into a FINDING -> reasoner -> Teams card +
+    notification-center ticket. That is not currently safe: the detector's threshold is
+    ``cuSeconds > p95``, which by construction fires on ~5% of ALL events, and
+    ``activity.user-baseline-deviation`` has no ``severity.py`` classification (falls to Info)
+    and no KB playbook. Fix the threshold (multiplier + absolute floor) and add the taxonomy
+    entries before wiring this into ``run_audit``.
     """
     config = config or DEFAULT_CONFIG
     detectors = detectors if detectors is not None else _DETECTORS

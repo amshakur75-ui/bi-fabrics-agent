@@ -7,7 +7,7 @@ active incident has worsened enough to re-alert. All thresholds come from ``load
 """
 import os
 
-from .incident import severity_of, primary_metric, _num
+from .incident import severity_of, primary_metric, signal_set, _num, _CAPACITY_FAMILY
 
 _DEFAULTS = {
     "concentration_report": 40.0,   # report at/above this share%
@@ -153,22 +153,36 @@ def is_escalation(trigger, prior, cfg=None):
     if ranks.get(severity_of(trigger), 0) > ranks.get((prior or {}).get("severity"), 0):
         return True
     check = (trigger or {}).get("check")
-    if check == "capacity_incident":
-        # Composite escalates if any of: peak worsened, throttle worsened, a new signal type
-        # joined the incident vs the prior stored composite. New signal joining is a real
-        # worsening even when metrics didn't move — e.g. pressure crosses into throttle.
+    if check in _CAPACITY_FAMILY:
+        # Design A': the WHOLE capacity family shares one incident key, so escalation is
+        # evaluated on three independent axes rather than a single scalar (which was unit-
+        # unsafe across a check-type change — see primary_metric's note).
+        #   1. peak worsened      — peakCuPct, the family's unit-stable metric
+        #   2. throttle worsened  — its own axis, minutes, only compared minutes-to-minutes
+        #   3. a new signal joined — e.g. pressure crossing into throttle. A real worsening
+        #      even when the numbers barely move, and it covers the single -> composite
+        #      transition because signal_set() treats a lone trigger as a set of one.
         cur = _num(trigger.get("peakCuPct"))
         pri = _num((prior or {}).get("metric"))
         if cur is not None and pri is not None and (cur - pri) >= cfg["esc_peak_delta"]:
             return True
         cur_thr = _num(trigger.get("throttleMinutes"))
         pri_thr = _num((prior or {}).get("throttleMinutes"))
-        if cur_thr is not None and pri_thr is not None and cur_thr >= max(
-                cfg["throttle_min"], 2 * pri_thr):
-            return True
-        cur_sigs = set(trigger.get("signalTypes") or [])
+        if cur_thr is not None and cur_thr > 0:
+            if pri_thr is None or pri_thr <= 0:
+                # Throttling STARTED on an incident that previously had none — unambiguous
+                # worsening regardless of how the percentages moved.
+                return True
+            if cur_thr >= max(cfg["throttle_min"], 2 * pri_thr):
+                return True
+        cur_sigs = set(signal_set(trigger))
         pri_sigs = set((prior or {}).get("signalTypes") or [])
-        if cur_sigs - pri_sigs:
+        # Only meaningful when the prior row actually RECORDED a signal set. An empty
+        # ``pri_sigs`` means "unknown", not "no signals" — e.g. a row written before this
+        # field existed (the rows already live in prod at deploy time). Treating unknown as
+        # empty would make every signal look new and fire a card every tick, which is the
+        # precise failure this rule exists to prevent.
+        if pri_sigs and (cur_sigs - pri_sigs):
             return True
         return False
     cur = primary_metric(trigger)

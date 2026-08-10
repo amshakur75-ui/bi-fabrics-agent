@@ -421,7 +421,14 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     # FIX B: capacity incidents (throttle/pressure/overage) have their own real-time alert +
     # auto-resolve lifecycle — they must NOT also appear in the digest (that mixes already-resolved
     # real-time events with the attribution/coverage issues the digest actually exists to roll up).
-    _EXCLUDE = (DIGEST_CHECK, "throttle", "pressure", "overage")
+    # Design A' (2026-08-09): the capacity family gained `extreme_peak`, `throttle_imminent`,
+    # and — most importantly — `capacity_incident`, which is now the checkType for MOST
+    # capacity alerts (multi-signal firings coalesce into it). Omitting them here would let
+    # real-time capacity events back into the digest headline count, re-creating the
+    # "Open tickets: 161" flood that f9581cf fixed. Kept in sync with tier2_check's
+    # _CAPACITY_CHECKS.
+    _EXCLUDE = (DIGEST_CHECK, "throttle", "pressure", "overage",
+                "extreme_peak", "throttle_imminent", "capacity_incident")
     # An "open" ticket is one that (a) isn't excluded by check-type AND (b) is still actively
     # firing. currentlyActive=False means the underlying finding stopped firing — the row is only
     # still in status='active' because no human clicked Resolve. Rolling those into the daily

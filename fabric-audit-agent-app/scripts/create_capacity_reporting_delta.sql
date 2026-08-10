@@ -1,4 +1,10 @@
--- Design A' — Phase B, task B4 — capacity_reporting Delta table
+-- Design A' — Phase B, task B4 — tier2_capacity_reporting Delta table
+--
+-- NAME: deliberately NOT `capacity_reporting`. scripts/create_delta_tables.sql already
+-- provisions a table by that name at a DIFFERENT GRAIN — one row per 30-second capacity
+-- window (window_ts / cu_pct / base_cu). This one is one row per 5-minute SWEEP. Appending
+-- sweep-grain rows into the window-grain table fails on schema mismatch, and forcing it
+-- would leave a table nobody can query. Distinct grain, distinct table.
 --
 -- Long-tail analytical archive of what each 5-minute tier2 sweep saw: peak CU%, throttle
 -- minutes, overage state, Fabric threshold pcts, item-attribution coverage, and which
@@ -14,7 +20,7 @@
 -- without needing an array column. Empty list ``"[]"`` means the sweep ran but nothing
 -- fired; NULL means the row predates B4 (older sweeps).
 
-CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.capacity_reporting (
+CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.tier2_capacity_reporting (
     run_at                          STRING   COMMENT 'ISO-8601 sweep run timestamp',
     capacity_id                     STRING   COMMENT 'Fabric capacity id when the collector reported one',
     peak_cu_pct                     DOUBLE   COMMENT 'Peak CU% across the sweep window',

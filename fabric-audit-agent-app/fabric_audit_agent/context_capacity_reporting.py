@@ -1,4 +1,11 @@
-"""Capacity reporting store — the ``capacity_reporting`` Delta table (B4, Design A' Phase B).
+"""Capacity reporting store — the ``tier2_capacity_reporting`` Delta table (B4, Design A' Phase B).
+
+NAME COLLISION NOTE (2026-08-10): this is deliberately NOT called ``capacity_reporting``.
+``scripts/create_delta_tables.sql`` already provisions a table by that name with a completely
+different GRAIN and schema — one row per 30-second capacity window (``window_ts``, ``cu_pct``,
+``base_cu``, ...). This store writes one row per 5-minute SWEEP. Appending sweep-grain rows into
+a window-grain table would both fail on schema mismatch and, if forced, make the table
+unqueryable. Distinct grain gets a distinct table.
 
 Long-tail analytical archive of what each 5-minute tier2 sweep saw: peak CU%, throttle
 minutes, overage state, Fabric threshold pcts, and which tier2 checks fired that run.
@@ -131,9 +138,19 @@ def _schema():
         return None
 
 
+_COL_SQL_TYPE = {
+    "peak_cu_pct": "DOUBLE", "throttle_minutes": "DOUBLE", "overage_total_ms": "DOUBLE",
+    "overage_cumulative_pct": "DOUBLE", "minutes_to_burndown": "DOUBLE",
+    "max_interactive_delay_pct": "DOUBLE", "max_interactive_rejection_pct": "DOUBLE",
+    "max_background_rejection_pct": "DOUBLE", "item_count": "INT",
+    "collector_ok": "BOOLEAN",
+}
+
+
 def create_capacity_reporting_store_delta(catalog, schema, *, spark=None):
-    """Delta-backed append-only store on ``capacity_reporting``. Use in production."""
-    table = f"`{catalog}`.`{schema}`.capacity_reporting"
+    """Delta-backed append-only store on ``tier2_capacity_reporting``. Use in production."""
+    table = f"`{catalog}`.`{schema}`.tier2_capacity_reporting"
+    _ensured = {"done": False}
 
     def _get_spark():
         nonlocal spark
@@ -145,18 +162,41 @@ def create_capacity_reporting_store_delta(catalog, schema, *, spark=None):
             raise RuntimeError("No active SparkSession")
         return spark
 
+    def _ensure_schema(s):
+        """Idempotently add any missing ``_FIELDS`` column (once per store), mirroring
+        ``context_alerts._ensure_schema``. ``saveAsTable(mode="append")`` resolves columns by
+        NAME, so a table created by an older build — or by a hand-run DDL — would otherwise
+        fail every write with an AnalysisException that the caller only sees as a health
+        issue. Never fatal: a failure here just leaves the column absent."""
+        if _ensured["done"]:
+            return
+        try:
+            existing = {r["col_name"] for r in s.sql(f"DESCRIBE TABLE {table}").collect()}
+            for _, col in _FIELDS:
+                if col not in existing:
+                    s.sql(f"ALTER TABLE {table} ADD COLUMNS "
+                          f"({col} {_COL_SQL_TYPE.get(col, 'STRING')})")
+        except Exception as exc:
+            # Table may simply not exist yet — the first append creates it.
+            print(f"[capacity_reporting] schema self-heal skipped "
+                  f"({type(exc).__name__}: {exc})")
+        _ensured["done"] = True
+
     def append(reading):
         s = _get_spark()
+        _ensure_schema(s)
         (s.createDataFrame([_to_row(reading)], schema=_schema())
              .write.mode("append").saveAsTable(table))
 
     def recent(n=100):
         s = _get_spark()
+        _ensure_schema(s)
         rows = s.sql(f"SELECT * FROM {table} ORDER BY run_at DESC LIMIT {int(n)}").collect()
         return [_from_row(r.asDict()) for r in rows]
 
     def query_range(start, end):
         s = _get_spark()
+        _ensure_schema(s)
         # Parameterized string literals — start / end are ISO-8601 timestamps composed by
         # the caller (never user input at this layer), so f-string interpolation is safe.
         rows = s.sql(

@@ -102,9 +102,22 @@ def test_new_checks_derived_severity():
     assert severity_of({"check": "throttle_imminent", "worstPct": 92.0}) == "warn"
 
 
-def test_primary_metric_wired():
+def test_primary_metric_is_unit_stable_across_the_capacity_family():
+    """Design A' shares ONE incident key across five capacity checks, so the stored ``metric``
+    must have ONE unit or escalation compares minutes against percent. Every capacity-family
+    check therefore reports peakCuPct; throttle severity rides its own ``throttleMinutes``
+    axis instead of being crammed into the same scalar."""
     assert primary_metric({"check": "extreme_peak", "peakCuPct": 220.0}) == 220.0
-    assert primary_metric({"check": "throttle_imminent", "worstPct": 88.0}) == 88.0
+    assert primary_metric({"check": "pressure", "peakCuPct": 130.0}) == 130.0
+    # throttle used to report MINUTES here — that is what made a 2.0-minute throttle followed
+    # by a 110% pressure read as a "+108 point" escalation.
+    assert primary_metric({"check": "throttle", "throttleMinutes": 8.0,
+                           "peakCuPct": 130.0}) == 130.0
+    # throttle_imminent's worstPct is a THRESHOLD percentage, not CU% — not interchangeable,
+    # so it no longer leaks into the shared metric.
+    assert primary_metric({"check": "throttle_imminent", "worstPct": 88.0,
+                           "peakCuPct": 92.0}) == 92.0
+    assert primary_metric({"check": "throttle_imminent", "worstPct": 88.0}) is None
 
 
 def test_materiality_always_reports_a_fired_new_signal():
@@ -124,9 +137,39 @@ def test_escalation_worsens_only_when_metric_climbs():
     # 210 -> 215 = +5 pts, below delta, no escalation
     assert is_escalation({"check": "extreme_peak", "peakCuPct": 215.0},
                          {"severity": "warn", "metric": 210.0}, cfg) is False
-    # throttle_imminent uses the same peak-delta rule
+    # throttle_imminent crossing 90% promotes info -> warn, so it escalates on the
+    # SEVERITY-RANK rule (not the peak delta — worstPct is a threshold pct, not CU%).
     assert is_escalation({"check": "throttle_imminent", "worstPct": 92.0},
                          {"severity": "info", "metric": 82.0}, cfg) is True
+
+
+def test_escalation_ignores_new_signal_rule_when_prior_set_unknown():
+    """Migration guard: rows already in the prod alerts table were written before
+    ``signalTypes`` existed, so they read back as absent. Absent must mean UNKNOWN, not
+    "no signals" — otherwise every signal looks new and a card fires every 5 minutes,
+    which is the exact failure the rule exists to prevent."""
+    cfg = load_cfg()
+    cfg["esc_peak_delta"] = 20.0
+    legacy_prior = {"severity": "warn", "metric": 130.0}          # no signalTypes key
+    assert is_escalation({"check": "pressure", "peakCuPct": 132.0},
+                         legacy_prior, cfg) is False
+    # Once the prior DOES record a set, a genuinely new signal escalates.
+    known_prior = {"severity": "warn", "metric": 130.0, "signalTypes": ["pressure"]}
+    assert is_escalation({"check": "capacity_incident", "peakCuPct": 132.0,
+                          "signalTypes": ["pressure", "throttle"]},
+                         known_prior, cfg) is True
+
+
+def test_escalation_fires_when_throttling_starts_on_a_pressure_incident():
+    """The unit-mixing bug's worst symptom: a real throttle arriving after a high-percentage
+    pressure reading used to be SILENT, because `30 >= max(5, 2*250)` is False. Throttle now
+    has its own axis, so throttling starting is always an escalation."""
+    cfg = load_cfg()
+    prior = {"severity": "warn", "metric": 250.0, "signalTypes": ["pressure", "extreme_peak"],
+             "throttleMinutes": None}
+    trigger = {"check": "capacity_incident", "peakCuPct": 240.0, "throttleMinutes": 30.0,
+               "signalTypes": ["pressure", "extreme_peak"]}
+    assert is_escalation(trigger, prior, cfg) is True
 
 
 def test_titles_are_human_readable():

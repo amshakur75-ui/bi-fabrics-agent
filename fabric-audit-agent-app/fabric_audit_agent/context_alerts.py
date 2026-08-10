@@ -6,7 +6,14 @@ The store exposes ``{"query_active", "upsert", "resolve"}``. Production MUST use
 
 Alert dicts are camelCase (project convention); Delta columns are snake_case — mapped by
 ``_to_row`` / ``_from_row``.
+
+IMPORTANT: ``_FIELDS`` is the ONLY thing that persists. ``_to_row`` builds the Delta row by
+iterating ``_FIELDS``, so any key written onto an alert row that is not listed there is
+silently discarded on write and comes back ``None`` on the next read. The in-memory store
+below keeps the whole dict, so tests that only use it will NOT catch a missing field —
+see ``tests/test_alerts_store_delta_fidelity.py`` for the round-trip regression guard.
 """
+import json
 
 _FIELDS = [
     ("incidentKey", "incident_key"),
@@ -27,17 +34,45 @@ _FIELDS = [
     ("runAt", "run_at"),
     ("currentlyActive", "currently_active"),
     ("presenceCount", "presence_count"),
+    # Design A' (2026-08-09) capacity-incident state. These MUST be here: ``_to_row`` drops any
+    # key not listed, so a field written onto the row by ``process_alerts`` but missing from
+    # ``_FIELDS`` silently vanishes on the Delta write and reads back as None next tick.
+    # ``absenceCount`` powers quiet-to-resolve (without it an incident never auto-resolves);
+    # ``signalTypes`` powers "a new signal joined" escalation (without it EVERY tick looks like
+    # a new signal, so a card fires every 5 minutes); ``throttleMinutes`` powers the
+    # throttle-worsened escalation comparison.
+    ("absenceCount", "absence_count"),
+    ("signalTypes", "signal_types"),
+    ("throttleMinutes", "throttle_minutes"),
 ]
+
+# Fields carried as a Python list but stored as a compact JSON string (Delta STRING column),
+# so the row stays a flat scalar schema and an analyst can from_json() it.
+_JSON_LIST_FIELDS = ("signalTypes",)
 
 
 def _to_row(alert):
     """camelCase alert dict -> snake_case Delta row (all columns present, missing -> None)."""
-    return {col: alert.get(cc) for cc, col in _FIELDS}
+    row = {col: alert.get(cc) for cc, col in _FIELDS}
+    for cc, col in _FIELDS:
+        if cc in _JSON_LIST_FIELDS:
+            v = row.get(col)
+            if v is not None and not isinstance(v, str):
+                row[col] = json.dumps(list(v), separators=(",", ":"))
+    return row
 
 
 def _from_row(row):
     """snake_case Delta row (dict) -> camelCase alert dict."""
-    return {cc: row.get(col) for cc, col in _FIELDS}
+    out = {cc: row.get(col) for cc, col in _FIELDS}
+    for cc in _JSON_LIST_FIELDS:
+        v = out.get(cc)
+        if isinstance(v, str):
+            try:
+                out[cc] = json.loads(v)
+            except (TypeError, ValueError):
+                out[cc] = []
+    return out
 
 
 def create_alerts_store_memory(initial=None):
@@ -78,7 +113,12 @@ def _schema():
         )
         t = {"metric": DoubleType(), "escalation_count": IntegerType(),
              "delivered": BooleanType(), "currently_active": BooleanType(),
-             "presence_count": IntegerType()}
+             "presence_count": IntegerType(),
+             # Design A'. signal_types intentionally stays StringType (JSON-encoded by
+             # _to_row) — handing createDataFrame a raw Python list against a StringType
+             # column raises TypeError inside upsert(), which has no try/except and would
+             # drop the alert outright.
+             "absence_count": IntegerType(), "throttle_minutes": DoubleType()}
         return StructType([
             StructField(col, t.get(col, StringType()), True) for _, col in _FIELDS
         ])
@@ -93,7 +133,10 @@ def create_alerts_store_delta(catalog, schema, *, spark=None):
     _ensured = {"done": False}
     # SQL type per snake_case column, for the self-heal ALTER below (default STRING).
     _COL_SQL_TYPE = {"metric": "DOUBLE", "escalation_count": "INT", "delivered": "BOOLEAN",
-                     "currently_active": "BOOLEAN", "presence_count": "INT"}
+                     "currently_active": "BOOLEAN", "presence_count": "INT",
+                     # Design A' — the self-heal ALTER below adds these to an existing
+                     # prod table on first use, so no manual migration is needed.
+                     "absence_count": "INT", "throttle_minutes": "DOUBLE"}
 
     def _get_spark():
         nonlocal spark

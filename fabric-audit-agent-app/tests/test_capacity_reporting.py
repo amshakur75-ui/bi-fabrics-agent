@@ -138,10 +138,11 @@ def test_run_tier2_check_appends_a_reporting_row_when_store_provided():
     # capacity snapshot fully hoisted
     assert r["peakCuPct"] == 210.0 and r["throttleMinutes"] == 8.5
     assert r["capacityId"] == "cap-A"
-    # signalTypes sorted, alphabetical — includes the composite ("capacity_incident") + any
-    # component checks that fired (throttle_imminent + extreme_peak + pressure + throttle all
-    # coalesce, but the raw component checks are still what fired detection-wise).
-    assert r["signalTypes"] and set(r["signalTypes"]).issuperset({"throttle"})
+    # signalTypes records the RAW component checks as detected, NOT the delivery-layer
+    # composite. "throttle + pressure fired at 13:52" is the queryable analytics fact;
+    # `capacity_incident` is a Teams-card concept and deliberately never lands here.
+    assert set(r["signalTypes"]).issuperset({"throttle", "pressure"})
+    assert "capacity_incident" not in r["signalTypes"]
 
 
 def test_run_tier2_check_appends_no_row_when_reporting_store_absent():

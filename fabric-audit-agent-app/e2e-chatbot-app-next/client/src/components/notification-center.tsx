@@ -47,6 +47,12 @@ const ACTIONABLE = new Set([
   'throttle',
   'pressure',
   'overage',
+  // Design A' (2026-08-09): the capacity family gained these three. `capacity_incident` is
+  // the checkType for MOST capacity alerts now — multi-signal firings coalesce into it — so
+  // omitting it hid the highest-severity ticket the system produces from the Open tab.
+  'capacity_incident',
+  'extreme_peak',
+  'throttle_imminent',
   // Hourly estate-wide sweep families (checkType = the finding family)
   'model',
   'report',
