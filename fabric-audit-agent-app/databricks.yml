@@ -43,6 +43,12 @@ resources:
   jobs:
     fabric_audit_sweep:
       name: fabric-audit-sweep
+      # A hung run stays *Running*, never *Failed*, so email_notifications.on_failure
+      # never fires and the agent is silently blind for the duration -- how the
+      # 2026-08-09 alerting outage stayed invisible for 5.5 hours. an hourly estate sweep; 1h is ~4x the observed runtime.
+      timeout_seconds: 3600
+      # Never let a slow run be lapped by the next tick and race it on audit_alerts.
+      max_concurrent_runs: 1
       tasks:
         - task_key: audit
           python_wheel_task:
@@ -106,6 +112,12 @@ resources:
     # ---- Phase 9 Tier 2: cheap deterministic check (no LLM, every 5 minutes) ----
     fabric_audit_tier2:
       name: fabric-audit-tier2
+      # A hung run stays *Running*, never *Failed*, so email_notifications.on_failure
+      # never fires and the agent is silently blind for the duration -- how the
+      # 2026-08-09 alerting outage stayed invisible for 5.5 hours. a 5-min cadence: anything past 10 min is hung, not slow.
+      timeout_seconds: 600
+      # Never let a slow run be lapped by the next tick and race it on audit_alerts.
+      max_concurrent_runs: 1
       tasks:
         - task_key: tier2_check
           python_wheel_task:
@@ -126,11 +138,14 @@ resources:
               # per-user surge / same-item cross-user gates (without it items=0 and they never fire).
               FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
               # --- Design A' Phase B (per-user baseline + correlation booster) ---
-              # Flip to "1" to enable the per-user baseline detector, the correlation booster,
-              # AND the raw-event Log Analytics pull that feeds them (all three are gated on this
-              # one flag). Leave "0" until the nightly fabric-audit-baseline job has populated
-              # user_baseline at least once.
-              TIER2_BASELINE_ENABLED: "0"
+              # Enables the per-user baseline detector (B2), the correlation booster (B3), AND the
+              # raw-event Log Analytics pull that feeds them (all three gate on this one flag).
+              # ON as of 2026-08-10. The stated precondition -- "leave 0 until the nightly
+              # fabric-audit-baseline job has populated user_baseline at least once" -- was met on
+              # 2026-08-09 but the flag was never flipped, so B2 and B3 were dead in production
+              # while every test injected facts["events"] by hand and passed. Verified live before
+              # flipping: user_baseline holds 1,440 user rows + 1 estate row, as_of 2026-08-10.
+              TIER2_BASELINE_ENABLED: "1"
               # Window for that raw-event pull. Deliberately WIDER than the 5-min cadence:
               # Log Analytics ingests with minutes of latency while the KQL filters on
               # TimeGenerated (event time), so a 5m window leaves a permanent blind hole over
@@ -173,10 +188,17 @@ resources:
     # Pulls 14 days of Log Analytics activity and rebuilds per-user + estate-wide p95 into
     # ``user_baseline``. The 5-min tier2 sweep reads whatever this job last wrote. Scheduled
     # 02:00 UTC daily — a full 14-day pull runs in a few minutes on serverless.
-    # TIER2_BASELINE_ENABLED is left OFF on the tier2 job until this job has populated the
-    # table at least once (see docs/runbooks/deploy-design-a-prime-phase-b.md Stage 4).
+    # This job is the PRECONDITION for TIER2_BASELINE_ENABLED on the tier2 + daily jobs; both were
+    # flipped on 2026-08-10 after verifying live that it had populated the table (1,440 user rows +
+    # 1 estate row). See docs/runbooks/deploy-design-a-prime-phase-b.md Stage 4.
     fabric_audit_baseline:
       name: fabric-audit-baseline
+      # A hung run stays *Running*, never *Failed*, so email_notifications.on_failure
+      # never fires and the agent is silently blind for the duration -- how the
+      # 2026-08-09 alerting outage stayed invisible for 5.5 hours. a 14-day LA pull; minutes on serverless, 45m is generous.
+      timeout_seconds: 2700
+      # Never let a slow run be lapped by the next tick and race it on audit_alerts.
+      max_concurrent_runs: 1
       tasks:
         - task_key: baseline_bootstrap
           python_wheel_task:
@@ -217,6 +239,12 @@ resources:
     # ---- Step 10: daily 6pm capacity digest (once-a-day summary card + Acknowledge) ----
     fabric_audit_daily:
       name: fabric-audit-daily
+      # A hung run stays *Running*, never *Failed*, so email_notifications.on_failure
+      # never fires and the agent is silently blind for the duration -- how the
+      # 2026-08-09 alerting outage stayed invisible for 5.5 hours. one 1d collect plus a digest card.
+      timeout_seconds: 1800
+      # Never let a slow run be lapped by the next tick and race it on audit_alerts.
+      max_concurrent_runs: 1
       tasks:
         - task_key: daily_summary
           python_wheel_task:
@@ -233,6 +261,12 @@ resources:
               FABRIC_CAPACITY_EVENTS_DB: "{{secrets/fabric-audit/FABRIC_CAPACITY_EVENTS_DB}}"
               FABRIC_CAPACITY_EVENTS_KQL: "CapacityEvents | where ingestion_time() > ago({window}) | extend capacityId=tostring(data.capacityId), windowStartTime=tostring(data.windowStartTime), capacityUnitMs=todouble(data.capacityUnitMs), baseCapacityUnits=todouble(data.baseCapacityUnits), overageAddCapacityUnitMs=todouble(data.overageAddCapacityUnitMs), overageBurndownCapacityUnitMs=todouble(data.overageBurndownCapacityUnitMs), overageTotalCapacityUnitMs=todouble(data.overageTotalCapacityUnitMs) | project capacityId, windowStartTime, capacityUnitMs, baseCapacityUnits, overageAddCapacityUnitMs, overageBurndownCapacityUnitMs, overageTotalCapacityUnitMs"
               FABRIC_LA_WORKSPACE_ID: "{{secrets/fabric-audit/FABRIC_LA_WORKSPACE_ID}}"
+              # Required for the digest's "Top users today": the 1d collect only carries
+              # facts["events"] when this is on, and _top_users otherwise silently falls back to
+              # counting open findings ("<user> - 3 finding(s)") instead of ranking CPU-seconds.
+              # The label was honest, which is exactly why nobody noticed the promised ranking was
+              # never being produced. One extra LA query per DAY here, not per 5 minutes.
+              TIER2_BASELINE_ENABLED: "1"
               # Daily digest -> Teams delivery + Lakebase (Acknowledge rides the existing alert_ack).
               DAILY_SUMMARY_ENABLED: "true"
               POWER_AUTOMATE_ALERT_URL: "{{secrets/fabric-audit/POWER_AUTOMATE_ALERT_URL}}"

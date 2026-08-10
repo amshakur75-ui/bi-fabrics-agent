@@ -495,7 +495,7 @@ def _emit_identity_audit(env):
 
 def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=None,
                     findings_store=None, config=None, agent_id="fabric-audit-agent",
-                    tenant=None, now=None):
+                    tenant=None, now=None, health=None):
     """Production sweep: audit whatever sources are configured, end to end.
 
     Composes the collector via ``build_collector_from_env`` (CSV now; live sources auto-included as
@@ -531,7 +531,7 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
     _write_outputs(out_dir, envelope)
     _deliver_sweep_findings(envelope, env)
     _maybe_alert(envelope, prev_history, env)
-    _check_tier2_health(env)
+    _check_tier2_health(env, health=health)
     return envelope
 
 
@@ -577,14 +577,30 @@ def _deliver_sweep_findings(envelope, env):
         return None
 
 
-def _check_tier2_health(env):
-    """Task 9.4: check Tier 2 heartbeat; alert if stale. Failure-isolated — never fails the sweep."""
+def _check_tier2_health(env, health=None):
+    """Check the Tier-2 heartbeat and SAY SO when it is stale. Never fails the sweep.
+
+    The detector (``_check_tier2_heartbeat``) is correct and has five tests. The RESPONSE was
+    ``pass`` — so if the tier2 job was paused, de-scheduled, or hung (there is no timeout on it),
+    nothing anywhere noticed: the whole point of a dead-man switch, absent. Routing it through the
+    sweep's HealthReport means a stale heartbeat now reaches the sweep's Degraded line and the
+    digest banner rather than being detected and discarded.
+    """
     try:
         status = _check_tier2_heartbeat(env)
         if status.get("stale"):
-            pass  # Phase 10: Entra bot identity will provide alerting here.
-    except Exception:
-        pass
+            msg = (f"tier2 heartbeat STALE — last run {status.get('ageMinutes')} min ago "
+                   f"(threshold {status.get('thresholdMinutes')} min); capacity alerting may be "
+                   "dead. Check the fabric-audit-tier2 job.")
+            print(f"[sweep] WARN {msg}")
+            if health is not None:
+                health.record_issue(msg)
+        return status
+    except Exception as exc:
+        print(f"[sweep] tier2 heartbeat check failed: {type(exc).__name__}: {exc}")
+        if health is not None:
+            health.record_issue(f"tier2 heartbeat check failed: {type(exc).__name__}: {exc}")
+        return None
 
 
 def _maybe_alert(envelope, prev_history, env):
@@ -649,7 +665,7 @@ def job_main():
     _check_startup_invariant(health)
     _run_startup_preflight(os.environ, health)
     try:
-        envelope = run_unified_job()
+        envelope = run_unified_job(health=health)
     except Exception as exc:
         _alert_failure(exc, os.environ)
         raise

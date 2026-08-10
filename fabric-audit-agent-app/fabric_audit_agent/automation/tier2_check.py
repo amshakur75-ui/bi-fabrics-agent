@@ -600,7 +600,17 @@ def _facts_for(t):
                 if cu is not None:
                     metric.append(f"{cu} CPU-s")
                 if ratio is not None:
-                    metric.append(f"{ratio}x baseline")
+                    # Name WHOSE baseline. The correlator distinguishes the user's own p95 from the
+                    # estate-wide cold-start p95 (correlation.py sets baselineSource), and dropping
+                    # that made a coarse cross-user comparison read as "8.2x THEIR normal" -- a much
+                    # stronger claim than the estate fallback supports.
+                    src = sp.get("baselineSource")
+                    if src == "user":
+                        metric.append(f"{ratio}x their own p95")
+                    elif src:
+                        metric.append(f"{ratio}x the {src} p95")
+                    else:
+                        metric.append(f"{ratio}x baseline")
                 if metric:
                     bit += " — " + ", ".join(metric)
                 lines.append(bit)
@@ -906,7 +916,13 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         # NOTE: no proxy-ranking disclosure here. It only applied to concentration / cross_user
         # cards, and those never reach this point — _send returns False above for anything outside
         # _TEAMS_CHECKS, which excludes them (attribution lives in the notification center).
-        disclosure = None
+        # Restored, for a DIFFERENT reason than the original. The old branch applied to
+        # concentration / cross_user cards, which genuinely cannot reach _send (they are outside
+        # _TEAMS_CHECKS), so deleting it was correct. What that missed: the composite branch of
+        # _facts_for now renders per-user CPU-time on the CAPACITY card ("<user> ... 3389 CPU-s,
+        # 8.2x their own p95"), so the moment TIER2_BASELINE_ENABLED is on, the only Teams card the
+        # product emits carries a per-user PROXY figure with no disclosure at all.
+        disclosure = PROXY_RANKING_DISCLOSURE if trigger.get("correlatedUserSpikes") else None
         # "When / first noticed" (Part 5): sourced from the incident row's firstAlertedAt, falling
         # back to runAt when the row has no first-alerted timestamp yet. Uses the repo's canonical
         # display-time helper (never hand-rolled tz math); falls back to the raw ISO string if the
@@ -946,7 +962,7 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         if prior:
             prev = prior.get("signalTypes")
             if isinstance(prev, list):
-                pass
+                sigs |= {s for s in prev if isinstance(s, str)}
             prior_sev = prior.get("severity")
             if _SEV_RANK.get(prior_sev, -1) > _SEV_RANK.get(row.get("severity"), -1):
                 row["severity"] = prior_sev
@@ -1193,8 +1209,13 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         actions["new"].append(key)
 
     # resolution: incidents that were active but no longer fire this run
+    # sustained / rate_change belong here, not in the attribution branch below: they are kept OUT
+    # of the notification center on purpose (capacity-status early warnings, not to-do items), and
+    # the attribution branch only ever sets currentlyActive=False. So each firing minted a
+    # warn-severity ticket that no surface displayed and no human could clear — and rate_change
+    # (+15 points in one 5-min window) fires routinely on this tenant's observed 6->72% swings.
     _CAPACITY_CHECKS = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
-                        "capacity_incident")
+                        "capacity_incident", "sustained", "rate_change")
     quiet_ticks = int(cfg.get("quiet_ticks", 12))
     # OWNERSHIP FILTER — only reason about incidents THIS job produces.
     # `active` is every active row in the SHARED audit_alerts table, including the hourly sweep's
