@@ -96,7 +96,11 @@ def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
 
     if store:
         history = store["history"]()
-        findings = apply_escalation(findings, history)
+        # now_ms is load-bearing: escalation is measured in ELAPSED HOURS, not in run count, so
+        # "unresolved" means the same thing whether the sweep runs hourly or daily. Omitting it makes
+        # apply_escalation fall back to the newest history run as "now", which understates the age of
+        # the current finding by one interval.
+        findings = apply_escalation(findings, history, now_ms=now_ms or None)
         findings = annotate_recurring(findings, history)
         findings = annotate_accountability(findings, history)
         findings = assess_sla(findings, history, now_ms)
