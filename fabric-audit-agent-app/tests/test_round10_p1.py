@@ -119,3 +119,55 @@ def test_the_stale_message_survives_a_missing_threshold():
         job_mod._check_tier2_health({}, health=h)
     assert "None" not in h.summary
     assert "330 min ago" in h.summary
+
+
+# ---- P0-2 remainder: a finding that stopped firing must stop counting ------
+
+def _store(rows):
+    data = dict(rows)
+    return {"query_active": lambda: dict(data),
+            "upsert": lambda r: data.__setitem__(r["incidentKey"], r),
+            "_data": data}
+
+
+def _row(key, check_type, active=True):
+    return {"incidentKey": key, "checkType": check_type, "status": "active",
+            "currentlyActive": active, "severity": "warn", "resource": "x"}
+
+
+def test_a_sweep_finding_that_stopped_firing_is_marked_not_firing():
+    """NOTHING ever wrote currentlyActive=False on a sweep row — this function only wrote True, and
+    tier2's stale-marking loop sits behind an ownership filter covering only the capacity family. So
+    every sweep ticket ever written stayed active forever and "Findings today: N" was a lifetime
+    cumulative total."""
+    from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+
+    store = _store({"model.bidirectional::Ent/Sales": _row("model.bidirectional::Ent/Sales", "model")})
+    out = deliver_new_findings([], alerts_store=store, delivery_sinks={}, collection_complete=True)
+    assert out["marked_stale"] == 1
+    assert store["_data"]["model.bidirectional::Ent/Sales"]["currentlyActive"] is False
+    assert store["_data"]["model.bidirectional::Ent/Sales"]["status"] == "active", \
+        "only a human resolves; this just records that it stopped firing"
+
+
+def test_an_incomplete_collection_marks_nothing():
+    """If a collector was down its findings are ABSENT, not fixed — marking them stale would report
+    real, unfixed problems as gone. That is the worse failure, so it is the default."""
+    from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+
+    store = _store({"model.bidirectional::Ent/Sales": _row("model.bidirectional::Ent/Sales", "model")})
+    out = deliver_new_findings([], alerts_store=store, delivery_sinks={}, collection_complete=False)
+    assert "marked_stale" not in out
+    assert store["_data"]["model.bidirectional::Ent/Sales"]["currentlyActive"] is True
+
+
+def test_the_sweep_never_marks_a_tier2_owned_row_stale():
+    """tier2 runs every 5 minutes with its own grace window; an hourly sweep has no idea whether a
+    capacity incident is mid-incident."""
+    from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+
+    store = _store({"capacity::cap-1": _row("capacity::cap-1", "capacity_incident"),
+                    "concentration::Ent/DTC": _row("concentration::Ent/DTC", "concentration")})
+    out = deliver_new_findings([], alerts_store=store, delivery_sinks={}, collection_complete=True)
+    assert out["marked_stale"] == 0
+    assert all(r["currentlyActive"] is True for r in store["_data"].values())

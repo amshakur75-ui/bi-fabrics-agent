@@ -61,6 +61,14 @@ _LEVEL_RANK = {"Info": 0, "Warning": 1, "Critical": 2}
 # concentration / contention / oversized-model), so they read as coverage that isn't there.
 _TIER2_OWNED_PREFIXES = ("capacity.concentration", "capacity.throttle")
 
+# checkTypes whose lifecycle TIER2 owns. The sweep must never mark these stale: tier2 runs every 5
+# minutes with its own grace window and resolution rules, and a sweep an hour later has no idea
+# whether a capacity incident is mid-incident. Mirrors tier2_check's _TIER2_OWNED.
+_TIER2_OWNED_CHECK_TYPES = frozenset({
+    "throttle", "pressure", "overage", "extreme_peak", "throttle_imminent", "capacity_incident",
+    "concentration", "cross_user", "blind_spot", "sustained", "rate_change", "silent_failure",
+})
+
 
 def _tier2_owned(key):
     return any((key or "").startswith(p) for p in _TIER2_OWNED_PREFIXES)
@@ -116,7 +124,7 @@ def _family(key):
 
 def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                          chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None,
-                         health=None):
+                         health=None, collection_complete=False):
     """Deliver NEW material sweep findings; dedup via the shared ``audit_alerts`` store.
 
     Returns ``{"delivered":[keys], "skipped_dup", "skipped_tier2", "skipped_minor"}``.
@@ -128,6 +136,15 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
     ``health``: optional ``automation.health.HealthReport`` — the chat-write / ticket-write
     failures below are already logged (WARN prints); this additionally records them so a degraded
     delivery path surfaces in the digest banner instead of only in job logs.
+
+    ``collection_complete``: only when True does this mark still-open sweep rows that did NOT
+    reappear as ``currentlyActive=False``. Nothing else in the system ever does — this function only
+    ever wrote True, and tier2's stale-marking loop is behind an ownership filter covering the
+    capacity family — so every sweep ticket ever written stayed active forever and the digest's
+    "Findings today: N" was a lifetime cumulative total. Defaults False because the failure mode of
+    getting this wrong is the worse one: if a collector was down, its findings are simply ABSENT
+    from this run, and marking them inactive would report real, unfixed problems as gone. The caller
+    passes True only when it knows the collection was whole.
     """
     now_iso = now_iso or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     min_rank = _LEVEL_RANK.get(min_level, 1)
@@ -220,4 +237,28 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                     health.record_delivery("ticket", False, f"{type(exc).__name__}: {exc}")
         out["delivered"].append(key)
 
+    # Stale-marking: a finding that no longer appears has stopped firing. Scoped to families this
+    # sweep OWNS (never tier2's) and to rows currently marked active, and it sets currentlyActive
+    # rather than resolving -- only a human resolves. The digest already separates "still firing"
+    # from "open but not firing"; before this, nothing ever populated the second bucket.
+    if collection_complete:
+        seen_keys = {f.get("key") for f in (findings or []) if f.get("key")}
+        stale = 0
+        for key, row in (active or {}).items():
+            if key in seen_keys:
+                continue
+            if row.get("checkType") in _TIER2_OWNED_CHECK_TYPES:
+                continue          # tier2 maintains its own lifecycle for these
+            if row.get("currentlyActive") is False:
+                continue          # already marked
+            try:
+                alerts_store["upsert"](dict(row, currentlyActive=False, runAt=now_iso))
+                stale += 1
+            except Exception as exc:
+                print(f"[sweep] stale-mark failed for {key}: {type(exc).__name__}: {exc}")
+                if health is not None:
+                    health.record_issue(f"stale-mark failed: {type(exc).__name__}: {exc}")
+        if stale:
+            print(f"[sweep] marked {stale} finding(s) no longer firing (still open until resolved)")
+        out["marked_stale"] = stale
     return out

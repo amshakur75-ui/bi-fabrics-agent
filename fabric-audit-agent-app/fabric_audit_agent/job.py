@@ -567,10 +567,17 @@ def _deliver_sweep_findings(envelope, env):
             chat_writer=create_alert_chat,
             ticket_writer=_ticket_writer,
             min_level=env.get("SWEEP_MIN_LEVEL", "Warning"),
+            # Only claim the collection was WHOLE when no source failed. validate_facts' gaps are
+            # about missing FIELDS and are expected on a partial estate; sourcesFailed means a
+            # collector did not run, and its findings would then be absent rather than fixed --
+            # marking those stale would report real, unfixed problems as gone. Absent the key
+            # entirely (a single-source collector that never populates it), treat it as whole.
+            collection_complete=not ((envelope.get("data") or {}).get("sourcesFailed")),
         )
         print(f"[sweep] ticketed {len(result['delivered'])} new finding(s) "
               f"(notification center; no Teams card by design); skipped "
-              f"dup={result['skipped_dup']} tier2={result['skipped_tier2']} minor={result['skipped_minor']}")
+              f"dup={result['skipped_dup']} tier2={result['skipped_tier2']} minor={result['skipped_minor']}"
+              f" staleMarked={result.get('marked_stale', 'skipped (incomplete collection)')}")
         return result
     except Exception as exc:  # delivery must never crash the sweep
         print(f"[sweep] delivery failed: {type(exc).__name__}: {exc}")
