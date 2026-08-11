@@ -41,29 +41,53 @@ def test_the_payload_is_not_mutated_in_place():
 
 # ---- the consumer that motivated it ---------------------------------------
 
-def test_capacity_overloads_marks_no_data_rather_than_reporting_a_clean_negative():
-    """`overloads: []` meant three different things and distinguished none of them: the capacity
-    genuinely never crossed the threshold, the CU stream is not configured (_capacity_series_only
-    returns ([], meta) with seriesError=None), or the window was empty. Only the first is a finding.
-    The prompt's ZERO-ROWS rule keys off `noData`, which this tool never set."""
+def _overloads_handler_source():
+    """The handler's own source, located by NAME.
+
+    Both tests below used to anchor on a comment string plus a fixed character window
+    (`src[i:i+1200]`), so lengthening a comment broke them while the behaviour was intact -- and,
+    worse, a real change just outside the window would have gone unnoticed. Anchor on the function.
+    """
     from fabric_audit_agent import tools
 
     src = inspect.getsource(tools)
-    i = src.index("An empty `overloads` list meant three different things")
-    block = src[i:i + 1200]
-    assert "mark_no_data(" in block, "the empty case must route through the shared contract"
-    assert "source_configured=bool(series)" in block, \
-        "an unconfigured stream must be distinguishable from a quiet capacity"
+    i = src.index("def capacity_overloads_handler(")
+    j = src.index("\n    def ", i + 1)          # the next sibling nested def
+    return src[i:j]
 
 
-def test_a_truncated_contributor_pull_does_not_exonerate_users():
-    """The interactive/background split is computed from a 5000-event cost-ordered cut, so dropped
-    user operations land in the background residual — while the tool's own note tells the reader
-    background is system work and not to blame a user."""
+def test_an_unconfigured_capacity_stream_reports_not_configured():
+    """BEHAVIOURAL. With no telemetry env, `_capacity_series_only` returns an empty series, and the
+    tool must say the source is unavailable rather than report a clean estate. This is the case the
+    round-12 defect actually shipped."""
     from fabric_audit_agent import tools
 
-    src = inspect.getsource(tools)
-    i = src.index("An empty `overloads` list meant three different things")
-    block = src[i:i + 1600]
-    assert 'meta.get("truncated")' in block
-    assert "splitTruncated" in block
+    # create_tool_definitions takes no collector port -- the tools build their own from env via
+    # `_build_collector`, so that is what has to be replaced.
+    facts = {"capacity": {"peakCuPct": None, "sku": "F64"}, "items": []}
+    _orig = tools._build_collector
+    tools._build_collector = lambda env, window=None: {"collect": lambda: facts}
+    try:
+        defs = {t["name"]: t for t in tools.create_tool_definitions()}
+        out = defs["capacity_overloads"]["handler"]({"start": "2026-08-11T00:00:00Z",
+                                                    "end": "2026-08-11T23:59:00Z"})
+    finally:
+        tools._build_collector = _orig
+    assert out["noData"] is True
+    assert "NOT CONFIGURED" in out["noDataMessage"]
+    assert "measuredNegative" not in out, (
+        "an unconfigured stream must never be presented as a measured negative")
+
+
+def test_the_three_empty_cases_are_still_distinguished_in_the_handler():
+    """The empty-overloads case has to split three ways: no stream at all (absence of evidence), a
+    stream that never crossed (a MEASURED negative -- refusing to confirm a true negative is the
+    mirror image of asserting a false one), and a truncated contributor pull (the split is a floor,
+    so a background-dominated window is not proof no user was involved).
+
+    Asserted on the live conditions, not on comment prose."""
+    block = _overloads_handler_source()
+    assert "mark_no_data(" in block, "the no-stream case must route through the shared contract"
+    assert "not windows and not series" in block,         "no stream at all must be distinguishable from a quiet capacity"
+    assert "measuredNegative" in block,         "a stream that never crossed the threshold is a finding, not a data gap"
+    assert 'meta.get("truncated")' in block,         "a truncated contributor pull must not exonerate users"

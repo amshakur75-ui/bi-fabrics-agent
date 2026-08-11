@@ -98,7 +98,7 @@ def _list_workspaces(monkeypatch, facts):
     one, so the env-built collector is what has to be replaced to reach the grouping code."""
     from fabric_audit_agent import tools as tools_mod
     monkeypatch.setattr(tools_mod, "_build_collector", lambda env: {"collect": lambda: facts})
-    defs = {t["name"]: t for t in tools_mod.create_tool_definitions({"collect": lambda: facts})}
+    defs = {t["name"]: t for t in tools_mod.create_tool_definitions()}
     return defs["list_workspaces"]["handler"]({})
 
 
@@ -280,7 +280,7 @@ def test_a_workspace_total_skips_an_unpriced_item_and_says_so():
         def __exit__(self, *a): tools_mod._build_collector = self.old
 
     with _MP():
-        defs = {t["name"]: t for t in tools_mod.create_tool_definitions({"collect": lambda: facts})}
+        defs = {t["name"]: t for t in tools_mod.create_tool_definitions()}
         out = defs["list_workspaces"]["handler"]({})
     ws = out["workspaces"][0]
     assert ws["totalCuSeconds"] == 1200.0, "the total must count only what was priced"
