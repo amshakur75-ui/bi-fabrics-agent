@@ -1180,6 +1180,12 @@ def _digest_window(now=None, env=None):
     before 05:00, or a clock skew) -- the wider window is the safe direction: it can only include
     real activity, never hide it.
     """
+    # Imported HERE, not at module scope: job.py imports datetime inside each function that needs
+    # it, and relying on a module-level name that does not exist raised NameError on the ONLY path
+    # production takes (the job passes now=None). Every test I wrote passed now= explicitly, so the
+    # suite was green against code that could not run -- a test exercising a path production never
+    # takes, which is the same fixture-realism trap this audit keeps finding.
+    from datetime import datetime, timezone
     env = env if env is not None else os.environ
     now = now or datetime.now(timezone.utc)
     start_hour = int(env.get("FABRIC_DIGEST_MORNING_START_HOUR", "5"))

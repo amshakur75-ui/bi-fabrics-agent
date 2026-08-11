@@ -63,3 +63,16 @@ def test_the_label_is_optional_so_existing_callers_are_unchanged():
     md, _card, _ = build_daily_summary(
         open_tickets=[], capacity={}, coverage_gaps=[], date_str="2026-08-11")
     assert "2026-08-11" in md and "·" not in md.splitlines()[0]
+
+
+def test_the_default_now_works_because_that_is_the_only_path_production_takes():
+    """This test exists because its absence shipped a NameError to production.
+
+    job.py imports datetime INSIDE each function rather than at module scope, and _digest_window
+    initially relied on the module-level name. Every other test here passes now= explicitly, so the
+    suite was green against a helper that raised on the one path the job actually uses (it calls
+    with now=None). The deployed digest failed on its first run.
+    """
+    win, label = _digest_window(env={})
+    assert win and label, "must resolve a window without an injected clock"
+    assert win == "1d" or win.endswith("m")
