@@ -55,13 +55,18 @@ def digest_key(date_str):
 
 
 def _sev_counts(tickets):
-    warn = sum(1 for t in tickets if (t.get("severity") or "").lower() == "warn")
+    # `critical` counts as warn-or-worse. Testing only for == "warn" meant that the moment
+    # sweep_delivery started emitting "critical", every Critical finding would have been counted as
+    # INFO -- a silent downgrade of the most severe thing in the digest, caused by fixing severity
+    # elsewhere. These two have to move together.
+    warn = sum(1 for t in tickets
+               if (t.get("severity") or "").lower() in ("warn", "critical"))
     info = len(tickets) - warn
     return warn, info
 
 
 def _ticket_line(t):
-    emoji = "⚠️" if (t.get("severity") or "").lower() == "warn" else "ℹ️"
+    emoji = {"critical": "🚨", "warn": "⚠️"}.get((t.get("severity") or "").lower(), "ℹ️")
     check = t.get("checkType") or "incident"
     res = t.get("resource") or "capacity"
     reason = t.get("materialityReason") or t.get("investigationSummary") or ""

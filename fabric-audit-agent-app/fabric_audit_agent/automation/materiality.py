@@ -190,7 +190,11 @@ def is_escalation(trigger, prior, cfg=None):
     the stored alert row.
     """
     cfg = cfg if cfg is not None else load_cfg()
-    ranks = {"info": 0, "warn": 1}
+    # "critical" must outrank "warn". Unlisted severities fall to the default below, which would
+    # have ranked a CRITICAL incident at or under info -- so a critical finding could neither
+    # register as a severity RISE nor survive the high-water mark. Kept in lockstep with
+    # tier2_check._SEV_RANK and sweep_delivery's emitter; all three move together or none do.
+    ranks = {"info": 0, "warn": 1, "critical": 2}
     if ranks.get(severity_of(trigger), 0) > ranks.get((prior or {}).get("severity"), 0):
         return True
     check = (trigger or {}).get("check")

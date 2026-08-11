@@ -1095,7 +1095,10 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                 health.record_delivery("webhook", False, msg)
         return ok
 
-    _SEV_RANK = {"info": 0, "warn": 1}
+    # An unranked severity defaults to -1 in the high-water comparison below, so an unlisted
+    # "critical" would have ranked BELOW info -- letting a critical incident's severity be
+    # overwritten by the next info-level tick. Kept in lockstep with sweep_delivery's emitter.
+    _SEV_RANK = {"info": 0, "warn": 1, "critical": 2}
 
     def _capacity_state(row, trigger, prior=None):
         """Stamp the capacity-family escalation state onto a row (Design A').
@@ -1191,15 +1194,20 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
         metric = primary_metric(t)
 
         if prior:  # already-active incident
-            _ticket = (ack_store["get"](prior.get("chatId"))
-                       if (ack_store and prior.get("chatId")) else None)
+            # Fall back to the INCIDENT KEY when there is no chat. Gating on chatId meant that for
+            # a chat-less ticket -- the Part-7 read path, where alert_ticket.chat_id IS NULL -- the
+            # lookup was skipped entirely, `_resolved` was always False, and the Step-8
+            # recurrence-after-resolve branch below could never run: the incident came back, the
+            # human's resolution note was never surfaced, and the ticket was never reopened.
+            _ack_handle = prior.get("chatId") or key
+            _ticket = (ack_store["get"](_ack_handle) if (ack_store and _ack_handle) else None)
             _resolved = bool(_ticket) and (_ticket.get("status") or "").lower() == "resolved"
             if _resolved and prior.get("currentlyActive") is False:
                 # RECURRENCE after a human Resolve (Step 8): reopen the SAME ticket + re-alert,
                 # rather than staying silent or minting a new one.
                 try:
                     if ack_store.get("reopen"):
-                        ack_store["reopen"](prior.get("chatId"))
+                        ack_store["reopen"](_ack_handle)
                 except Exception as exc:
                     print(f"[tier2] reopen failed ({type(exc).__name__}: {exc})")
                     if health is not None:

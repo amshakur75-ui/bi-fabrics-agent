@@ -66,11 +66,22 @@ def create_ack_store(*, conn=None):
     c = conn if conn is not None else _lakebase_conn()
     try:
         cur = c.cursor()
-        cur.execute('SELECT chat_id, status, snooze_until, resolution_note FROM ai_chatbot.alert_ack')
-        for cid, status, until, note in cur.fetchall():
-            snapshot[cid] = {"status": status,
-                             "snoozeUntil": until.isoformat() if until is not None else None,
-                             "resolutionNote": note}
+        # Keyed by BOTH handles. The app writes an ack for a chat-less ticket under `incident_key`
+        # (there is no chat to key on), but this only ever selected `chat_id` -- so every such ack
+        # collapsed onto key None and was unreadable. The visible consequence is at the Step-8
+        # recurrence-after-resolve branch: a chat-less incident that a human resolved and which then
+        # RECURS could never be reopened or re-alerted with the prior resolution note, because the
+        # lookup could not find the ack that says it was resolved.
+        cur.execute('SELECT chat_id, incident_key, status, snooze_until, resolution_note '
+                    'FROM ai_chatbot.alert_ack')
+        for cid, ikey, status, until, note in cur.fetchall():
+            entry = {"status": status,
+                     "snoozeUntil": until.isoformat() if until is not None else None,
+                     "resolutionNote": note}
+            if cid is not None:
+                snapshot[cid] = entry
+            if ikey is not None:
+                snapshot[ikey] = entry
     finally:
         if owns:
             try:
@@ -84,7 +95,11 @@ def create_ack_store(*, conn=None):
         rc = conn if conn is not None else _lakebase_conn()
         try:
             cur2 = rc.cursor()
-            cur2.execute('DELETE FROM ai_chatbot.alert_ack WHERE chat_id = %s', (chat_id,))
+            # Match on EITHER handle: the caller may hold a chat id or an incident key, and a
+            # chat-less ack has no chat_id at all, so a chat_id-only DELETE silently removed nothing
+            # and the ticket stayed resolved forever despite recurring.
+            cur2.execute('DELETE FROM ai_chatbot.alert_ack '
+                         'WHERE chat_id = %s OR incident_key = %s', (chat_id, chat_id))
             rc.commit()
             snapshot.pop(chat_id, None)
         finally:

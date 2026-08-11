@@ -174,7 +174,11 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
             chat_url = base + "?query=" + urllib.parse.quote(_investigate_query(what, when=when))
 
         family = _family(key)
-        sev = "warn" if _LEVEL_RANK.get(level, 0) >= 1 else "info"
+        # Critical was collapsed into "warn", so the single most severe finding the estate sweep can
+        # produce arrived indistinguishable from an ordinary warning and NO surface -- Teams card,
+        # digest, notification center -- had any representation for it. _LEVEL_RANK is
+        # {"Info": 0, "Warning": 1, "Critical": 2}; carry the top rank through.
+        sev = {2: "critical", 1: "warn"}.get(_LEVEL_RANK.get(level, 0), "info")
         # NOTHING IS SENT FROM HERE. The Adaptive Card build and the dispatch_outbound import
         # used to live at this point; both were dead (the card was assembled and dropped on the
         # floor), which made the module docstring's "every send routes through dispatch_outbound"

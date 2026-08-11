@@ -6,7 +6,8 @@ POSTs. The webhook URL comes from a secret and is never logged.
 """
 import json
 
-_SEV_EMOJI = {"warn": "⚠️", "info": "ℹ️"}
+# critical included: without it a Critical card fell to the default glyph and read as ordinary.
+_SEV_EMOJI = {"critical": "🚨", "warn": "⚠️", "info": "ℹ️"}
 
 # The proxy-ranking disclosure that MUST appear verbatim on any concentration / per-user
 # attribution alert (Step 3): the share is CPU-time PROXY activity, never true CU consumption.
