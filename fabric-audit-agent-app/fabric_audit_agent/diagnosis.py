@@ -7,6 +7,7 @@ import json
 from .detectors import detect_all
 from .reasoner_stub import create_stub_reasoner
 from .health_score import build_health_score
+from .validate import validate_facts
 from .roadmap import build_roadmap
 from .verdict import build_capacity_verdict
 
@@ -14,10 +15,14 @@ from .verdict import build_capacity_verdict
 def diagnose(facts):
     flags = detect_all(facts)
     findings = create_stub_reasoner()["reason"](facts, flags)
+    # Same as pipeline.run_audit: a health score computed over an INCOMPLETE collection must say so,
+    # otherwise zero findings reads as a clean estate when it actually means nothing was detectable.
+    validation = validate_facts(facts)
     return {
         "flags": flags,
         "findings": findings,
-        "health": build_health_score(findings),
+        "dataQuality": validation.get("issues"),
+        "health": build_health_score(findings, data_quality=validation.get("issues")),
         "verdict": build_capacity_verdict(facts, flags),
         "roadmap": build_roadmap(findings),
     }

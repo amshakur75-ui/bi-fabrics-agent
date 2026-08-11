@@ -176,3 +176,28 @@ def test_the_sweep_never_marks_a_tier2_owned_row_stale():
     out = deliver_new_findings([], alerts_store=store, delivery_sinks={}, collection_complete=True)
     assert out["marked_stale"] == 0
     assert all(r["currentlyActive"] is True for r in store["_data"].values())
+
+
+def test_the_health_score_qualification_is_actually_WIRED_not_just_available():
+    """The parameter existed and NO caller passed it, so the qualification could never appear: a
+    degraded collect still scored a bare 100/100 and the narrative still called the estate healthy.
+    A fix nothing calls is decorative — this asserts the end-to-end behaviour, not the signature."""
+    from fabric_audit_agent.diagnosis import diagnose
+
+    out = diagnose({"capacity": {}, "items": []})       # nothing detectable
+    assert out["health"]["overall"] == 100
+    assert out["health"]["scoreQualified"] is True, \
+        "a blind collection must not report an unqualified 100/100"
+    assert out["dataQuality"], "the gaps that justify the qualification must be surfaced too"
+
+
+def test_a_complete_collection_scores_without_qualification():
+    """The guard must not fire on a healthy estate, or the caveat becomes noise and gets ignored."""
+    from fabric_audit_agent.diagnosis import diagnose
+
+    facts = {"capacity": {"capacityId": "cap-1", "sku": "F64", "peakCuPct": 42.0,
+                          "throttleMinutes": 0.0, "memoryGB": 128, "region": "eastus",
+                          "state": "Active", "tenant": "t1"},
+             "items": [], "refreshes": []}
+    out = diagnose(facts)
+    assert out["health"].get("scoreQualified") is None

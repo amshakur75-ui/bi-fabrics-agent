@@ -150,7 +150,11 @@ def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
             print(f"[audit] findings history write FAILED (recurrence detection will degrade): "
                   f"{type(exc).__name__}: {exc}")
 
-    health_score = build_health_score(findings)
+    # Pass the data-quality report. Without it the qualification added for a blind collection can
+    # never appear -- the parameter existed and no caller supplied it, so the fix was decorative:
+    # a degraded collect still scored a bare 100/100 and the narrative still said the estate was
+    # healthy. `validation` is computed above and already surfaced as d["dataQuality"] below.
+    health_score = build_health_score(findings, data_quality=(validation or {}).get("issues"))
     roadmap = build_roadmap(findings)
     correlations = correlate(findings)
 
