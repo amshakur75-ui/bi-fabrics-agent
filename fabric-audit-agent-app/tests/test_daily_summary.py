@@ -260,12 +260,19 @@ def test_run_delivers_records_and_excludes_digest_rows():
                             app_url="https://app", now_dt=NOW)
 
     assert res["openTickets"] == 1            # the digest row is NOT counted as an open ticket
-    assert res["unackedPrior"] == 1           # yesterday's digest was never acknowledged
+    # Yesterday's digest is SUPERSEDED, not carried as unacknowledged. It used to count forever:
+    # nothing could clear a digest row (no alert_ticket, filtered out of the notification center,
+    # /ack uncalled), so this counter grew one per day and the banner pointed the reader at a place
+    # the rows do not appear. An older digest has no outstanding action once a newer one exists.
+    assert res["unackedPrior"] == 0
     assert res["delivered"] is True and res["chatId"] == "digest-chat-2"
     assert writes and writes[0][1] == "Daily summary — 2026-08-05"
     active = store["query_active"]()
     assert digest_key("2026-08-05") in active and active[digest_key("2026-08-05")]["chatId"] == "digest-chat-2"
-    assert "awaiting acknowledgement" in json.dumps(posts[-1])   # banner re-surfaces
+    # The banner is GONE because there is nothing outstanding: yesterday's digest was superseded
+    # above. It used to re-surface every single day, growing by one, pointing the reader at a
+    # notification center that never showed digest rows.
+    assert "awaiting acknowledgement" not in json.dumps(posts[-1])
 
 
 def test_run_resolves_acknowledged_prior_digest():

@@ -142,3 +142,61 @@ def test_the_synthesis_never_claims_health_it_cannot_see():
         window_label="since 05:00 EDT")
     tail = md.split("## Summary")[1]
     assert "UNKNOWN" in tail, "no CU reading must read as unknown, not as healthy"
+
+
+# ---- digests supersede; the counter cannot grow forever ---------------------
+
+def _digest_row(date_str, first, chat_id=None):
+    from fabric_audit_agent.automation.daily_summary import digest_key
+    return {"incidentKey": digest_key(date_str), "checkType": "daily_summary", "status": "active",
+            "currentlyActive": True, "severity": "info", "firstAlertedAt": first,
+            "chatId": chat_id, "resource": "capacity"}
+
+
+def _digest_store(rows, resolved):
+    return {"query_active": lambda: dict(rows), "query_pending": lambda: {},
+            "query_informational": lambda: {}, "upsert": lambda r: None,
+            "resolve": lambda k, t: resolved.append(k)}
+
+
+def test_yesterdays_digest_is_superseded_not_left_unacknowledged_forever():
+    """No surface could ever clear a digest row: no alert_ticket is written for it, daily_summary is
+    filtered out of the notification center's ACTIONABLE set, and the /ack route has no caller. So
+    unackedPrior grew one per day forever while the banner told the reader to go acknowledge things
+    somewhere they do not appear."""
+    from fabric_audit_agent.automation.daily_summary import digest_key, run_daily_summary
+
+    resolved = []
+    rows = {digest_key("2026-08-06"): _digest_row("2026-08-06", "2026-08-06T22:00:00Z"),
+            digest_key("2026-08-09"): _digest_row("2026-08-09", "2026-08-09T22:00:00Z")}
+    out = run_daily_summary(alerts_store=_digest_store(rows, resolved),
+                            now_dt=_utc(2026, 8, 11, 22))
+    assert out["unackedPrior"] == 0, "an older digest has no outstanding action"
+    assert sorted(resolved) == [digest_key("2026-08-06"), digest_key("2026-08-09")]
+
+
+def test_a_same_day_digest_is_not_retired_by_the_later_run():
+    """The digest now runs twice a day — the 18:00 run must not clear the noon card before anyone
+    has read it."""
+    from fabric_audit_agent.automation.daily_summary import digest_key, run_daily_summary
+
+    resolved = []
+    rows = {digest_key("2026-08-11"): _digest_row("2026-08-11", "2026-08-11T16:00:00Z")}
+    out = run_daily_summary(alerts_store=_digest_store(rows, resolved),
+                            now_dt=_utc(2026, 8, 11, 22))
+    assert resolved == [], "today's earlier digest stays"
+    assert out["unackedPrior"] == 0, "and it is not counted against itself"
+
+
+def test_an_explicit_acknowledgement_still_resolves_immediately():
+    """Superseding is the safety net, not a replacement for the ack path — and a chat-less digest
+    has only its incident key to be acknowledged by."""
+    from fabric_audit_agent.automation.daily_summary import digest_key, run_daily_summary
+
+    resolved = []
+    key = digest_key("2026-08-10")
+    rows = {key: _digest_row("2026-08-10", "2026-08-10T22:00:00Z")}
+    ack = {"get": lambda h: {"status": "resolved"} if h == key else None}
+    run_daily_summary(alerts_store=_digest_store(rows, resolved), ack_store=ack,
+                      now_dt=_utc(2026, 8, 11, 22))
+    assert resolved == [key]

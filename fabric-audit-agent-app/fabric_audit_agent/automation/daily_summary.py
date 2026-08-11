@@ -625,15 +625,30 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     except Exception:
         informational = []
 
-    # Reconcile earlier digests: resolve the acknowledged ones, count the rest (they re-surface).
+    # Reconcile earlier digests. A digest is SUPERSEDED, not resolved: yesterday's summary has no
+    # outstanding action once today's exists, and there was no surface that could ever clear one --
+    # no alert_ticket row is written for it, `daily_summary` is filtered out of the notification
+    # center's ACTIONABLE set, and the /ack route has no caller. So the counter only ever grew, one
+    # per day forever (6 by the time it was noticed), and the banner told the reader to go
+    # acknowledge things in a place where they do not appear. Doubling the schedule to twice a day
+    # would have doubled the rate.
+    #
+    # Any digest older than today is therefore auto-resolved. An EXPLICIT acknowledgement still
+    # resolves one immediately (checked on either handle, because a chat-less digest has only its
+    # incident key), and same-day digests are left alone so the noon card is not retired by the
+    # 18:00 run before anyone has read it.
     unacked_prior = 0
     for k, row in prior_digests.items():
         if k == digest_key(date_str):
             continue  # a same-day re-run of today's own digest never counts against itself
-        if _is_acknowledged(ack_store, row.get("chatId")):
+        if _is_acknowledged(ack_store, row.get("chatId") or row.get("incidentKey") or k):
             alerts_store["resolve"](k, now_iso)
-        else:
-            unacked_prior += 1
+            continue
+        _seen = parse_iso_utc(row.get("firstAlertedAt") or row.get("runAt"))
+        if _seen is None or _seen.date() < now_dt.date():
+            alerts_store["resolve"](k, now_iso)   # superseded by a later day's digest
+            continue
+        unacked_prior += 1
 
     def _compose(ack_url):
         return build_daily_summary(
