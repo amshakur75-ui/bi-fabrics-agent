@@ -230,7 +230,8 @@ def _top_users_lines(ranked, source):
 
 def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
                         app_url="", ack_url=None, unacked_prior=0, informational=None,
-                        events=None, health=None, stale_open=None, capacity_open=None):
+                        events=None, health=None, stale_open=None, capacity_open=None,
+                        window_label=None):
     """Build the digest as ``(markdown, card, summary)``. Pure — no I/O.
 
     ``open_tickets``: active ``audit_alerts`` rows (digest AND capacity rows already excluded —
@@ -278,7 +279,8 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     ranked_users, users_source = _top_users(open_tickets, events)
 
     # ---- markdown (the pre-created chat body; also a plain-text fallback) ----
-    md = [f"# 📋 Daily Fabric capacity summary — {date_str}", ""]
+    _win = f" · {window_label}" if window_label else ""
+    md = [f"# 📋 Fabric capacity summary — {date_str}{_win}", ""]
     if health_line:
         md.append(f"> {health_line}\n")
     if unacked_prior:
@@ -369,7 +371,7 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     markdown = "\n".join(md)
 
     # ---- adaptive card (v1.2 for mobile Teams) ----
-    header = f"📋 Daily Fabric capacity summary — {date_str}"
+    header = f"📋 Fabric capacity summary — {date_str}{_win}"
     body = [{"type": "TextBlock", "text": header, "weight": "Bolder",
              "size": "Medium", "wrap": True}]
     if health_line:
@@ -464,7 +466,7 @@ def _is_acknowledged(ack_store, handle):
 
 def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_gaps=None,
                       delivery_sinks=None, chat_writer=None, app_url="", now_dt=None,
-                      events=None, health=None):
+                      events=None, health=None, window_label=None):
     """Compose + deliver today's digest, reconcile prior digests, and record today's.
 
     Returns ``{"delivered", "openTickets", "unackedPrior", "digestKey", "chatId"}``. All I/O ports
@@ -555,7 +557,7 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
             open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
             date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
             informational=informational, ack_url=ack_url, events=events, health=health,
-            stale_open=stale_open, capacity_open=capacity_open)
+            stale_open=stale_open, capacity_open=capacity_open, window_label=window_label)
 
     # Pre-create the digest chat FIRST (its body is ack-independent) so the card's "Review &
     # acknowledge" action can deep-link to THAT chat — the app has no /alerts route, so the old

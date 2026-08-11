@@ -1165,6 +1165,40 @@ def baseline_bootstrap_main():
 
 # ---- Step 10: daily 6pm capacity digest (once-a-day summary card + Acknowledge) ----
 
+def _digest_window(now=None, env=None):
+    """(kql_lookback, human_label) for this digest run.
+
+    The digest fires TWICE a day (noon + 6pm local). The evening card is the whole day; the NOON one
+    is meant to be "this morning", so a trailing ago(1d) there would drag in yesterday afternoon and
+    evening and quietly present them as today's activity. The morning run instead looks back to
+    05:00 LOCAL, expressed as elapsed minutes because the collectors take a KQL lookback, not an
+    absolute start.
+
+    Local means the digest's own schedule timezone (America/New_York by default, FABRIC_DISPLAY_TZ
+    to override), so "5am" tracks DST rather than drifting an hour twice a year. Falls back to the
+    full day whenever the local time cannot be resolved or the arithmetic would be nonsense (a run
+    before 05:00, or a clock skew) -- the wider window is the safe direction: it can only include
+    real activity, never hide it.
+    """
+    env = env if env is not None else os.environ
+    now = now or datetime.now(timezone.utc)
+    start_hour = int(env.get("FABRIC_DIGEST_MORNING_START_HOUR", "5"))
+    cutover = int(env.get("FABRIC_DIGEST_MORNING_CUTOVER_HOUR", "15"))
+    try:
+        from zoneinfo import ZoneInfo
+        tz_name = env.get("FABRIC_DISPLAY_TZ") or "America/New_York"
+        local = now.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        return "1d", "last 24h"
+    if local.hour >= cutover:
+        return "1d", "last 24h"
+    start_local = local.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    minutes = int((local - start_local).total_seconds() // 60)
+    if minutes <= 0:
+        return "1d", "last 24h"
+    return f"{minutes}m", f"since {start_hour:02d}:00 {local.tzname()}"
+
+
 def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_store=None,
                           chat_writer=None, delivery_sinks=None, now=None, health=None):
     """Compose + deliver the daily capacity digest. Reuses the Tier-2 alert infra (audit_alerts +
@@ -1189,9 +1223,10 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     # taxonomy detectors read) — reused for the Top-N users ranking so the digest doesn't need a
     # second pull; falls back to a finding-count proxy inside build_daily_summary when absent.
     capacity, coverage_gaps, events = {}, [], None
+    _win, _win_label = _digest_window(now=now, env=env)
     try:
         if collector is None:
-            collector = _build_tier2_collector(env, window="1d")
+            collector = _build_tier2_collector(env, window=_win)
         facts = collector["collect"]() or {}
         # Merged collectors (adapters/collector_merge.py) surface per-source failures here — feed
         # them straight into the health report so a partially-blind digest is visible, not silent.
@@ -1245,7 +1280,7 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     return run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
                              coverage_gaps=coverage_gaps, delivery_sinks=delivery_sinks,
                              chat_writer=chat_writer, app_url=app_url, now_dt=now, events=events,
-                             health=health)
+                             health=health, window_label=_win_label)
 
 
 def daily_summary_main():
