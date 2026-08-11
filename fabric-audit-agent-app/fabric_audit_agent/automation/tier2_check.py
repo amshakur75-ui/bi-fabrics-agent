@@ -981,6 +981,33 @@ def _coalesce_capacity_family(triggers):
     return composites + others
 
 
+def _retry_window_open(prior, now_dt, cfg):
+    """Is this undelivered incident still inside its retry window?
+
+    The retry had no bound at all: while an incident kept firing and the sink kept reporting
+    `delivered: False`, every 5-minute tick tried again -- 288 attempts a day for one incident. That
+    is not theoretical, because `delivery_webhook` maps a URLError (including the 30-second socket
+    timeout) to `delivered: False` while Power Automate may already have POSTED the card. The
+    failure mode is therefore the card-every-tick storm that the LOAD-BEARING INVARIANT immediately
+    above exists to prevent, arriving through the one branch that invariant does not cover.
+
+    Bounded by ELAPSED TIME rather than an attempt counter on purpose: `firstAlertedAt` is already
+    persisted, and adding a new column would mean an entry in ``_FIELDS`` -- a key absent from that
+    allowlist is silently dropped on the Delta write, which has already been a P0 in this repo. At
+    the 5-minute cadence the default 30 minutes is about six attempts: long enough to ride out a
+    transient 429 or a Power Automate blip, short enough that a rotated webhook URL costs six
+    duplicate cards rather than 288. After that the row stays `delivered=False`, which is what the
+    health line and the digest read to say the card never reached anyone.
+    """
+    minutes = float(cfg.get("delivery_retry_minutes", 30.0))
+    if minutes <= 0:
+        return False
+    first = _parse_iso(prior.get("firstAlertedAt") or prior.get("runAt"))
+    if first is None:
+        return True          # cannot age it -> allow the attempt rather than swallow the alert
+    return (now_dt - first).total_seconds() <= minutes * 60.0
+
+
 def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                    chat_writer=None, app_url="", cfg=None, now_dt=None,
                    ack_store=None, ticket_writer=None, health=None):
@@ -1282,7 +1309,8 @@ def process_alerts(triggers, *, alerts_store, delivery_sinks, reasoner=None,
                     alerts_store["upsert"](row)
                     _write_ticket(row, t)
                 elif (prior.get("delivered") is False
-                      and t.get("check") in _TEAMS_CHECKS):
+                      and t.get("check") in _TEAMS_CHECKS
+                      and _retry_window_open(prior, now_dt, cfg)):
                     # RETRY, not a re-alert. delivered=False on a row whose check is in
                     # _TEAMS_CHECKS can only mean the POST itself failed -- non-Teams checks never
                     # reach _send's dispatch at all -- so this is the one case where the incident is

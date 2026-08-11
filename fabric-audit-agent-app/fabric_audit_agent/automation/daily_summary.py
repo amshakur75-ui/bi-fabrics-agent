@@ -51,9 +51,23 @@ _QUERY_PERF_OTHER_TYPES = {"activity.long-running-cluster"}
 _SLOW_OP_TYPES = {"activity.slow-operation", "activity.user-baseline-deviation"}
 
 
-def digest_key(date_str):
-    """Stable incident key for a day's digest row (one per calendar day)."""
-    return f"{DIGEST_CHECK}::{date_str}"
+def digest_key(date_str, window_label=None):
+    """Stable incident key for a digest row: one per calendar day, per WINDOW.
+
+    The window used to be absent from the key, so the noon and 18:00 runs shared one row and the
+    18:00 run overwrote ``chatId``. The noon chat was then orphaned -- unreachable from the ticket,
+    and an acknowledgement recorded against that chat id could never be matched back, because
+    nothing pointed at it any more. The comment on the same-day branch below already says the noon
+    card must not be "retired by the 18:00 run before anyone has read it"; with a shared key there
+    was no separate noon row to leave alone, so the intent was defeated by the key shape.
+
+    ``window_label`` omitted reproduces the old single-key-per-day behaviour exactly, which keeps
+    the rows already in the live table addressable.
+    """
+    if not window_label:
+        return f"{DIGEST_CHECK}::{date_str}"
+    slug = "".join(c if c.isalnum() else "-" for c in str(window_label).lower()).strip("-")
+    return f"{DIGEST_CHECK}::{date_str}::{slug}"
 
 
 def _went_over_budget(capacity):
@@ -551,6 +565,7 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     date_str = now_dt.date().isoformat()
     now_iso = now_dt.isoformat().replace("+00:00", "Z")
 
+    _this_key = digest_key(date_str, window_label)
     active = alerts_store["query_active"]()
     prior_digests = {k: v for k, v in active.items() if v.get("checkType") == DIGEST_CHECK}
     # FIX B: capacity incidents (throttle/pressure/overage) have their own real-time alert +
@@ -639,8 +654,8 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     # 18:00 run before anyone has read it.
     unacked_prior = 0
     for k, row in prior_digests.items():
-        if k == digest_key(date_str):
-            continue  # a same-day re-run of today's own digest never counts against itself
+        if k == _this_key:
+            continue  # a same-day re-run of THIS window's digest never counts against itself
         if _is_acknowledged(ack_store, row.get("chatId") or row.get("incidentKey") or k):
             alerts_store["resolve"](k, now_iso)
             continue
@@ -685,10 +700,10 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
         delivered = bool(res.get("delivered"))
 
     alerts_store["upsert"]({
-        "incidentKey": digest_key(date_str), "status": "active", "severity": "info",
+        "incidentKey": _this_key, "status": "active", "severity": "info",
         "checkType": DIGEST_CHECK, "resource": "capacity", "chatId": chat_id,
         "firstAlertedAt": now_iso, "lastAlertedAt": now_iso, "runAt": now_iso,
         "currentlyActive": True, "delivered": delivered, "investigationSummary": summary})
 
     return {"delivered": delivered, "openTickets": len(open_tickets),
-            "unackedPrior": unacked_prior, "digestKey": digest_key(date_str), "chatId": chat_id}
+            "unackedPrior": unacked_prior, "digestKey": _this_key, "chatId": chat_id}

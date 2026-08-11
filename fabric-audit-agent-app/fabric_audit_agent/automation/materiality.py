@@ -65,6 +65,9 @@ _DEFAULTS = {
     # once the burndown is short enough to act on. Without it one draining overage emitted a
     # card at every halving (50/25/12/6/3 min = 5 near-identical cards).
     "burndown_urgent": 15.0,
+    # How long an UNDELIVERED card keeps being retried, in minutes. At the 5-minute tier2
+    # cadence this is ~6 attempts. 0 disables the retry entirely. See _retry_window_open.
+    "delivery_retry_minutes": 30.0,
 }
 
 

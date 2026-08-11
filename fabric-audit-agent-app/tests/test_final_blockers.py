@@ -352,3 +352,120 @@ def test_the_blindness_alarm_clears_once_the_collector_recovers():
     good = [{"runAt": "2026-08-10T09:00:00.000000Z", "collectorOk": True, "capacityOk": True}]
     assert _check_silent_failure(blind * 3) != [], "three blind readings must raise it"
     assert _check_silent_failure(good * 3 + blind * 8) == [], "and three good ones must clear it"
+
+
+# ---- the twice-daily digest: two windows, two chats, two acks ---------------
+
+def _digest_run(store, *, label, now, chats):
+    from fabric_audit_agent.automation.daily_summary import run_daily_summary
+
+    def _writer(markdown, title):
+        chats.append(title)
+        return f"chat-{len(chats)}"
+
+    return run_daily_summary(alerts_store=store, chat_writer=_writer, app_url="https://app.x",
+                             now_dt=now, window_label=label,
+                             capacity={"peakCuPct": 40.0, "throttleMinutes": 0.0})
+
+
+def test_the_noon_digest_is_not_overwritten_by_the_evening_one():
+    """One key per DAY meant the 18:00 run overwrote the noon row's chatId. The noon chat was then
+    orphaned -- unreachable from the ticket, and an ack recorded against that chat id could never be
+    matched back. The same-day branch's own comment says the noon card must not be retired early;
+    with a shared key there was no separate noon row to leave alone."""
+    from datetime import datetime, timezone
+
+    from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+    store, chats = create_alerts_store_memory(), []
+    noon = _digest_run(store, label="since 05:00 EDT",
+                       now=datetime(2026, 8, 11, 16, 0, tzinfo=timezone.utc), chats=chats)
+    evening = _digest_run(store, label="last 24h",
+                          now=datetime(2026, 8, 11, 22, 0, tzinfo=timezone.utc), chats=chats)
+
+    assert noon["digestKey"] != evening["digestKey"], "each window needs its own incident"
+    assert noon["chatId"] != evening["chatId"]
+
+    rows = store["query_active"]()
+    assert noon["digestKey"] in rows, "the noon digest must survive the evening run"
+    assert rows[noon["digestKey"]]["chatId"] == noon["chatId"], (
+        "the noon row must still point at the noon chat")
+    assert rows[evening["digestKey"]]["chatId"] == evening["chatId"]
+
+
+def test_an_unacknowledged_noon_digest_is_counted_by_the_evening_one():
+    """The banner's whole purpose: something unread should say so."""
+    from datetime import datetime, timezone
+
+    from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+    store, chats = create_alerts_store_memory(), []
+    _digest_run(store, label="since 05:00 EDT",
+                now=datetime(2026, 8, 11, 16, 0, tzinfo=timezone.utc), chats=chats)
+    evening = _digest_run(store, label="last 24h",
+                          now=datetime(2026, 8, 11, 22, 0, tzinfo=timezone.utc), chats=chats)
+    assert evening["unackedPrior"] == 1
+
+
+def test_re_running_the_same_window_does_not_count_against_itself():
+    """A manual re-trigger of the same window is the same incident, not a second one."""
+    from datetime import datetime, timezone
+
+    from fabric_audit_agent.context_alerts import create_alerts_store_memory
+
+    store, chats = create_alerts_store_memory(), []
+    a = _digest_run(store, label="last 24h",
+                    now=datetime(2026, 8, 11, 22, 0, tzinfo=timezone.utc), chats=chats)
+    b = _digest_run(store, label="last 24h",
+                    now=datetime(2026, 8, 11, 22, 30, tzinfo=timezone.utc), chats=chats)
+    assert a["digestKey"] == b["digestKey"]
+    assert b["unackedPrior"] == 0
+
+
+def test_a_digest_key_without_a_window_is_unchanged():
+    """Rows already in the live table stay addressable."""
+    from fabric_audit_agent.automation.daily_summary import digest_key
+    assert digest_key("2026-08-11") == "daily_summary::2026-08-11"
+
+
+# ---- the retry that had no bound -------------------------------------------
+
+def test_an_undelivered_card_stops_retrying_after_its_window():
+    """The retry branch had no cap: while an incident kept firing and the sink kept reporting
+    delivered=False, every 5-minute tick tried again -- 288 attempts a day for one incident. A
+    URLError (including the 30s socket timeout) maps to delivered=False even when Power Automate
+    already POSTED the card, so that is a card-every-tick storm through the one branch the
+    LOAD-BEARING INVARIANT above it does not cover."""
+    from datetime import datetime, timedelta, timezone
+
+    from fabric_audit_agent.automation.materiality import load_cfg
+    from fabric_audit_agent.automation.tier2_check import _retry_window_open
+
+    cfg = load_cfg()
+    t0 = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+    prior = {"firstAlertedAt": t0.isoformat().replace("+00:00", "Z")}
+    attempts = sum(1 for tick in range(1, 289)
+                   if _retry_window_open(prior, t0 + timedelta(minutes=5 * tick), cfg))
+    assert 1 <= attempts <= 12, f"a day of ticks must not mean a day of retries, got {attempts}"
+
+
+def test_a_row_with_no_first_alerted_at_is_still_retried():
+    """Fail OPEN on a missing timestamp: better a duplicate card than a swallowed emergency."""
+    from datetime import datetime, timezone
+
+    from fabric_audit_agent.automation.materiality import load_cfg
+    from fabric_audit_agent.automation.tier2_check import _retry_window_open
+
+    assert _retry_window_open({}, datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc),
+                              load_cfg()) is True
+
+
+def test_the_retry_can_be_disabled_entirely(monkeypatch):
+    from datetime import datetime, timezone
+
+    from fabric_audit_agent.automation.materiality import load_cfg
+    from fabric_audit_agent.automation.tier2_check import _retry_window_open
+
+    monkeypatch.setenv("FABRIC_TIER2_DELIVERY_RETRY_MINUTES", "0")
+    assert _retry_window_open({}, datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc),
+                              load_cfg()) is False
