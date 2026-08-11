@@ -124,7 +124,14 @@ def create_findings_store_delta(catalog, schema, *, spark=None):
                 "tenant": tenant,
                 "finding_key": f.get("key"),
                 "level": (f.get("score") or {}).get("level"),
-                "finding_type": f.get("type"),
+                # Derive from the key when absent. create_finding() returns EXACTLY its seven
+                # canonical fields (what/where/when/why/impact/fix/score) and DROPS `type`, so this
+                # column has been NULL on every row ever written -- 7,344 of 7,344 in production.
+                # `key` survives (the pipeline re-attaches it), which is why recurrence, keyed on
+                # finding_key, still works and this stayed invisible. Nothing reads the column
+                # today, so this is a dead-payload fix, not a behaviour change: it makes
+                # "SELECT ... GROUP BY finding_type" answer the question it appears to answer.
+                "finding_type": f.get("type") or (str(f.get("key") or "").split("::")[0] or None),
                 "resource": f.get("resource") or f.get("where"),
                 "what_text": f.get("what"),
                 "confidence": f.get("confidence"),
