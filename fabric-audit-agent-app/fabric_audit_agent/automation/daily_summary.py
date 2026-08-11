@@ -417,11 +417,13 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     return markdown, card, summary
 
 
-def _is_acknowledged(ack_store, chat_id):
-    if not (ack_store and chat_id):
+def _is_acknowledged(ack_store, handle):
+    """True when a human has acked/resolved this ticket. ``handle`` is a chat id OR an incident key
+    -- the ack store is keyed by both, because a chat-less ticket has no chat to key on."""
+    if not (ack_store and handle):
         return False
     try:
-        t = ack_store["get"](chat_id)
+        t = ack_store["get"](handle)
     except Exception:
         return False
     return bool(t) and (t.get("status") or "").lower() in ("acked", "resolved")
@@ -473,16 +475,30 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     # of them were legacy stale findings from before the healthy-capacity gate landed. They belong
     # in a "still open, not currently firing" backlog section, not the main count.
     _is_active_now = lambda v: v.get("currentlyActive") is not False
+    # RESOLVED BY A HUMAN COUNTS AS CLOSED. A Resolve in the notification center writes only to
+    # ai_chatbot.alert_ack -- nothing propagates it back to audit_alerts -- and no sweep-family row
+    # is ever marked currentlyActive=False (only the capacity family maintains that flag). So every
+    # sweep ticket ever written stayed active forever: the badge in the app dropped a ticket the
+    # moment it was resolved (its query DOES join alert_ack) while the 6pm card still counted and
+    # listed it. "Findings today: 47" was a lifetime cumulative total including work already done,
+    # which is the same "Open tickets: 161" shape the currentlyActive filter was added to fix --
+    # that filter just never applied to the families that don't maintain the flag.
+    def _resolved_by_human(v):
+        return _is_acknowledged(ack_store, v.get("chatId") or v.get("incidentKey"))
+
     open_tickets = [v for k, v in active.items()
-                    if v.get("checkType") not in _EXCLUDE and _is_active_now(v)]
+                    if v.get("checkType") not in _EXCLUDE and _is_active_now(v)
+                    and not _resolved_by_human(v)]
     # Kept OUT of open_tickets/stale_open (and so out of the taxonomy count) but surfaced in the
     # headline by build_daily_summary — see the note beside `anything_wrong` there.
     _CAPACITY_FAMILY = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
                         "capacity_incident")
     capacity_open = [v for k, v in active.items()
-                     if v.get("checkType") in _CAPACITY_FAMILY and _is_active_now(v)]
+                     if v.get("checkType") in _CAPACITY_FAMILY and _is_active_now(v)
+                     and not _resolved_by_human(v)]
     stale_open = [v for k, v in active.items()
-                  if v.get("checkType") not in _EXCLUDE and not _is_active_now(v)]
+                  if v.get("checkType") not in _EXCLUDE and not _is_active_now(v)
+                  and not _resolved_by_human(v)]
 
     # Fix A informational patterns (stable, known, non-capacity-linked attribution) — noted here for
     # awareness, no live ticket. Best-effort: a store without the query just contributes nothing.
