@@ -1166,7 +1166,7 @@ def baseline_bootstrap_main():
 # ---- Step 10: daily 6pm capacity digest (once-a-day summary card + Acknowledge) ----
 
 def _digest_window(now=None, env=None):
-    """(kql_lookback, human_label) for this digest run.
+    """(kql_lookback, human_label, window_start_utc) for this digest run.
 
     The digest fires TWICE a day (noon + 6pm local). The evening card is the whole day; the NOON one
     is meant to be "this morning", so a trailing ago(1d) there would drag in yesterday afternoon and
@@ -1185,7 +1185,7 @@ def _digest_window(now=None, env=None):
     # production takes (the job passes now=None). Every test I wrote passed now= explicitly, so the
     # suite was green against code that could not run -- a test exercising a path production never
     # takes, which is the same fixture-realism trap this audit keeps finding.
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     env = env if env is not None else os.environ
     now = now or datetime.now(timezone.utc)
     start_hour = int(env.get("FABRIC_DIGEST_MORNING_START_HOUR", "5"))
@@ -1195,14 +1195,14 @@ def _digest_window(now=None, env=None):
         tz_name = env.get("FABRIC_DISPLAY_TZ") or "America/New_York"
         local = now.astimezone(ZoneInfo(tz_name))
     except Exception:
-        return "1d", "last 24h"
+        return "1d", "last 24h", now - timedelta(days=1)
     if local.hour >= cutover:
-        return "1d", "last 24h"
+        return "1d", "last 24h", now - timedelta(days=1)
     start_local = local.replace(hour=start_hour, minute=0, second=0, microsecond=0)
     minutes = int((local - start_local).total_seconds() // 60)
     if minutes <= 0:
-        return "1d", "last 24h"
-    return f"{minutes}m", f"since {start_hour:02d}:00 {local.tzname()}"
+        return "1d", "last 24h", now - timedelta(days=1)
+    return f"{minutes}m", f"since {start_hour:02d}:00 {local.tzname()}", start_local.astimezone(timezone.utc)
 
 
 def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_store=None,
@@ -1229,7 +1229,7 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     # taxonomy detectors read) — reused for the Top-N users ranking so the digest doesn't need a
     # second pull; falls back to a finding-count proxy inside build_daily_summary when absent.
     capacity, coverage_gaps, events = {}, [], None
-    _win, _win_label = _digest_window(now=now, env=env)
+    _win, _win_label, _win_start = _digest_window(now=now, env=env)
     try:
         if collector is None:
             collector = _build_tier2_collector(env, window=_win)
@@ -1286,7 +1286,8 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
     _out = run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
                              coverage_gaps=coverage_gaps, delivery_sinks=delivery_sinks,
                              chat_writer=chat_writer, app_url=app_url, now_dt=now, events=events,
-                             health=health, window_label=_win_label)
+                             health=health, window_label=_win_label,
+                             window_start=_win_start)
     if isinstance(_out, dict):
         # Which window this card actually covered. The digest now runs twice a day with DIFFERENT
         # lookbacks, so a run log that does not say which one it was cannot be reconciled with the

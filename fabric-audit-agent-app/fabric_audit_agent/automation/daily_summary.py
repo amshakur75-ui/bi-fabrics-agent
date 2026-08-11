@@ -25,6 +25,8 @@ not a gap to fill with a percentage.
 """
 from datetime import datetime, timezone
 
+from ..timefmt import parse_iso_utc
+
 DIGEST_CHECK = "daily_summary"
 _SYSTEM_USER_ID = "fabric-audit-agent"
 _MAX_TICKET_LINES = 8  # cap each per-category list so the card stays mobile-friendly
@@ -228,10 +230,59 @@ def _top_users_lines(ranked, source):
     return lines
 
 
+def _synthesis_lines(*, open_tickets, buckets, capacity, capacity_open, ranked_users,
+                     users_source, carried_over, window_label, coverage_gaps):
+    """Plain-language read of what this window actually meant, after the itemised list.
+
+    Deliberately derived ONLY from what the card already showed -- no new inference, no severity
+    the reader cannot see above -- so the summary can never assert something the list contradicts.
+    """
+    where = window_label or "this window"
+    lines = []
+
+    peak = (capacity or {}).get("peakCuPct")
+    throttle = (capacity or {}).get("throttleMinutes")
+    if peak is None:
+        lines.append("**Capacity:** no CU reading was available for this window, so capacity "
+                     "health is UNKNOWN rather than confirmed healthy.")
+    elif _went_over_budget(capacity):
+        lines.append(f"**Capacity:** peaked at {peak:.0f}% and spent "
+                     f"{float(throttle or 0):.0f} min over 100% CU — the capacity was the "
+                     "constraint at least once in this window.")
+    else:
+        lines.append(f"**Capacity:** peaked at {peak:.0f}%, never over budget — capacity headroom "
+                     "was not the problem in this window.")
+
+    n = len(open_tickets)
+    if not n:
+        lines.append(f"**New findings:** none in {where}.")
+    else:
+        biggest = max(buckets.items(), key=lambda kv: len(kv[1]))
+        label = _SECTION_TITLES.get(biggest[0], biggest[0])
+        lines.append(f"**New findings:** {n} in {where}, most of them {label.lower()} "
+                     f"({len(biggest[1])}). Start there.")
+
+    if ranked_users and users_source == "events":
+        top = ranked_users[0]
+        lines.append(f"**Heaviest activity:** {top.get('user')} "
+                     f"({top.get('cuSeconds', 0):.0f} CPU-s of monitored telemetry — a CPU-time "
+                     "proxy, not billed capacity CU).")
+
+    if carried_over:
+        lines.append(f"**Backlog:** {carried_over} older finding(s) are still open and were not "
+                     "relisted above.")
+    if coverage_gaps:
+        lines.append(f"**Caveat:** {len(coverage_gaps)} coverage gap(s) mean parts of the estate "
+                     "were not visible, so this is not a complete picture.")
+    if not lines:
+        lines.append(f"Nothing to report for {where}.")
+    return lines
+
+
 def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
                         app_url="", ack_url=None, unacked_prior=0, informational=None,
                         events=None, health=None, stale_open=None, capacity_open=None,
-                        window_label=None):
+                        window_label=None, carried_over=0):
     """Build the digest as ``(markdown, card, summary)``. Pure — no I/O.
 
     ``open_tickets``: active ``audit_alerts`` rows (digest AND capacity rows already excluded —
@@ -350,6 +401,23 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     if coverage_gaps:
         md += ["", "## Coverage gaps"]
         md += [f"- {g}" for g in coverage_gaps]
+
+    # CARRIED OVER, counted not relisted. Without the count the scoping would look like findings had
+    # disappeared; with a full relist the card is the same nine tickets every time and whatever
+    # actually happened in this window drowns.
+    if carried_over:
+        md += ["", f"_{carried_over} finding(s) first detected before this window are still open "
+                   "and not repeated here — see the notification center for the full backlog._"]
+
+    # ---- the closing synthesis -------------------------------------------------------------
+    # The sections above are a LIST. A list is not an answer: opening the chat from "Review &
+    # acknowledge" gave a relist and stopped, leaving the reader to do the aggregation themselves.
+    # This says what the window MEANT.
+    md += ["", "## Summary", ""]
+    md += [f"- {line}" for line in _synthesis_lines(
+        open_tickets=open_tickets, buckets=buckets, capacity=capacity, capacity_open=capacity_open,
+        ranked_users=ranked_users, users_source=users_source, carried_over=carried_over,
+        window_label=window_label, coverage_gaps=coverage_gaps)]
     if informational:
         md += ["", "## Stable patterns (informational — no action needed)"]
         for t in informational[:_MAX_TICKET_LINES]:
@@ -466,7 +534,7 @@ def _is_acknowledged(ack_store, handle):
 
 def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_gaps=None,
                       delivery_sinks=None, chat_writer=None, app_url="", now_dt=None,
-                      events=None, health=None, window_label=None):
+                      events=None, health=None, window_label=None, window_start=None):
     """Compose + deliver today's digest, reconcile prior digests, and record today's.
 
     Returns ``{"delivered", "openTickets", "unackedPrior", "digestKey", "chatId"}``. All I/O ports
@@ -521,9 +589,24 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
     def _resolved_by_human(v):
         return _is_acknowledged(ack_store, v.get("chatId") or v.get("incidentKey"))
 
-    open_tickets = [v for k, v in active.items()
-                    if v.get("checkType") not in _EXCLUDE and _is_active_now(v)
-                    and not _resolved_by_human(v)]
+    # SCOPED TO THE WINDOW. `active` is every open row in the shared table, so without this the
+    # digest relisted findings first seen days ago under a heading that says "Findings today" --
+    # the same nine tickets every card, drowning whatever actually happened in this window. A
+    # finding that is still open but was first detected BEFORE the window is summarised as a count
+    # instead of repeated in full. Unparseable/absent timestamps are INCLUDED (the safe direction:
+    # a listed finding can be checked, a hidden one cannot).
+    _all_open = [v for k, v in active.items()
+                 if v.get("checkType") not in _EXCLUDE and _is_active_now(v)
+                 and not _resolved_by_human(v)]
+
+    def _first_seen_in_window(v):
+        if window_start is None:
+            return True
+        ts = parse_iso_utc(v.get("firstAlertedAt") or v.get("runAt"))
+        return True if ts is None else ts >= window_start
+
+    open_tickets = [v for v in _all_open if _first_seen_in_window(v)]
+    carried_over = [v for v in _all_open if not _first_seen_in_window(v)]
     # Kept OUT of open_tickets/stale_open (and so out of the taxonomy count) but surfaced in the
     # headline by build_daily_summary — see the note beside `anything_wrong` there.
     _CAPACITY_FAMILY = ("throttle", "pressure", "overage", "extreme_peak", "throttle_imminent",
@@ -557,7 +640,8 @@ def run_daily_summary(*, alerts_store, ack_store=None, capacity=None, coverage_g
             open_tickets=open_tickets, capacity=capacity or {}, coverage_gaps=coverage_gaps or [],
             date_str=date_str, app_url=app_url, unacked_prior=unacked_prior,
             informational=informational, ack_url=ack_url, events=events, health=health,
-            stale_open=stale_open, capacity_open=capacity_open, window_label=window_label)
+            stale_open=stale_open, capacity_open=capacity_open, window_label=window_label,
+            carried_over=len(carried_over))
 
     # Pre-create the digest chat FIRST (its body is ack-independent) so the card's "Review &
     # acknowledge" action can deep-link to THAT chat — the app has no /alerts route, so the old

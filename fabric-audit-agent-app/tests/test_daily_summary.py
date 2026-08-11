@@ -84,9 +84,13 @@ def test_build_headline_is_taxonomy_not_cu():
     assert "Findings today" in headline
     assert "Peak" not in headline and "CU" not in headline
     assert "132" not in headline
-    # CU demoted to a single cross-reference line near the bottom
+    # CU demoted OUT OF THE HEADLINE (asserted above) but present where it belongs: the
+    # cross-reference line, and the closing Summary, which restates it on purpose -- the whole
+    # point of the synthesis is to say what the window meant, and capacity is the first thing it
+    # reports. Counting occurrences pinned the absence of that summary.
     assert "Capacity context" in md
-    assert md.count("132%") == 1
+    assert "## Summary" in md
+    assert md.count("132%") >= 1
     assert "1 finding(s)" in summary
 
 
