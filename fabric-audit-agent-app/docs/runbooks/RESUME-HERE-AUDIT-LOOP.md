@@ -152,6 +152,27 @@ Items 1-3, 5, 8, 16-18 of the previous list were closed in round 4 — see above
     one under a tier2-owned checkType. **Needs a data cleanup — not done; it is a production write
     and wants explicit sign-off.** `scripts/cleanup_stale_alerts.sql` exists.
 
+## DEPLOYING THE CHAT APP — the source root is NOT the chat-app directory
+
+`databricks apps deploy fabric-audit-agent` must use
+`--source-code-path /Workspace/Users/<you>/bi-fabrics-agent/fabric-audit-agent-app` — the PYTHON app
+directory, with `e2e-chatbot-app-next/` as a subdirectory. Deploying from the chat-app directory
+itself builds and starts, so it LOOKS fine, but the app.yaml at the real root is bypassed and the
+build logs `error resolving resource serving-endpoint for env DATABRICKS_SERVING_ENDPOINT` -- i.e.
+the chat model binding is gone while the app reports RUNNING. Done once (2026-08-11) and reverted
+by re-deploying from the correct root; confirm with
+`databricks apps list-deployments fabric-audit-agent` that the path matches the previous good one.
+
+**`app.yaml` exists ONLY in the workspace** (`.gitignore:22`). Never `databricks sync --full` the
+local `fabric-audit-agent-app` directory to that path -- it would delete the deployed app.yaml.
+Sync the CHANGED SUBTREE instead:
+`cd e2e-chatbot-app-next && databricks sync . <workspace>/fabric-audit-agent-app/e2e-chatbot-app-next --full`
+then deploy from the parent.
+
+There is no Node toolchain on this machine, so the platform build IS the TypeScript compiler: deploy,
+then `databricks apps logs fabric-audit-agent --tail-lines 3000 --search "error TS"` and
+`--search "built in"`. A clean `built in Ns` with no `error TS` is the compile check.
+
 ## Working practices that earned their keep
 
 - **Never trust "Deployment complete!"** — always `databricks bundle run <job>` and read the output
