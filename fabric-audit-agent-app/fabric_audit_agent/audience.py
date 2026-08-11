@@ -10,6 +10,12 @@ def view_for(envelope=None, audience="team"):
         return {
             "audience": "exec",
             "health": (d.get("healthScore") or {}).get("overall"),
+            # Carry the qualification, not just the number. health_score.py sets it precisely so a
+            # 100 from an INCOMPLETE collection cannot be read as "the estate is healthy" -- and
+            # then only `overall` was copied here, so the one sentence it was written to caveat
+            # ("Estate health is 100/100...") still went out bare. A caveat that does not reach the
+            # sentence it qualifies is decoration.
+            "healthQualification": (d.get("healthScore") or {}).get("qualification"),
             "verdict": (d.get("verdict") or {}).get("decision"),
             "critical": len([f for f in findings if (f.get("score") or {}).get("level") == "Critical"]),
             "warning": len([f for f in findings if (f.get("score") or {}).get("level") == "Warning"]),

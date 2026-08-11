@@ -145,8 +145,17 @@ def detect_concentration(facts, config=None):
     # EVERY item unmeasurable is a coverage failure, not a clean estate. Without this, a cost column
     # that stopped resolving took the flagship 30% concentration feature out in total silence: each
     # item skipped individually, no flag raised, and the run reporting normally.
-    if unmeasurable and unmeasurable == len([i for i in items
-                                             if not is_system_item_kind(i.get("kind"))]):
+    # ...but it needs an activity floor, which its two siblings both have (_check_cross_source_blind_spot
+    # gates on peak >= 70, _check_concentration on min_window_cu). Without one, ANY window whose
+    # handful of items all resolve to zero cost mints a `meta`-family ticket -- and `meta` IS in the
+    # notification center's ACTIONABLE set, so an idle overnight hour with one unpriced item produced
+    # a real to-do item, every hour. The floor is an item COUNT rather than a CU threshold for the
+    # obvious reason: in this branch there is no CU to threshold on. Below it, "we could price none
+    # of the two things we saw" is not yet evidence the cost column is broken.
+    _real_items = [i for i in items if not is_system_item_kind(i.get("kind"))]
+    _min_items = int((config.get("capacity") or {}).get("unmeasurableMinItems", 3))
+    if (unmeasurable and unmeasurable == len(_real_items)
+            and len(_real_items) >= _min_items):
         flags.append({
             "type": "meta.attribution-unmeasurable",
             "resource": "capacity",

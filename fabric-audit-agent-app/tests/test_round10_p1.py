@@ -76,12 +76,28 @@ def test_every_item_unmeasurable_raises_a_coverage_flag():
     """A bare `continue` on sharePct=None treated "we could not measure" as "not concentrated", so a
     cost-column rename would take the flagship 30% feature out in total silence."""
     # Full rollup shape: production always sets userCount/truncated alongside the share.
+    #
+    # Three items, not two: the flag now has an activity floor (capacity.unmeasurableMinItems,
+    # default 3), because without one every idle window with a single unpriced item minted a
+    # `meta`-family ticket -- and `meta` IS in the notification center's ACTIONABLE set, so that was
+    # a real to-do item every hour. The floor does not touch what this test is about: a cost column
+    # that stops resolving on a window with actual work in it must still be caught, loudly.
     items = [{"name": n, "workspace": "Ent", "sharePct": None, "shareBasis": "unavailable",
               "cuSeconds": 0, "topUsers": [], "userCount": 0, "truncated": False,
               "attributionMode": "cost-duration"}
-             for n in ("Ent-Reporting-DTC", "Ent-Reporting-Sales")]
+             for n in ("Ent-Reporting-DTC", "Ent-Reporting-Sales", "Ent-Reporting-Ops")]
     types = [f["type"] for f in detect_concentration({"items": items})]
     assert types == ["meta.attribution-unmeasurable"]
+
+
+def test_a_near_idle_window_does_not_mint_a_coverage_ticket():
+    """The other side of the floor. "We could price neither of the two things we saw" is not yet
+    evidence that the cost column is broken, and it repeats every hour if it tickets."""
+    items = [{"name": n, "workspace": "Ent", "sharePct": None, "shareBasis": "unavailable",
+              "cuSeconds": 0, "topUsers": [], "userCount": 0, "truncated": False,
+              "attributionMode": "cost-duration"}
+             for n in ("Nightly-Refresh", "Ops-Ping")]
+    assert detect_concentration({"items": items}) == []
 
 
 def test_a_measurable_window_raises_no_coverage_flag():

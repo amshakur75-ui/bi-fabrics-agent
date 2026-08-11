@@ -9,6 +9,10 @@ DEFAULT_CONFIG = {
         "throttleWarnPct": 80, "throttleCritPct": 90, "throttleCritMinutes": 30,
         "contentionMin": 3, "contentionCritCount": 4, "oversizedGB": 4, "oversizedCritPct": 25,
         "concentrationPct": 30, "concentrationCritPct": 50,
+        # Minimum real items in a window before "we could price NONE of them" is treated as a
+        # coverage failure worth a ticket. An item count, not a CU floor, because in that
+        # branch there is no CU to threshold on. See detectors/concentration.py.
+        "unmeasurableMinItems": 3,
     },
     "model": {"bidirectionalMin": 4, "bidirectionalCritMin": 8, "refreshFailPct": 10, "refreshFailCritPct": 25},
     "report": {"visualsMin": 20, "visualsCritMin": 40, "slowVisualMs": 5000, "slowVisualCritMs": 10000},

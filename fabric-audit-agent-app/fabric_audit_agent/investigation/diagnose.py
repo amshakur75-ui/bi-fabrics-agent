@@ -289,6 +289,12 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system
             continue
         totals[item] = totals.get(item, 0.0) + (e.get("cuSeconds") or 0.0)
     grand_total = sum(totals.values())
+    # No measurable workload in the window means these three hypotheses were never TESTED. Reporting
+    # them as `eliminated` is the same error the throttle path was fixed for one screen up: an empty
+    # window is not exculpatory evidence, and "we ruled out a hot item, a hot user and a DAX
+    # anti-pattern" is a confident-sounding sentence built from nothing. It is the most reassuring
+    # possible answer produced by the absence of data.
+    _no_workload = not (grand_total > 0)
     hot_item, hot_share = None, 0.0
     if grand_total > 0:
         hot_item, hot_cu = max(totals.items(), key=lambda kv: kv[1])
@@ -309,8 +315,11 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system
         return {"symptom": "slowness", "chain": chain, "rootCause": root_cause,
                 "eliminated": eliminated, "confidence": _confidence(confirmed)}
     chain.append(_step(hot_step_name, hot_step_hypothesis,
-                        "eliminated", {"item": hot_item, "sharePct": hot_share}))
-    eliminated.append("single hot item")
+                        "unknown" if _no_workload else "eliminated",
+                        {"item": hot_item, "sharePct": None if _no_workload else hot_share,
+                         **({"note": "no measurable workload in this window"} if _no_workload else {})}))
+    if not _no_workload:
+        eliminated.append("single hot item")
 
     user_totals = {}
     for e in events:
@@ -332,9 +341,12 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system
         root_cause = f"hot user surge from \"{hot_user}\" ({hot_user_share:.1f}% of workload share)"
         return {"symptom": "slowness", "chain": chain, "rootCause": root_cause,
                 "eliminated": eliminated, "confidence": _confidence(confirmed)}
-    chain.append(_step("hot user surge?", "One user dominates workload share", "eliminated",
-                        {"user": hot_user, "sharePct": hot_user_share}))
-    eliminated.append("hot user surge")
+    chain.append(_step("hot user surge?", "One user dominates workload share",
+                        "unknown" if _no_workload else "eliminated",
+                        {"user": hot_user, "sharePct": None if _no_workload else hot_user_share,
+                         **({"note": "no measurable workload in this window"} if _no_workload else {})}))
+    if not _no_workload:
+        eliminated.append("hot user surge")
 
     heaviest = top_expensive(events, n=1)
     query_text = heaviest[0].get("queryText") if heaviest else None
@@ -352,7 +364,10 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system
     else:
         chain.append(_step("dax anti-pattern", "The heaviest query shows a DAX anti-pattern",
                             "unconfirmed", {"note": "operation-level data — per-query text unavailable"}))
-    eliminated.append("DAX anti-pattern")
+    # Only a query we actually READ can eliminate this. `else` above fires when there is no query
+    # text at all (operation-level data, or no events), which is an absence of evidence.
+    if query_text:
+        eliminated.append("DAX anti-pattern")
 
     return {"symptom": "slowness", "chain": chain, "rootCause": None,
             "eliminated": eliminated, "confidence": _confidence(confirmed)}

@@ -69,6 +69,16 @@ _TIER2_OWNED_CHECK_TYPES = frozenset({
     "concentration", "cross_user", "blind_spot", "sustained", "rate_change", "silent_failure",
 })
 
+# checkTypes NO producer of the sweep can emit, so the sweep has no standing to mark them stale.
+# `daily_summary` was the gap: the digest writes a `daily_summary` row every run, the sweep's
+# stale-marking iterated every active row and skipped only the tier2-owned ones, so it flipped the
+# digest to currentlyActive=False on the next hour AND had _sync_ticket create an alert_ticket row
+# for the digest chat with an empty detail. Invisible in the UI (`daily_summary` is not in the
+# notification center's ACTIONABLE set) and harmless to the digest's own logic, but it is an unowned
+# hourly write to two production tables and roughly two junk ticket rows a day. Ownership belongs in
+# one place, so it is stated here rather than left implicit in what the loop happens to skip.
+_NOT_SWEEP_OWNED_CHECK_TYPES = _TIER2_OWNED_CHECK_TYPES | frozenset({"daily_summary"})
+
 
 def _tier2_owned(key):
     return any((key or "").startswith(p) for p in _TIER2_OWNED_PREFIXES)
@@ -299,8 +309,8 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
         for key, row in (active or {}).items():
             if key in seen_keys:
                 continue
-            if row.get("checkType") in _TIER2_OWNED_CHECK_TYPES:
-                continue          # tier2 maintains its own lifecycle for these
+            if row.get("checkType") in _NOT_SWEEP_OWNED_CHECK_TYPES:
+                continue          # tier2 / the digest maintain their own lifecycle for these
             if row.get("currentlyActive") is False:
                 continue          # already marked
             try:

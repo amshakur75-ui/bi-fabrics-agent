@@ -16,8 +16,15 @@ def exec_narrative(exec_view=None):
     critical = critical if critical is not None else 0
     warning = v.get("warning")
     warning = warning if warning is not None else 0
+    # A score from an incomplete collection says so IN THE HEADLINE SENTENCE. Appending it at the
+    # end would let the reassuring number stand alone for the length of a paragraph.
+    _qual = v.get("healthQualification")
+    _health_txt = (f"Estate health is {health}/100 with {critical} critical and "
+                   f"{warning} warning finding(s).")
+    if _qual:
+        _health_txt = f"{_health_txt} {_qual}"
     parts = [
-        f"Estate health is {health}/100 with {critical} critical and {warning} warning finding(s).",
+        _health_txt,
         f"On capacity, {_VERDICT_TEXT.get(v.get('verdict'), 'status is unclear')}.",
     ]
     if v.get("accountability"):

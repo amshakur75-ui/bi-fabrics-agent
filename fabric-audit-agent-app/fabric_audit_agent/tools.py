@@ -1600,12 +1600,30 @@ def create_tool_definitions(base_dir=None):
             # window returned nothing. Only the first is a negative FINDING; the others are absences
             # of evidence. The note below also asserts the interactive/background split is
             # trustworthy, which it is not when the 5000-event cost-ordered pull truncated.
-            if not windows:
+            if not windows and not series:
+                # No CU stream at all: an absence of evidence, and mark_no_data says so.
                 out = mark_no_data(
                     out, what="capacity overload windows",
                     window_label=out.get("windowLabel") or f"{start} .. {end}",
-                    source_configured=bool(series),
-                    reason=("no CU series was returned" if not series else None))
+                    source_configured=False, reason="no CU series was returned")
+            elif not windows:
+                # A CU stream that never crossed the threshold is a MEASURED NEGATIVE, and the
+                # difference matters: mark_no_data's third branch appends "it is not proof the
+                # condition was absent", which turned a genuinely clean day into an unanswerable
+                # question. "Was the capacity over 100% at any point today?" has a definitive no
+                # here, and the handler holds both the series and the threshold it was compared
+                # against, so it can say so instead of hedging. Refusing to confirm a true negative
+                # is the mirror image of asserting a false one -- both report something other than
+                # what was measured.
+                _peaks = [w.get("cuPct") for w in series
+                          if isinstance(w, dict) and isinstance(w.get("cuPct"), (int, float))]
+                out["measuredNegative"] = True
+                out["note"] = (
+                    f"MEASURED NEGATIVE: the CU stream returned {len(series)} reading(s) for this "
+                    f"window and NONE reached {min_cu_pct}%"
+                    + (f" (highest was {round(max(_peaks), 1)}%)" if _peaks else "")
+                    + ". This is a definitive negative finding, not a data gap -- the capacity did "
+                      "not cross the threshold. Answer the question as a clear no.")
             elif meta.get("truncated"):
                 out["splitTruncated"] = True
                 out["splitNote"] = (
