@@ -213,7 +213,10 @@ def test_tier2_events_window_overlaps_the_sweep_cadence():
     with patch("fabric_audit_agent.job._build_events_collector", side_effect=fake_events), \
          patch("fabric_audit_agent.adapters.clients.build_kusto_query"), \
          patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
-        _build_tier2_collector(dict(_ENV), window="5m")
+        # No window argument -- exactly how run_tier2_job calls it. `window` is a sentinel now:
+        # None means "the tier2 cadence" (5m capacity / 15m events), while an explicit value means
+        # it for EVERY source, which is what lets the daily digest ask for a full day of events.
+        _build_tier2_collector(dict(_ENV))
     assert seen["window"] == "15m", "must be WIDER than the 5m cadence, not equal to it"
 
     # Overridable for tuning without a redeploy.
@@ -221,8 +224,16 @@ def test_tier2_events_window_overlaps_the_sweep_cadence():
     with patch("fabric_audit_agent.job._build_events_collector", side_effect=fake_events), \
          patch("fabric_audit_agent.adapters.clients.build_kusto_query"), \
          patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
-        _build_tier2_collector(env2, window="5m")
+        _build_tier2_collector(env2)
     assert seen["window"] == "30m"
+
+    # An EXPLICIT window means it for every source, which is how the daily digest asks for a full
+    # day of events. Without this the digest ranked the last 15 MINUTES under the heading
+    # "Top users today": at 18:00 that covers ~17:45-18:00, so a 09:00 refresh owner is invisible
+    # and whoever ran a query at 17:50 is named the day's top consumer.
+    with patch("fabric_audit_agent.job._build_events_collector", side_effect=fake_events),          patch("fabric_audit_agent.adapters.clients.build_kusto_query"),          patch("fabric_audit_agent.adapters.clients.build_log_analytics_query"):
+        _build_tier2_collector(dict(_ENV), window="1d")
+    assert seen["window"] == "1d", "the daily digest must rank a DAY of events, not 15 minutes"
 
 
 def test_baseline_kql_lowercases_the_user_id():

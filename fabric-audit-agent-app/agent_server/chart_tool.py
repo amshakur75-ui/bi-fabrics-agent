@@ -124,7 +124,14 @@ def render_chart_spec(inp):
     # DurationMs telemetry as per-user cost -- `(scope == "user")` silently declared every per-item
     # chart authoritative billed CU. Default to proxy for BOTH, so an omitted flag errs toward the
     # weaker claim rather than the stronger one.
-    is_proxy = (scope in ("user", "item")) if is_proxy is None else bool(is_proxy)
+    # SCOPE WINS. The default was right, but an explicit `isProxy: false` was accepted with no
+    # clamp -- and the tool schema actively invites it ("Capacity-scoped CU% is true CU -> false"),
+    # so a model charting "CU by item" plausibly sets false and renders a per-item CpuTimeMs donut
+    # labelled as capacity CU with no caveat at all. That is the claim investigation/gates.py marks
+    # permanently blocked, and it was one JSON field away at all times. The asymmetry in the old
+    # code says it plainly: a wrong `true` was guarded, a wrong `false` was not. Per-user and
+    # per-item cost is ALWAYS a proxy; the caller does not get a vote.
+    is_proxy = True if scope in ("user", "item") else bool(is_proxy)
 
     total_points = sum(len(s.get("data") or []) for s in series)
     if total_points <= 1:

@@ -49,6 +49,24 @@ def decompose_throttle(capacity_series, events, *, threshold=100.0, top_n=5, has
     windows = _over_windows(series, threshold)
     stage1 = {"maxCuPct": max_cu, "timepointsOver": len(over), "overWindows": windows[:10]}
 
+    # NO DATA IS NOT "NOT THROTTLING". max_cu is None when the series is empty or every point's
+    # cuPct is unusable, which is indistinguishable from a genuinely calm capacity once you only
+    # look at `over`. Reached live from capacity_diagnostics: a zero-row pull raises nothing, so no
+    # error is recorded and the agent reads "slowness has another cause" as a POSITIVE finding --
+    # steering an admin away from the cause during a real 247% event, with a citation. Stage 2 of
+    # this same module already refuses to answer when its series was not collected; stage 1 had no
+    # equivalent.
+    if max_cu is None:
+        return {"stage1": stage1,
+                "stage2": {"available": False,
+                           "note": "no CU readings in the window — nothing could be evaluated"},
+                "stage3": None, "conclusion": "unknown-no-data",
+                "note": ("No usable capacity readings were returned for this window, so this is NOT "
+                         "evidence that the capacity was healthy — the source may be empty, lagging, "
+                         "unauthorized or misconfigured. Re-run with a wider window or check the "
+                         "capacity-events stream before concluding anything about throttling."),
+                "thresholds": {"cuPct": threshold}}
+
     if not over:
         return {"stage1": stage1,
                 "stage2": {"available": False, "skipped": True,

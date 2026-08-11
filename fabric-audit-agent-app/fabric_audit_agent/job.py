@@ -729,10 +729,18 @@ def _check_tier2_heartbeat(env):
         return {"checked": True, "stale": True, "reason": f"heartbeat parse error: {exc}"}
 
 
-def _build_tier2_collector(env, window="5m"):
+def _build_tier2_collector(env, window=None):
     """Live-stream-only collector for Tier 2. Never reads CSV (static, doesn't update between
-    5-min checks). Returns a no-op collector if no live sources are configured."""
+    5-min checks). Returns a no-op collector if no live sources are configured.
+
+    ``window`` is a SENTINEL: None means "the tier2 cadence", which is 5m for the capacity/LA pulls
+    and a deliberately wider 15m for raw events (Log Analytics ingests with minutes of latency while
+    the KQL filters on event time, so a 5m events window leaves a permanent blind hole). A caller
+    that passes a window explicitly -- the daily digest passes "1d" -- means it for EVERY source,
+    including events. Defaulting the parameter to "5m" instead made those indistinguishable.
+    """
     collectors = []
+    capacity_window = window or "5m"
     if (env.get("FABRIC_CAPACITY_EVENTS_CLUSTER") and env.get("FABRIC_CAPACITY_EVENTS_DB")
             and env.get("FABRIC_CLIENT_ID")):
         from .adapters.clients import build_kusto_query
@@ -742,7 +750,7 @@ def _build_tier2_collector(env, window="5m"):
             _require(env, "FABRIC_TENANT_ID"), env["FABRIC_CLIENT_ID"],
             _require(env, "FABRIC_CLIENT_SECRET"),
         )
-        ce_cfg = {"window": window}
+        ce_cfg = {"window": capacity_window}
         if env.get("FABRIC_CAPACITY_EVENTS_TABLE"):
             ce_cfg["table"] = env["FABRIC_CAPACITY_EVENTS_TABLE"]
         if env.get("FABRIC_CAPACITY_EVENTS_KQL"):
@@ -761,7 +769,8 @@ def _build_tier2_collector(env, window="5m"):
             _require(env, "FABRIC_CLIENT_SECRET"),
         )
         # topUsers cap raised (default 3) so the same-item cross-user gate can see >=N users/item.
-        la_cfg = {"window": window, "topUsers": int(env.get("FABRIC_LA_TOP_USERS", "8"))}
+        la_cfg = {"window": capacity_window,
+                  "topUsers": int(env.get("FABRIC_LA_TOP_USERS", "8"))}
         if env.get("FABRIC_LA_WORKSPACE_FILTER"):
             la_cfg["workspaceFilter"] = env["FABRIC_LA_WORKSPACE_FILTER"]
         if env.get("FABRIC_LA_KQL"):
@@ -792,7 +801,14 @@ def _build_tier2_collector(env, window="5m"):
         #
         # NOT `window` (the capacity-events cadence) and NOT FABRIC_LA_WINDOW (defaults to "1d",
         # which would re-pull a whole day every 5 minutes).
-        _events_window = env.get("FABRIC_TIER2_EVENTS_WINDOW", "15m")
+        # An EXPLICIT caller window wins. The 15m default is tuned for the 5-minute tier2 cadence,
+        # but the DAILY digest calls this with window="1d" and then ranks facts["events"] as
+        # "Top users today" -- so it was ranking the last FIFTEEN MINUTES and printing it under a
+        # heading that says today. At 18:00 that covers ~17:45-18:00: a 09:00 refresh owner is
+        # invisible, and whoever ran a query at 17:50 is named the day's top consumer. Both the
+        # databricks.yml comment ("one extra LA query per DAY") and daily_summary's own comment
+        # ("from the same 1d collect") describe the behaviour this line prevented.
+        _events_window = window or env.get("FABRIC_TIER2_EVENTS_WINDOW", "15m")
         # GATED on the same flag as the detectors it feeds. This is a THIRD Log Analytics query
         # on a job that runs 288x/day; paying for it while TIER2_BASELINE_ENABLED is unset would
         # buy nothing, because the only consumers (the baseline detector and the correlation
@@ -856,7 +872,11 @@ def run_tier2_job(env=None, collector=None, delivery_sinks=None, findings_store=
         from .automation.health import HealthReport
         health = HealthReport()
     if collector is None:
-        collector = _build_tier2_collector(env, window="5m")
+        # No explicit window: the tier2 cadence is the DEFAULT, which is 5m for capacity/LA and a
+        # deliberately wider 15m for raw events. Passing "5m" here would now mean "5m everywhere"
+        # and would silently re-open the ingestion-latency blind hole the 15m widening exists to
+        # close -- which is exactly what the events-window test caught when this was written.
+        collector = _build_tier2_collector(env)
     if heartbeat_store is None:
         heartbeat_store = _tier2_heartbeat_store(env)
     if findings_store is None:
