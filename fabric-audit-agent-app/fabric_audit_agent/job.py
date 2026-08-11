@@ -1277,10 +1277,16 @@ def run_daily_summary_job(env=None, *, collector=None, alerts_store=None, ack_st
             print(f"[daily] ack store unavailable ({type(exc).__name__}: {exc}); prior digests uncounted")
 
     from .automation.daily_summary import run_daily_summary
-    return run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
+    _out = run_daily_summary(alerts_store=alerts_store, ack_store=ack_store, capacity=capacity,
                              coverage_gaps=coverage_gaps, delivery_sinks=delivery_sinks,
                              chat_writer=chat_writer, app_url=app_url, now_dt=now, events=events,
                              health=health, window_label=_win_label)
+    if isinstance(_out, dict):
+        # Which window this card actually covered. The digest now runs twice a day with DIFFERENT
+        # lookbacks, so a run log that does not say which one it was cannot be reconciled with the
+        # card a human received.
+        _out.setdefault("windowLabel", _win_label)
+    return _out
 
 
 def daily_summary_main():
@@ -1299,7 +1305,7 @@ def daily_summary_main():
         _alert_failure(exc, env)
         raise
     print(f"[daily] delivered={result.get('delivered')} open={result.get('openTickets')} "
-          f"unackedPrior={result.get('unackedPrior')}")
+          f"unackedPrior={result.get('unackedPrior')} window={result.get('windowLabel')}")
     line = render_health_line(health)
     if line:
         print(f"[daily] {line}")
