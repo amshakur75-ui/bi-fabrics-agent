@@ -24,10 +24,16 @@ variables:
     description: Quartz cron for the scheduled sweep (default hourly).
     default: "0 0 * * * ?"
   daily_summary_cron:
-    description: Quartz cron for the daily capacity digest (default 6pm).
-    default: "0 0 18 * * ?"
+    # TWICE a day: 12:00 and 18:00 local. Quartz takes a comma list in the hour field, so this stays
+    # ONE job with one schedule rather than a duplicate stanza. Safe to run twice: digest_key is
+    # per-CALENDAR-DAY, so both runs share a single audit_alerts row (the 18:00 run upserts over the
+    # 12:00 one) and daily_summary explicitly skips its own same-day row when counting unackedPrior
+    # -- so the second run does not inflate the backlog or mint a second ticket. Both times fall on
+    # the same UTC date in EDT and EST, so the card's date label cannot split across the pair.
+    description: Quartz cron for the capacity digest (noon + 6pm local).
+    default: "0 0 12,18 * * ?"
   daily_summary_tz:
-    description: Timezone for the daily digest schedule (6pm local business time).
+    description: Timezone for the digest schedule (noon + 6pm local business time).
     default: "America/New_York"
   baseline_cron:
     description: Quartz cron for the nightly user_baseline rebuild (default 02:00 UTC).
