@@ -261,11 +261,21 @@ def is_escalation(trigger, prior, cfg=None):
         #    A halving only matters once the burndown is actually short enough to act on, so the axis
         #    now also requires crossing under an absolute urgency floor. 50 -> 25 tells a human
         #    nothing they can use; 12 -> 6 does.
+        #    ONCE PER INCIDENT, on the CROSSING. Gating each halving on the urgency floor moved the
+        #    threshold without bounding the COUNT: a drain of 50 -> 25 -> 12 -> 6 -> 3 -> 1 still
+        #    carded at 12, 6, 3 and 1, because every one of those is both a halving and under the
+        #    floor -- four near-identical cards with the same title, the same facts and the same
+        #    "When", which is the exact outcome the floor was added to prevent. Requiring the PRIOR
+        #    reading to be ABOVE the floor makes this a one-time transition ("this just became
+        #    urgent"): the first crossing fires, and every subsequent halving inside the urgent band
+        #    finds prior already below it and stays silent. No new persisted state needed -- the
+        #    stored minutesToBurndown is the memory.
         cur_mtb = _num(trigger.get("minutesToBurndown"))
         pri_mtb = _num((prior or {}).get("minutesToBurndown"))
+        _urgent = float(cfg.get("burndown_urgent", 15.0))
         if (cur_mtb is not None and pri_mtb is not None and pri_mtb > 0
                 and cur_mtb <= pri_mtb / 2.0
-                and cur_mtb <= float(cfg.get("burndown_urgent", 15.0))):
+                and cur_mtb <= _urgent < pri_mtb):
             return True
         return False
     cur = primary_metric(trigger)

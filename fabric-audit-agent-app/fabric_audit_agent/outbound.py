@@ -57,5 +57,10 @@ def dispatch_outbound(action_type, payload, *, sinks):
     # every caller that inspects `delivered` to decide whether to retry. "We do not know whether
     # this reached a human" must read as NOT delivered, never as delivered.
     delivered = result.get("delivered", False) if isinstance(result, dict) else False
+    # Propagate the sink's status. Without it _send's warning always read "status=None", so the one
+    # message telling an operator WHY a capacity emergency's card was lost could not distinguish a
+    # 429 (the retry will work) from a 404 (the webhook URL rotated -- nothing will ever be
+    # delivered). The sink already returns it; only this hop dropped it.
+    _status = result.get("status") if isinstance(result, dict) else None
     return {"dispatched": True, "delivered": bool(delivered), "actionType": action_type,
-            "disclosure": line, "reason": None}
+            "disclosure": line, "reason": None, "status": _status}

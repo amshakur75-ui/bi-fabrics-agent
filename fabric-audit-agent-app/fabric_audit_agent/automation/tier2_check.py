@@ -153,12 +153,23 @@ def _likely_driver_facts(trigger):
         ws = d.get("workspace")
         if ws:
             label = f"{label} ({ws})"
-        user = d.get("user")
-        if user:
-            label += f" — {user}"
+        # ATTRIBUTE EACH NUMBER TO WHAT IT MEASURES. The item's total used to be printed
+        # immediately after the named user, separated only by a comma -- so an item at 7,400 CPU-s
+        # whose top user contributed 400 read as "aaron@newellco.com, 7400.0 CPU-s", an 18x
+        # overstatement of a named person's load on the only Teams card the product emits. The
+        # user's own figure was collected (`userCuSeconds`) and thrown away.
         cu = d.get("cuSeconds")
         if cu is not None:
-            label += f", {round(float(cu), 1)} CPU-s"
+            label += f" {round(float(cu), 1)} CPU-s"
+        user = d.get("user")
+        if user:
+            ucu = d.get("userCuSeconds")
+            if ucu is not None:
+                label += f", top user {user} {round(float(ucu), 1)} CPU-s"
+            else:
+                # No per-user figure resolved: name the user WITHOUT a number rather than lend
+                # them the item's.
+                label += f", top user {user} (share unmeasured)"
         bits.append(label)
     return [("Likely drivers (monitored CPU-time, not billed CU)", "; ".join(bits))]
 
