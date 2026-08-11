@@ -59,7 +59,8 @@ def _type_of(f):
 
 
 def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
-              lifecycle_store=None, agent_id=None, now=None, config=None, tenant=None):
+              lifecycle_store=None, agent_id=None, now=None, config=None, tenant=None,
+              health=None):
     config = config or DEFAULT_CONFIG
     t0 = time.monotonic()
     run_at = now if now is not None else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -76,7 +77,10 @@ def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
         resolved_tenant = (facts.get("capacity") or {}).get("tenant")
     if resolved_tenant is None:
         resolved_tenant = "default"
-    flags = detect_all(facts, config)
+    # health: a detector that CRASHES records a health issue, so the sweep run goes degraded
+    # and job_main's raise turns it into an on_failure email. Without this the isolation was
+    # total -- a broken detector meant silently reduced coverage with a SUCCESS status.
+    flags = detect_all(facts, config, health=health)
     findings = dedupe(reasoner["reason"](facts, flags))
 
     suppressed = []

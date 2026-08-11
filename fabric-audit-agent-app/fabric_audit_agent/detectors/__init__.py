@@ -27,7 +27,7 @@ _DETECTORS = [
 ]
 
 
-def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
+def detect_all(facts, config=None, detectors=None, *, baseline_store=None, health=None):
     """Run every registered detector and flatten the flags.
 
     ``baseline_store`` (Design A' B2): when provided, also runs the per-user baseline-deviation
@@ -51,11 +51,30 @@ def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
     config = config or DEFAULT_CONFIG
     detectors = detectors if detectors is not None else _DETECTORS
     flags = []
+
+    def _detector_failed(name, err):
+        """Record an isolated detector failure so it reaches a human, not just a flag.
+
+        The isolation below is deliberate -- one broken detector must not cost the whole
+        sweep -- but it was TOTAL: the run reported SUCCESS, so email_notifications.on_failure
+        could not fire and the only trace was a ticket in a digest twice a day. A detector
+        that stopped running means the sweep quietly stopped covering something, which is the
+        worst thing to hide: every surface still looks healthy because the findings are simply
+        absent.
+        """
+        if health is not None:
+            try:
+                health.record_issue(f"detector {name} FAILED and was skipped: "
+                                   f"{type(err).__name__}: {err}")
+            except Exception:
+                pass          # health accounting must never be the thing that breaks a sweep
+
     for fn in detectors:
         try:
             flags.extend(fn(facts, config))
         except Exception as err:  # a failing detector is skipped, not fatal
             name = getattr(fn, "__name__", "unknown-detector")
+            _detector_failed(name, err)
             flags.append({
                 "type": "meta.detector-error", "resource": name, "when": "",
                 "evidence": {"detector": name, "message": str(err)},
@@ -69,6 +88,7 @@ def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
             flags.extend(detect_user_baseline_deviation_precomputed(
                 facts, config, baseline_store=baseline_store))
         except Exception as err:
+            _detector_failed("detect_user_baseline_deviation_precomputed", err)
             flags.append({
                 "type": "meta.detector-error",
                 "resource": "detect_user_baseline_deviation_precomputed", "when": "",
@@ -82,6 +102,16 @@ def detect_all(facts, config=None, detectors=None, *, baseline_store=None):
         from .cross_workspace import cross_workspace_patterns
         min_ws = int((config.get("crossWorkspace") or {}).get("minWorkspaces", 3))
         flags.extend(cross_workspace_patterns(flags, min_workspaces=min_ws))
-    except Exception:
-        pass
+    except Exception as err:
+        # This was a bare `except Exception: pass` -- the ONLY isolated failure here that left
+        # no trace whatsoever, not even a meta.detector-error flag. The whole
+        # pattern.cross-workspace family could stop being produced and absolutely nothing
+        # anywhere would say so.
+        _detector_failed("cross_workspace_patterns", err)
+        flags.append({
+            "type": "meta.detector-error", "resource": "cross_workspace_patterns",
+            "when": "", "evidence": {"detector": "cross_workspace_patterns",
+                                     "message": str(err)},
+            "what": f"Detector \"cross_workspace_patterns\" failed and was skipped: {err}",
+        })
     return flags

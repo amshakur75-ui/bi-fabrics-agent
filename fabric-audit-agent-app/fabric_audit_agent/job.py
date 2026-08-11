@@ -522,9 +522,16 @@ def run_unified_job(env=None, out_dir=None, reasoner=None, delivery=None, store=
     prev_history = store["history"]()
     t0 = time.monotonic()
     try:
+        # `health` is threaded in so a CRASHED DETECTOR reaches a human. detect_all is
+        # failure-isolated on purpose -- one broken detector must not cost the whole sweep -- but the
+        # isolation was total: the run reported TERMINATED SUCCESS, so on_failure never fired and the
+        # only trace was a ticket in a digest twice a day. A detector that stops running means
+        # coverage silently shrank, which is the same class of problem as `silent_failure` (the
+        # collector-blind alarm) that we already treat as Teams-worthy on the grounds that the
+        # failure mode must not hide the alarm for the failure mode.
         envelope = run_audit(collector, reasoner, delivery, store=store,
                              findings_store=findings_store, config=config,
-                             agent_id=agent_id, tenant=tenant, now=now)
+                             agent_id=agent_id, tenant=tenant, now=now, health=health)
     except Exception:
         _append_error_record(store, t0)
         raise
