@@ -126,6 +126,13 @@ def score_severity(flag, config=None):
     if t == "cost.idle-capacity":
         return {"level": "Warning", "reason": f"{e.get('avgCuPct')}% average CU"}
 
+    if t == "meta.attribution-unmeasurable":
+        # Warning, not Info: the concentration feature is BLIND for this window, and an Info-level
+        # finding is dropped by SWEEP_MIN_LEVEL="Warning" -- which would have made the coverage gap
+        # itself invisible, reproducing the silence it exists to break.
+        n = e.get("itemsSeen")
+        return {"level": "Warning",
+                "reason": f"no usable cost signal on {n} item(s) — concentration is blind"}
     if t == "meta.detector-error":
         return {"level": "Warning", "reason": "a detector failed and was skipped"}
 

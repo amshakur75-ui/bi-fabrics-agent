@@ -38,6 +38,7 @@ def detect_concentration(facts, config=None):
         and it.get("attributionMode") is not None
     }
     mixed_sources = len(_modes) > 1
+    unmeasurable = 0
 
     for it in items:
         # N5 fix (Task 8): a system item kind (EventStream / Activator /
@@ -48,9 +49,19 @@ def detect_concentration(facts, config=None):
         # See detectors/system_item_kinds.py for the evidence.
         if is_system_item_kind(it.get("kind")):
             continue
+        # sharePct is None when NO row resolved a cost column (attribution_rollup sets
+        # shareBasis="unavailable" alongside it). The bare `continue` treated that as "this item is
+        # not concentrated", so a schema rename would take the flagship 30% feature out silently --
+        # every item skipped, the estate reading clean, and blind_spot unable to help because the
+        # items DO exist. Count them so the caller can tell "nothing concentrated" from "nothing
+        # measurable"; tier2's _check_cross_source_blind_spot raises the alarm on the same signal.
+        if it.get("sharePct") is None:
+            unmeasurable += 1
+            continue
         try:
             share = float(it.get("sharePct"))
         except (TypeError, ValueError):
+            unmeasurable += 1
             continue
         if not math.isfinite(share) or share < min_share:
             continue
@@ -130,5 +141,20 @@ def detect_concentration(facts, config=None):
             "when": it.get("observedAt") or "",
             "evidence": evidence,
             "what": what,
+        })
+    # EVERY item unmeasurable is a coverage failure, not a clean estate. Without this, a cost column
+    # that stopped resolving took the flagship 30% concentration feature out in total silence: each
+    # item skipped individually, no flag raised, and the run reporting normally.
+    if unmeasurable and unmeasurable == len([i for i in items
+                                             if not is_system_item_kind(i.get("kind"))]):
+        flags.append({
+            "type": "meta.attribution-unmeasurable",
+            "resource": "capacity",
+            "when": "",
+            "evidence": {"itemsSeen": unmeasurable,
+                         "shareBasis": "unavailable"},
+            "what": (f"{unmeasurable} item(s) came back with no usable cost signal, so no "
+                     "concentration share could be computed for ANY of them. This is a coverage "
+                     "gap, not an all-clear -- check the attribution query's cost column."),
         })
     return flags

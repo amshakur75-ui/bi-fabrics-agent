@@ -1,0 +1,121 @@
+"""Round 10: the five P1s from the round-9 gate sweep.
+
+Each was proven by execution before it was touched. The theme, again: output that is confident,
+plausible and wrong — a ceiling projected from noise, a 100/100 score on a collection that saw
+nothing, a chart with no x values, a blindness alarm nobody receives.
+"""
+import inspect
+
+from fabric_audit_agent import job as job_mod
+from fabric_audit_agent.automation.health import HealthReport
+from fabric_audit_agent.detectors.concentration import detect_concentration
+from fabric_audit_agent.forecast import forecast_capacity
+from fabric_audit_agent.health_score import build_health_score
+from fabric_audit_agent.kb import get_remediation
+from fabric_audit_agent.severity import score_severity
+
+
+def _hist(vals):
+    return [{"metrics": {"peakCuPct": v}} for v in vals]
+
+
+# ---- P1-2: do not project a ceiling from a flat line ----------------------
+
+def test_a_flat_series_projects_no_ceiling_breach():
+    """`runs_to_ceiling` was gated on slope > 0 while `trend` needs slope > 0.5, so a flat series
+    rendered "At current trend (+0%/run), peak CU reaches 100% in ~1393 run(s)" — a sentence that
+    contradicts its own +0%/run. pipeline.py surfaces the forecast only when runsToCeiling is set,
+    making this the dominant shipped case."""
+    out = forecast_capacity(_hist([60, 60, 60, 60, 60, 60.2]))
+    assert out["trend"] == "flat"
+    assert out["runsToCeiling"] is None
+    assert "reaches" not in out["message"]
+
+
+def test_noise_around_a_constant_projects_nothing():
+    out = forecast_capacity(_hist([60, 61, 60, 62, 60, 61]))
+    assert out["runsToCeiling"] is None
+
+
+def test_a_genuine_climb_still_projects_and_carries_its_caveat():
+    rising = forecast_capacity(_hist([40, 50, 60, 70, 80, 90]))
+    assert rising["trend"] == "rising" and rising["runsToCeiling"] is not None
+    # A noisy climb must still be able to say so — the caveat used to require trend != "flat"
+    # AND was computed on a branch that could not reach it.
+    noisy = forecast_capacity(_hist([40, 90, 45, 95, 50, 99]))
+    if noisy["runsToCeiling"] is not None and noisy["weakFit"]:
+        assert "weak fit" in noisy["message"]
+
+
+# ---- P1-3: 100/100 is not a clean bill of health on a blind collection ----
+
+def test_a_blind_collection_qualifies_its_perfect_score():
+    """Zero findings is indistinguishable from a clean estate, so a degraded collection scored
+    100/100 and the narrative said "Estate health is 100/100" — handed verbatim to the chat agent —
+    while dataQuality simultaneously listed missing capacityId, sku, memoryGB and peakCuPct."""
+    out = build_health_score([], data_quality=["missing capacityId", "missing peakCuPct"])
+    assert out["overall"] == 100
+    assert out["scoreQualified"] is True
+    assert "not that the estate is healthy" in out["qualification"]
+
+
+def test_a_clean_collection_is_not_qualified():
+    assert "scoreQualified" not in build_health_score([], data_quality=[])
+    assert "scoreQualified" not in build_health_score([])
+
+
+def test_a_score_with_real_findings_is_not_qualified():
+    """With findings the score already reflects real problems; the caveat would just add noise."""
+    findings = [{"key": "model.bidirectional", "score": {"level": "Warning"}}]
+    assert "scoreQualified" not in build_health_score(findings, data_quality=["missing sku"])
+
+
+# ---- P1-5: an unmeasurable share is a coverage gap, not an all-clear ------
+
+def test_every_item_unmeasurable_raises_a_coverage_flag():
+    """A bare `continue` on sharePct=None treated "we could not measure" as "not concentrated", so a
+    cost-column rename would take the flagship 30% feature out in total silence."""
+    items = [{"name": n, "workspace": "Ent", "sharePct": None, "shareBasis": "unavailable"}
+             for n in ("Ent-Reporting-DTC", "Ent-Reporting-Sales")]
+    types = [f["type"] for f in detect_concentration({"items": items})]
+    assert types == ["meta.attribution-unmeasurable"]
+
+
+def test_a_measurable_window_raises_no_coverage_flag():
+    items = [{"name": "Ent-Reporting-DTC", "workspace": "Ent", "sharePct": 62.0,
+              "cuSeconds": 4000.0, "attributionMode": "cost-cpu"}]
+    types = [f["type"] for f in detect_concentration({"items": items})]
+    assert "meta.attribution-unmeasurable" not in types
+
+
+def test_the_new_type_is_scored_and_has_real_remediation():
+    """MULTI-SITE: a new finding type needs a severity branch AND a KB entry, or it ships as
+    Info (dropped by SWEEP_MIN_LEVEL="Warning") carrying developer placeholder text."""
+    sev = score_severity({"type": "meta.attribution-unmeasurable", "evidence": {"itemsSeen": 2}})
+    assert sev["level"] == "Warning", "Info would be dropped by the sweep's minimum level"
+    assert "not yet in the knowledge base" not in str(get_remediation(
+        "meta.attribution-unmeasurable"))
+
+
+# ---- P1-1: a stale heartbeat must reach a human -------------------------
+
+def test_the_sweep_fails_the_run_when_degraded():
+    """_check_tier2_health records a STALE TIER2 HEARTBEAT into the sweep's HealthReport, but
+    job_main only printed it — so on_failure could not fire and a paused tier2 job meant capacity
+    alerting was dead with nobody told. tier2_main already raises; this is its twin."""
+    src = inspect.getsource(job_mod.job_main)
+    assert "health.degraded" in src and "raise RuntimeError" in src
+    assert "FABRIC_FAIL_ON_DEGRADED" in src, "must keep the same escape hatch as tier2_main"
+
+
+def test_the_stale_message_survives_a_missing_threshold():
+    """_check_tier2_heartbeat does not return thresholdMinutes, so the message rendered
+    'threshold None min' — a test stub fabricated the key and hid it."""
+    h = HealthReport()
+    job_mod._check_tier2_health.__wrapped__ if False else None
+    import unittest.mock as mock
+    with mock.patch.object(job_mod, "_check_tier2_heartbeat",
+                           return_value={"stale": True, "ageMinutes": 330}):
+        job_mod._check_tier2_health({}, health=h)
+    assert "None" not in h.summary
+    assert "330 min ago" in h.summary

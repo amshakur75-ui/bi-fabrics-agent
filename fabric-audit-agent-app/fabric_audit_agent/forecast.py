@@ -31,12 +31,24 @@ def forecast_capacity(history=None, ceiling=100, min_points=3):
     r2 = fit["r2"]
     current = series[-1]
     trend = "rising" if slope > 0.5 else ("falling" if slope < -0.5 else "flat")
-    runs_to_ceiling = math.ceil((ceiling - current) / slope) if (slope > 0 and current < ceiling) else None
+    # Project only from a trend we are willing to CALL a trend. runs_to_ceiling was gated on
+    # `slope > 0` while `trend` needs `slope > 0.5`, so a flat series projected a ceiling breach:
+    # [60,60,60,60,60,60.2] rendered "At current trend (+0%/run), peak CU reaches 100% in ~1393
+    # run(s)" -- a sentence that contradicts its own +0%/run in the same breath. And because
+    # `weak_fit` required `trend != "flat"`, the "treat with caution" caveat was UNREACHABLE on
+    # exactly the branch that needed it (that series has r2=0.429). pipeline.py surfaces the
+    # forecast only when runsToCeiling is set, so the flat-but-projecting case was the dominant
+    # shipped one. Both now key off the same trend decision.
     slope_per_run = math.floor(slope * 10 + 0.5) / 10
-    weak_fit = trend != "flat" and r2 < stats.WEAK_FIT_R2
+    projecting = trend == "rising" and current < ceiling
+    runs_to_ceiling = math.ceil((ceiling - current) / slope) if projecting else None
+    weak_fit = r2 < stats.WEAK_FIT_R2
     caveat = " (weak fit, treat with caution)" if weak_fit else ""
     if runs_to_ceiling is not None:
         message = f"At current trend (+{_fmt(slope_per_run)}%/run), peak CU reaches {ceiling}% in ~{runs_to_ceiling} run(s){caveat}."
+    elif trend == "flat":
+        message = (f"Peak CU is flat ({_fmt(slope_per_run)}%/run over {len(series)} runs); "
+                   "no ceiling breach projected.")
     else:
         message = f"Peak CU trend is {trend}; no ceiling breach projected."
     return {"trend": trend, "points": len(series), "current": current,

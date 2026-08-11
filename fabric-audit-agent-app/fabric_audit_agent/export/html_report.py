@@ -212,10 +212,15 @@ def _build_echarts_option(
             for row in chart_rows
         ]
         if cls.visual_type == "line":
+            # [x, y] PAIRS. The x axis for a line chart is declared "time", and an ECharts time axis
+            # takes its x values from the series -- it has no `data` of its own. Emitting bare
+            # scalars therefore dropped the timestamps entirely: the exported chart rendered three
+            # y-values against an empty time axis, and the three timestamps appeared NOWHERE in the
+            # option. The categories were computed and then discarded.
             series.append({
                 "name": _col_name(col),
                 "type": "line",
-                "data": data,
+                "data": [[c, v] for c, v in zip(categories, data)],
                 "smooth": True,
                 "symbol": "circle",
                 "symbolSize": 4,
@@ -259,8 +264,10 @@ def _build_echarts_option(
         **axis_base,
         "axisLabel": {**axis_base["axisLabel"], "rotate": 35 if len(categories) > 10 else 0},
     }
-    # TS sets ``data: undefined`` for the "time" axis (dropped by JSON.stringify);
-    # only the category axis carries the extracted category values.
+    # TS sets ``data: undefined`` for the "time" axis (dropped by JSON.stringify); only the category
+    # axis carries the extracted category values. That parity is CORRECT -- a time axis derives its
+    # x values from the series -- but it only works if the series carries [x, y] pairs, which is now
+    # done above. Previously neither side had the timestamps.
     if cls.visual_type != "line":
         x_axis["data"] = categories
 

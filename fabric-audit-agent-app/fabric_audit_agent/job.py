@@ -589,9 +589,11 @@ def _check_tier2_health(env, health=None):
     try:
         status = _check_tier2_heartbeat(env)
         if status.get("stale"):
-            msg = (f"tier2 heartbeat STALE — last run {status.get('ageMinutes')} min ago "
-                   f"(threshold {status.get('thresholdMinutes')} min); capacity alerting may be "
-                   "dead. Check the fabric-audit-tier2 job.")
+            _age, _thr = status.get("ageMinutes"), status.get("thresholdMinutes")
+            msg = ("tier2 heartbeat STALE — last run "
+                   + (f"{_age} min ago" if _age is not None else "an unknown time ago")
+                   + (f" (threshold {_thr} min)" if _thr is not None else "")
+                   + "; capacity alerting may be dead. Check the fabric-audit-tier2 job.")
             print(f"[sweep] WARN {msg}")
             if health is not None:
                 health.record_issue(msg)
@@ -673,6 +675,14 @@ def job_main():
     line = render_health_line(health)
     if line:
         print(f"[job] {line}")
+    # Fail the run, exactly as tier2_main does. Without this the sweep's HealthReport -- which is
+    # where _check_tier2_health records a STALE TIER2 HEARTBEAT -- reached no surface but an hourly
+    # stdout line, so email_notifications.on_failure could not fire and a paused or de-scheduled
+    # tier2 job meant capacity alerting was dead with nobody told. The two in-repo claims that this
+    # reaches "the digest banner" are false: run_daily_summary_job builds its own HealthReport and
+    # never calls the heartbeat check, and the daily task is not even given the heartbeat path.
+    if health.degraded and str(os.environ.get("FABRIC_FAIL_ON_DEGRADED", "1")).strip().lower()             in ("1", "true", "yes"):
+        raise RuntimeError(f"sweep run degraded: {health.summary}")
     return envelope
 
 
