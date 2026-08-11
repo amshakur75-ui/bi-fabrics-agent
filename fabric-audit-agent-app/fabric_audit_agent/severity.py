@@ -39,7 +39,8 @@ def score_severity(flag, config=None):
         if (peak is not None and peak >= cap["throttleCritPct"]
                 and mins is not None and mins > cap["throttleCritMinutes"]):
             return {"level": "Critical",
-                    "reason": f"CU peaked {e.get('peakCuPct')}% with {e.get('throttleMinutes')} min throttled"}
+                    "reason": f"CU peaked {e.get('peakCuPct')}% with "
+                              f"{e.get('throttleMinutes')} min over 100% CU"}
         if peak is None:
             return {"level": "Warning", "reason": "CU peak unknown (no capacity reading)"}
         return {"level": "Warning", "reason": f"CU peaked {e.get('peakCuPct')}%"}

@@ -37,7 +37,8 @@ def investigate_user(collector, reasoner, user, days=30):
                         f"via {len(match.get('topItems') or [])} item(s)", match)]
     if cap.get("peakCuPct") is not None:
         ev.append(evidence_item("capacity",
-                                f"capacity peaked {cap['peakCuPct']}% ({cap.get('throttleMinutes', 0)} min throttled)",
+                                f"capacity peaked {cap['peakCuPct']}% "
+                                f"({cap.get('throttleMinutes', 0)} min over 100% CU)",
                                 cap))
 
     history = facts.get("history")
@@ -134,7 +135,8 @@ def investigate_capacity_spike(collector, reasoner, when=None, events=None, capa
     corroborating = 1 + (1 if items else 0)
 
     ev = [evidence_item("capacity",
-                        f"capacity peaked {cap['peakCuPct']}% ({cap.get('throttleMinutes', 0)} min throttled)",
+                        f"capacity peaked {cap['peakCuPct']}% "
+                                f"({cap.get('throttleMinutes', 0)} min over 100% CU)",
                         cap)]
     if top:
         # See severity.py: no producer emits the bare "cost", so this always chose the most

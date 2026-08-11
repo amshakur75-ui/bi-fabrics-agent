@@ -122,6 +122,39 @@ def _family(key):
     return (k.split(".")[0] or "sweep")
 
 
+def _sync_ticket(ticket_writer, key, row, *, currently_active, now_iso, health=None):
+    """Mirror an audit_alerts row's firing state onto ai_chatbot.alert_ticket.
+
+    Two tables, two ports: the digest reads ``currentlyActive`` off audit_alerts, the APP reads it
+    off alert_ticket. Updating one without the other leaves the surface a human clicks through
+    showing the wrong state.
+
+    ``detail`` MUST come from investigationSummary/materialityReason, not ``row["detail"]``.
+    ``detail`` is not in context_alerts._FIELDS, so a row round-tripped through the store always has
+    it as None -- and create_ticket_writer's upsert is a full-row overwrite (``detail =
+    excluded.detail``), so passing it blanked the ticket's description on every stale-marked row.
+    tier2's equivalent (tier2_check._write_ticket) reads the same two fields for exactly this
+    reason; this helper exists so the two paths cannot drift again.
+    """
+    if not ticket_writer:
+        return
+    try:
+        ticket_writer(row.get("chatId"), {
+            "incidentKey": key,
+            "checkType": row.get("checkType"),
+            "severity": row.get("severity"),
+            "resource": row.get("resource") or key,
+            "workspace": row.get("workspace"),
+            "detail": row.get("investigationSummary") or row.get("materialityReason") or "",
+            "firstDetected": row.get("firstAlertedAt") or row.get("runAt") or now_iso,
+            "currentlyActive": currently_active})
+    except Exception as exc:
+        state = "re-activate" if currently_active else "stale"
+        print(f"[sweep] {state} ticket sync failed for {key}: {type(exc).__name__}: {exc}")
+        if health is not None:
+            health.record_issue(f"{state} ticket sync failed: {type(exc).__name__}: {exc}")
+
+
 def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                          chat_writer=None, ticket_writer=None, min_level="Warning", now_iso=None,
                          health=None, collection_complete=False):
@@ -164,6 +197,25 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
             continue
         if key in active:
             out["skipped_dup"] += 1
+            # RE-ACTIVATE. currentlyActive=True is written only on FIRST delivery, and the
+            # stale-marking below writes False when a key is absent -- so a finding that stops for
+            # one sweep and comes back was latched off FOREVER: dropped from the digest's count,
+            # dropped from the app's firing tab, and then surfaced in the 6pm card as "still marked
+            # open but no longer firing -- clear them from the notification center", i.e. the
+            # product telling an admin to dismiss a live, unfixed problem. Findings churn hourly
+            # here because the LA pull is a top-N-by-cost cut whose cut line moves, so this is the
+            # common path, not an edge case. Only touch rows we actually turned off.
+            _prior = active.get(key) or {}
+            if _prior.get("currentlyActive") is False:
+                try:
+                    alerts_store["upsert"](dict(_prior, currentlyActive=True, runAt=now_iso))
+                    _sync_ticket(ticket_writer, key, _prior, currently_active=True,
+                                 now_iso=now_iso, health=health)
+                    out["reactivated"] = out.get("reactivated", 0) + 1
+                except Exception as exc:
+                    print(f"[sweep] re-activate failed for {key}: {type(exc).__name__}: {exc}")
+                    if health is not None:
+                        health.record_issue(f"re-activate failed: {type(exc).__name__}: {exc}")
             continue
 
         what = f.get("what") or key
@@ -259,27 +311,8 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                 if health is not None:
                     health.record_issue(f"stale-mark failed: {type(exc).__name__}: {exc}")
                 continue
-            # BOTH TABLES. The digest reads currentlyActive off audit_alerts; the APP reads it off
-            # ai_chatbot.alert_ticket -- two tables, two ports. Updating only the first would have
-            # made the 6pm card move ~100 tickets into "open but not firing" while the app's badge
-            # still said Open(147) and the detail pane still said "Open", with the surface a human
-            # actually clicks through being the wrong one. tier2's equivalent path already writes
-            # both (_write_ticket right after its upsert); this loop is the twin that did not.
-            if ticket_writer:
-                try:
-                    ticket_writer(row.get("chatId"), {
-                        "incidentKey": key, "checkType": row.get("checkType"),
-                        "severity": row.get("severity"),
-                        "resource": row.get("resource") or key, "workspace": None,
-                        "detail": row.get("detail"),
-                        "firstDetected": row.get("firstAlertedAt") or row.get("runAt"),
-                        "currentlyActive": False})
-                except Exception as exc:
-                    print(f"[sweep] stale ticket sync failed for {key}: "
-                          f"{type(exc).__name__}: {exc}")
-                    if health is not None:
-                        health.record_issue(
-                            f"stale ticket sync failed: {type(exc).__name__}: {exc}")
+            _sync_ticket(ticket_writer, key, row, currently_active=False,
+                         now_iso=now_iso, health=health)
         if stale:
             print(f"[sweep] marked {stale} finding(s) no longer firing (still open until resolved)")
         out["marked_stale"] = stale

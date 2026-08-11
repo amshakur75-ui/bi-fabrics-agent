@@ -35,7 +35,14 @@ def detect_capacity(facts, config=None):
             "resource": f"{c.get('tenant')} / capacity {c.get('capacityId')}",
             "when": c.get("peakAt"),
             "evidence": {"peakCuPct": c.get("peakCuPct"), "throttleMinutes": c.get("throttleMinutes"), "sku": c.get("sku")},
-            "what": f"Capacity {c.get('capacityId')} reached {c.get('peakCuPct')}% CU ({c.get('throttleMinutes')} min throttled).",
+            # "over 100% CU", never "throttled". collector_capacity_events states the contract:
+            # throttleMinutes is MINUTES AT CU >= 100%, which is not a Fabric throttle signal --
+            # smoothing (10-min interactive / 24-h background) absorbs bursts, so time over budget
+            # is not evidence a request was ever delayed. This string reaches report.md AND the
+            # chat agent verbatim through the run_audit narrative, so it was the product telling an
+            # admin the capacity throttled for N minutes on evidence that cannot support it.
+            "what": f"Capacity {c.get('capacityId')} reached {c.get('peakCuPct')}% CU "
+                    f"({c.get('throttleMinutes')} min over 100% CU).",
         })
 
     # 2. Refresh contention (>= contentionMin share a start time; a blank/unknown time can't prove simultaneity)

@@ -201,3 +201,58 @@ def test_a_complete_collection_scores_without_qualification():
              "items": [], "refreshes": []}
     out = diagnose(facts)
     assert out["health"].get("scoreQualified") is None
+
+
+# ---- round 12: the latch, and the detail it was blanking --------------------
+
+def _faithful():
+    import sys, os
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_alerts_store_delta_fidelity import create_delta_faithful_store
+    return create_delta_faithful_store()
+
+
+_FINDING = [{"key": "refresh.credential::Ent/Sales-Model", "type": "refresh.credential",
+             "resource": "Ent / Sales-Model", "score": {"level": "Warning"},
+             "what": "Refresh failing on an expired credential.", "why": "y",
+             "recommendation": "Re-enter the credential.", "when": ""}]
+
+
+def test_a_finding_that_stops_and_returns_is_re_activated():
+    """currentlyActive=True was written only on FIRST delivery, and the stale-marking writes False,
+    so fire -> absent -> fire again LATCHED OFF forever: dropped from the digest count, dropped from
+    the app's firing tab, then surfaced as "still open but no longer firing — clear them from the
+    notification center". The product telling an admin to dismiss a live, unfixed problem. Findings
+    churn hourly here because the LA pull is a top-N-by-cost cut whose cut line moves."""
+    from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+
+    store = _faithful()
+    kw = dict(alerts_store=store, delivery_sinks={}, collection_complete=True)
+    key = "refresh.credential::Ent/Sales-Model"
+
+    deliver_new_findings(_FINDING, **kw)
+    assert store["_data"][key]["currentlyActive"] is True
+    out = deliver_new_findings([], **kw)
+    assert out["marked_stale"] == 1 and store["_data"][key]["currentlyActive"] is False
+    out = deliver_new_findings(_FINDING, **kw)          # it comes back
+    assert out.get("reactivated") == 1
+    assert store["_data"][key]["currentlyActive"] is True, "a returning finding must not stay latched off"
+
+
+def test_stale_and_reactivate_never_blank_the_ticket_detail():
+    """`detail` is NOT in context_alerts._FIELDS, so a row read back from the store always has it as
+    None — and create_ticket_writer's upsert is a full-row overwrite. Passing row["detail"] blanked
+    the ticket description on every stale-marked row (~105 per sweep), emptying the app's hover card
+    and degrading "Chat about" to the bare title. tier2's twin reads investigationSummary for
+    exactly this reason."""
+    from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+
+    store, written = _faithful(), []
+    kw = dict(alerts_store=store, delivery_sinks={}, collection_complete=True,
+              ticket_writer=lambda cid, t: written.append(t))
+    deliver_new_findings(_FINDING, **kw)
+    deliver_new_findings([], **kw)                      # stale
+    deliver_new_findings(_FINDING, **kw)                # re-activate
+    assert written, "the ticket table must be kept in sync"
+    for t in written:
+        assert t["detail"], f"detail must never be blanked (got {t['detail']!r})"

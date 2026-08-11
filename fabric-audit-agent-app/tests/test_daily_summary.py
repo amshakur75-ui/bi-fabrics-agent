@@ -32,18 +32,39 @@ def _ticket(finding_type, resource, *, severity="warn", **extra):
 # ---- pure builder ----
 
 def test_build_no_issues_prints_plain_message_and_no_cu_metrics():
+    """A GENUINELY quiet day: no tickets AND the capacity stayed under 100%.
+
+    This test previously used peakCuPct=91 with 12 minutes over budget and asserted BOTH
+    "No significant issues found" AND that no CU number appeared anywhere — i.e. it pinned the bug.
+    tier2 auto-resolves a capacity incident after 60 quiet minutes, so by 18:00 a real morning spike
+    leaves no open row, and the digest had no other signal that it happened: the card claimed an
+    all-clear and deleted every number that would have contradicted it. 12 minutes over budget is
+    not a quiet day, so the fixture was wrong as well as the assertion.
+    """
     md, card, summary = build_daily_summary(
-        open_tickets=[], capacity={"peakCuPct": 91.0, "throttleMinutes": 12.0}, coverage_gaps=[],
+        open_tickets=[], capacity={"peakCuPct": 42.0, "throttleMinutes": 0.0}, coverage_gaps=[],
         date_str="2026-08-05", app_url="https://app")
     assert "No significant issues found in today's activity." in md
-    assert "CU" not in md and "%" not in md      # no CU fallback when the taxonomy is empty
-    blob = json.dumps(card)
-    assert "CU" not in blob and "Capacity context" not in blob
     content = card["content"]
     assert content["version"] == "1.2"  # mobile Teams
     assert content["actions"][0]["title"] == "Review & acknowledge"
     assert content["actions"][0]["url"] == "https://app/"
     assert "no significant issues" in summary
+
+
+def test_a_day_that_went_over_budget_is_never_reported_as_all_clear():
+    """The case the old fixture actually described. The incident has auto-resolved so there is no
+    open ticket, but the day still crossed 100% CU -- the headline must not claim otherwise, and the
+    capacity context (the only line carrying the number) must survive."""
+    md, card, summary = build_daily_summary(
+        open_tickets=[], capacity={"peakCuPct": 187.0, "throttleMinutes": 9.0}, coverage_gaps=[],
+        date_str="2026-08-05", app_url="https://app")
+    assert "No significant issues found" not in md
+    assert "went over 100% CU" in md
+    assert "187" in md, "the number that contradicts an all-clear must be present"
+    blob = json.dumps(card)
+    assert "No significant issues found" not in blob
+    assert "187" in blob, "the card is the surface most people read"
 
 
 def test_build_uses_explicit_ack_url_deep_link():

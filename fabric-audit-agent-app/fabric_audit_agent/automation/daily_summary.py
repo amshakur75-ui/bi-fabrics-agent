@@ -54,6 +54,25 @@ def digest_key(date_str):
     return f"{DIGEST_CHECK}::{date_str}"
 
 
+def _went_over_budget(capacity):
+    """True when the day's own capacity reading shows it crossed 100% CU at some point.
+
+    Used to stop the headline claiming an all-clear on a day whose incident has already
+    auto-resolved -- tier2 clears a capacity incident after 60 quiet minutes, so by 18:00 a real
+    morning spike leaves NO open row, and the digest had no other way to know it happened.
+    """
+    c = capacity or {}
+    peak, throttle = c.get("peakCuPct"), c.get("throttleMinutes")
+    try:
+        if peak is not None and float(peak) >= 100:
+            return True
+        if throttle is not None and float(throttle) > 0:
+            return True
+    except (TypeError, ValueError):
+        return False
+    return False
+
+
 def _sev_counts(tickets):
     # `critical` counts as warn-or-worse. Testing only for == "warn" meant that the moment
     # sweep_delivery started emitting "critical", every Critical finding would have been counted as
@@ -281,6 +300,13 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         n = len(capacity_open)
         md.append(f"**{n} capacity incident{'s' if n != 1 else ''} open and still firing** — "
                   "see the capacity alerts for detail.")
+    elif _went_over_budget(capacity):
+        # The incident already auto-resolved (tier2 clears after 60 quiet minutes), so there is no
+        # open ticket to list -- but the day still went over budget, and "no significant issues"
+        # would be false. This is the case that produced a card reading "No significant issues
+        # found" for a day with a 187% spike, with every contradicting number removed.
+        md.append("**No open findings right now** — but the capacity went over 100% CU earlier "
+                  "today; see the capacity context below.")
     else:
         md.append("**No significant issues found in today's activity.**")
 
@@ -329,12 +355,15 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         if len(informational) > _MAX_TICKET_LINES:
             md.append(f"- …and {len(informational) - _MAX_TICKET_LINES} more")
 
-    if anything_wrong and (peak is not None or throttle is not None):
+    # UNGATED. The day's high-water CU is a fact about TODAY, not a function of whether a ticket
+    # happens to still be open at 18:00. Gating it meant the one line that could contradict a false
+    # all-clear was removed on exactly the days it was needed.
+    if peak is not None or throttle is not None:
         bits = []
         if peak is not None:
             bits.append(f"{peak:.0f}% peak true CU%".replace("%%", "%"))
         if throttle is not None:
-            bits.append(f"{throttle:.0f} throttle min")
+            bits.append(f"{throttle:.0f} min over 100% CU")
         md += ["", f"---\n_Capacity context: {', '.join(bits)} — see capacity alerts for detail._"]
 
     markdown = "\n".join(md)
@@ -363,7 +392,10 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
         facts = [{"title": "Findings today",
                   "value": f"⚠️ {n} capacity incident{'s' if n != 1 else ''} open and firing"}]
     else:
-        facts = [{"title": "Findings today", "value": "No significant issues found ✅"}]
+        facts = [{"title": "Findings today",
+                   "value": ("No open findings — capacity went over 100% CU earlier today"
+                             if _went_over_budget(capacity)
+                             else "No significant issues found ✅")}]
     if coverage_gaps:
         facts.append({"title": "Coverage gaps", "value": str(len(coverage_gaps))})
     if informational:
@@ -373,12 +405,13 @@ def build_daily_summary(*, open_tickets, capacity, coverage_gaps, date_str,
     # "Capacity context" fact -- the one number (e.g. 187% peak) a reader needs -- while the
     # chat body included it. The test asserted only on the markdown, which is why the same
     # defect survived ten lines from the line that fixed it.
-    if anything_wrong and (peak is not None or throttle is not None):
+    # Same ungating as the markdown path -- the card is the surface most people actually read.
+    if peak is not None or throttle is not None:
         bits = []
         if peak is not None:
             bits.append(f"{peak:.0f}%".replace("%%", "%"))
         if throttle is not None:
-            bits.append(f"{throttle:.0f} min throttle")
+            bits.append(f"{throttle:.0f} min over 100% CU")
         facts.append({"title": "Capacity context", "value": " / ".join(bits)})
     body.append({"type": "FactSet", "facts": facts})
 
