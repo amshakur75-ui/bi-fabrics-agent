@@ -15,6 +15,7 @@ import {
   resolveAlert,
   reopenAlert,
   getChatlessAlertTickets,
+  getOpenTicketCountsByCheckType,
   getAlertAckMapByIncidentKeys,
   setAlertAckByIncident,
   clearAlertAckByIncident,
@@ -48,11 +49,13 @@ alertsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
       endingBefore: null,
     });
     const chatIds = result.chats.map((c) => c.id);
-    const [ackMap, ticketMap, chatlessTickets] = await Promise.all([
-      getAlertAckMap(chatIds),
-      getAlertTicketMap(chatIds),
-      getChatlessAlertTickets(limit),
-    ]);
+    const [ackMap, ticketMap, chatlessTickets, openCountsByType] =
+      await Promise.all([
+        getAlertAckMap(chatIds),
+        getAlertTicketMap(chatIds),
+        getChatlessAlertTickets(limit),
+        getOpenTicketCountsByCheckType(),
+      ]);
     const chatlessIncidentKeys = chatlessTickets.map((t) => t.incidentKey);
     const chatlessAckMap =
       await getAlertAckMapByIncidentKeys(chatlessIncidentKeys);
@@ -111,7 +114,19 @@ alertsRouter.get('/', requireAuth, async (req: Request, res: Response) => {
         sortKey(a.ticket?.firstDetected ?? a.createdAt),
     );
 
-    res.json({ ...result, chats });
+    // `result.hasMore` only ever described the CHAT query, but `chats` here is that page PLUS up
+    // to `limit` chat-less tickets, so it understated truncation for exactly the rows the Part-7
+    // read-path added. `truncated` covers both sources, and `openCountsByType` is counted over the
+    // whole table (null = unknown) so the client's badge can state the real number of open tickets
+    // rather than the number that happened to fit on this page.
+    const truncated = result.hasMore || chatlessTickets.length >= limit;
+    res.json({
+      ...result,
+      chats,
+      hasMore: truncated,
+      truncated,
+      openCountsByType,
+    });
   } catch (error) {
     console.error('[/api/alerts] Error in handler:', error);
     res.status(500).json({ error: 'Failed to fetch alerts' });

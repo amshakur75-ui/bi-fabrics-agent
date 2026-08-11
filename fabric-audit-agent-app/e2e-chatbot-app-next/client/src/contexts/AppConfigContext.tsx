@@ -13,6 +13,9 @@ interface ConfigResponse {
   greeting?: string;
   obo?: {
     missingScopes: string[];
+    // True when the serving-endpoint probe failed, i.e. the scope list is unknown rather than
+    // known-empty.
+    unknown?: boolean;
   };
 }
 
@@ -24,6 +27,7 @@ interface AppConfigContextType {
   feedbackEnabled: boolean;
   greeting: string;
   oboMissingScopes: string[];
+  oboScopesUnknown: boolean;
 }
 
 const AppConfigContext = createContext<AppConfigContextType | undefined>(
@@ -51,6 +55,7 @@ export function AppConfigProvider({ children }: { children: ReactNode }) {
     feedbackEnabled: data?.features.feedback ?? false,
     greeting: data?.greeting ?? DEFAULT_GREETING,
     oboMissingScopes: data?.obo?.missingScopes ?? [],
+    oboScopesUnknown: data?.obo?.unknown ?? false,
   };
 
   return (

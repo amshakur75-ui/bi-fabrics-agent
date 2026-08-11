@@ -58,6 +58,10 @@ configRouter.get('/', async (req: Request, res: Response) => {
     greeting: process.env.CHAT_GREETING || undefined,
     obo: {
       missingScopes,
+      // An empty missingScopes list means "nothing missing" only when the endpoint was actually
+      // readable. When the probe failed it means "unknown", and the banner has to say so rather
+      // than let the absence of a warning imply the scopes are fine.
+      unknown: oboInfo.probeFailed,
     },
   });
 });

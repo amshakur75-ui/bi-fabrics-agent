@@ -316,6 +316,17 @@ const getEndpointDetails = async (servingEndpoint: string) => {
       headers,
     },
   );
+  // An error is not evidence of absence. A 403/404/500 body parses to `auth_policy: undefined`,
+  // which read as "this endpoint needs no user scopes" — and that fabricated negative was then
+  // cached for five minutes, suppressing the missing-scope banner while every user request failed
+  // on the very scope the banner would have named. Throw instead: nothing is cached, and the
+  // caller reports the state as unknown.
+  if (!response.ok) {
+    throw new Error(
+      `Serving endpoint details unavailable for "${servingEndpoint}": HTTP ${response.status}`,
+    );
+  }
+
   const data = (await response.json()) as EndpointDetailsResponse;
 
   // Detect OBO: either explicit auth_policy scopes, or Supervisor Agent (always OBO).
@@ -352,17 +363,21 @@ const getEndpointDetails = async (servingEndpoint: string) => {
  * Returns OBO info for the configured serving endpoint.
  * Detects OBO via auth_policy scopes or Supervisor Agent type.
  */
-export async function getEndpointOboInfo(): Promise<{ isEndpointOboEnabled: boolean; endpointRequiredScopes: string[] }> {
+export async function getEndpointOboInfo(): Promise<{ isEndpointOboEnabled: boolean; endpointRequiredScopes: string[]; probeFailed: boolean }> {
   const servingEndpoint = process.env.DATABRICKS_SERVING_ENDPOINT;
-  if (!servingEndpoint) return { isEndpointOboEnabled: false, endpointRequiredScopes: [] };
+  if (!servingEndpoint) return { isEndpointOboEnabled: false, endpointRequiredScopes: [], probeFailed: false };
   try {
     const details = await getEndpointDetails(servingEndpoint);
     return {
       isEndpointOboEnabled: details.isOboEnabled,
       endpointRequiredScopes: details.userApiScopes,
+      probeFailed: false,
     };
-  } catch {
-    return { isEndpointOboEnabled: false, endpointRequiredScopes: [] };
+  } catch (error) {
+    // `probeFailed` keeps "we could not check" distinct from "no scopes are required". They used
+    // to be the same empty array, so a broken probe read to the UI as a clean bill of health.
+    console.warn(`Could not determine OBO scopes for "${servingEndpoint}".`, error);
+    return { isEndpointOboEnabled: false, endpointRequiredScopes: [], probeFailed: true };
   }
 }
 
@@ -412,10 +427,22 @@ export class OAuthAwareProvider implements SmartProvider {
       }
 
       const servingEndpoint = process.env.DATABRICKS_SERVING_ENDPOINT;
-      const endpointDetails = await getEndpointDetails(servingEndpoint);
+      // getEndpointDetails now throws on a non-ok probe rather than inventing a negative for the
+      // OBO check. The task type is a different matter — it only picks a wire format, and the
+      // switch below already falls back to `responses` — so a probe failure must not turn into a
+      // failed chat here.
+      let endpointTask: string | undefined;
+      try {
+        endpointTask = (await getEndpointDetails(servingEndpoint)).task;
+      } catch (error) {
+        console.warn(
+          `Could not read serving endpoint details for "${servingEndpoint}"; using the default responses wire format.`,
+          error,
+        );
+      }
 
       console.log(`Creating fresh model for ${id}`);
-      switch (endpointDetails.task) {
+      switch (endpointTask) {
         case 'agent/v2/chat':
           return provider.chatAgent(servingEndpoint);
         case 'agent/v1/responses':

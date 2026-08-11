@@ -20,7 +20,35 @@ const DOCS_URL =
 const OBO_DOCS_URL =
   'https://docs.databricks.com/aws/en/generative-ai/agent-framework/chat-app#enable-user-authorization';
 
-function OboScopeBanner({ missingScopes }: { missingScopes: string[] }) {
+function OboScopeBanner({
+  missingScopes,
+  scopesUnknown,
+}: { missingScopes: string[]; scopesUnknown?: boolean }) {
+  // An unreadable serving endpoint used to arrive here as an empty scope list — indistinguishable
+  // from "nothing is missing" — so the banner stayed hidden while OBO calls failed for want of a
+  // scope nobody was told about.
+  if (missingScopes.length === 0 && scopesUnknown) {
+    return (
+      <div className="w-full border-b border-amber-500/20 bg-amber-50 dark:bg-amber-950/20 px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <TriangleAlert className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            Could not read the serving endpoint's user-authorization
+            requirements, so any missing scopes cannot be listed. If replies
+            fail with a permission error, this is the first thing to check.{' '}
+            <a
+              href={OBO_DOCS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+            >
+              Learn more
+            </a>
+          </p>
+        </div>
+      </div>
+    );
+  }
   if (missingScopes.length === 0) return null;
 
   return (
@@ -47,7 +75,12 @@ function OboScopeBanner({ missingScopes }: { missingScopes: string[] }) {
 
 export function ChatHeader({ title, empty, isLoadingTitle }: { title?: string, empty?: boolean, isLoadingTitle?: boolean }) {
   const navigate = useNavigate();
-  const { chatHistoryEnabled, feedbackEnabled, oboMissingScopes } = useConfig();
+  const {
+    chatHistoryEnabled,
+    feedbackEnabled,
+    oboMissingScopes,
+    oboScopesUnknown,
+  } = useConfig();
 
   return (
     <>
@@ -123,7 +156,10 @@ export function ChatHeader({ title, empty, isLoadingTitle }: { title?: string, e
         </div>
       </header>
 
-      <OboScopeBanner missingScopes={oboMissingScopes} />
+      <OboScopeBanner
+        missingScopes={oboMissingScopes}
+        scopesUnknown={oboScopesUnknown}
+      />
     </>
   );
 }

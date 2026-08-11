@@ -822,3 +822,45 @@ export async function getChatlessAlertTickets(
     currentlyActive: r.currently_active,
   }));
 }
+
+// The notification center's "Open (N)" badge was derived from the 50 newest alert CHATS, then
+// filtered down — so a 161-row open backlog (see scripts/cleanup_stale_alerts.sql) rendered as
+// "Open (4)": a confident number contradicting its own list. This counts over the WHOLE
+// alert_ticket table, applying exactly the two conditions the UI applies (still firing, not
+// human-resolved), and groups by check_type so the client's ACTIONABLE set remains the single
+// definition of which families are counted — duplicating that list here would drift from it.
+//
+// Returns null for UNKNOWN — never 0 — when the table or the Part-7 incident_key column is
+// missing on an older deployment, so the UI can say the count is unavailable instead of
+// asserting an all-clear it cannot support.
+export async function getOpenTicketCountsByCheckType(): Promise<Record<
+  string,
+  number
+> | null> {
+  if (!isDatabaseAvailable()) return null;
+  const db = await ensureDb();
+  let rows: unknown = [];
+  try {
+    rows = await db.execute(sql`
+      SELECT t.check_type AS check_type, count(*)::int AS n
+      FROM ai_chatbot.alert_ticket t
+      LEFT JOIN ai_chatbot.alert_ack a
+        ON (t.chat_id IS NOT NULL AND a.chat_id = t.chat_id)
+        OR (t.chat_id IS NULL AND a.incident_key = t.incident_key)
+      WHERE t.currently_active IS DISTINCT FROM false
+        AND (a.status IS NULL OR a.status <> 'resolved')
+      GROUP BY t.check_type
+    `);
+  } catch {
+    return null;
+  }
+  const out: Record<string, number> = {};
+  for (const r of rows as unknown as Array<{
+    check_type: string | null;
+    n: number | string;
+  }>) {
+    if (!r.check_type) continue;
+    out[r.check_type] = Number(r.n) || 0;
+  }
+  return out;
+}

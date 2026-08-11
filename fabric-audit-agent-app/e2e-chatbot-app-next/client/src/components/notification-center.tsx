@@ -2,6 +2,7 @@ import { useState } from 'react';
 import useSWR from 'swr';
 import { useNavigate } from 'react-router-dom';
 import { fetcher } from '@/lib/utils';
+import { toast } from './toast';
 
 // Public, shared notification center (bottom-right). Shows the Tier-2 alert TICKETS — specific,
 // user-actionable issues (who's driving an item, cross-user load, throttling) — NOT the repetitive
@@ -34,7 +35,13 @@ type AlertChat = {
   hasChat?: boolean;
   incidentKey?: string | null;
 };
-type AlertsData = { chats: AlertChat[] };
+type AlertsData = {
+  chats: AlertChat[];
+  // Counted server-side over the whole alert_ticket table, keyed by checkType; null when the
+  // count could not be taken. The list itself is only the newest page (see `truncated`).
+  openCountsByType?: Record<string, number> | null;
+  truncated?: boolean;
+};
 
 // Actionable issue types only — deliberately EXCLUDES the informational capacity-status signals
 // (sustained early-warning, rate-of-change, the daily digest) so the center is a to-do list of real
@@ -88,12 +95,47 @@ const ACTIONABLE = new Set([
   'xmla', // xmla.* findings
 ]);
 
-async function post(path: string, body?: unknown) {
-  await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+// Returns whether the action actually landed. The response used to be discarded entirely, and a
+// chat-less ticket's id IS its incident key — which contains a slash (`concentration::<ws>/<item>`,
+// automation/incident.py), so an un-encoded path segment 404s. The 404 was swallowed, mutate()
+// re-rendered the row unchanged, and the ticket looked permanently unresolvable no matter how many
+// resolution notes were typed into it.
+async function post(path: string, body?: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      toast({
+        type: 'error',
+        description: `Could not update this ticket (HTTP ${res.status}). It is still open — nothing was saved.`,
+      });
+      return false;
+    }
+    return true;
+  } catch {
+    toast({
+      type: 'error',
+      description:
+        'Could not reach the server. This ticket is still open — nothing was saved.',
+    });
+    return false;
+  }
+}
+
+// Severity icons. `critical` currently never reaches here — automation/sweep_delivery.py collapses
+// every level at or above warn into "warn" — but rendering an unknown severity as the info glyph
+// would silently downgrade the worst finding class the moment that emitter starts sending it.
+const SEVERITY_ICON: Record<string, string> = {
+  critical: '🚨',
+  warn: '⚠️',
+  info: 'ℹ️',
+};
+
+function severityIcon(severity?: string | null): string {
+  return SEVERITY_ICON[(severity ?? '').toLowerCase()] ?? 'ℹ️';
 }
 
 function dateLabel(iso?: string | null): string | null {
@@ -144,6 +186,29 @@ export function NotificationCenter() {
   ).length;
   const shown = tab === 'open' ? openTickets : resolvedTickets;
 
+  // `openTickets` only ever describes the newest page the server returned (50 chats + up to 50
+  // chat-less tickets), so its length was a badge reading "Open (4)" over a 161-row open backlog.
+  // The authoritative count comes from the server, summed over the SAME actionable families this
+  // component filters on; null means the server could not count, in which case the page count is
+  // shown with a "+" rather than dressed up as a total.
+  const counts = data?.openCountsByType ?? null;
+  const totalOpen = counts
+    ? Object.entries(counts).reduce(
+        (n, [checkType, c]) => (ACTIONABLE.has(checkType) ? n + c : n),
+        0,
+      )
+    : null;
+  const truncated = data?.truncated === true;
+  const openCountLabel =
+    totalOpen !== null
+      ? String(totalOpen)
+      : truncated
+        ? `${openTickets.length}+`
+        : String(openTickets.length);
+  const notListed =
+    totalOpen !== null ? Math.max(0, totalOpen - openTickets.length) : 0;
+  const badgeCount = totalOpen ?? openTickets.length;
+
   // Chat-backed tickets keep hitting /api/alerts/:chatId/*; chat-less tickets (Part-7 read-path —
   // alert_ticket.chat_id IS NULL) have no chat to key off, so they use the incident-key-keyed
   // routes instead. `t.id` is the incident_key for those rows (see server GET /api/alerts).
@@ -152,20 +217,20 @@ export function NotificationCenter() {
       'Resolve this issue — what changed / what did you find? (required)',
     );
     if (!note || !note.trim()) return;
+    const id = encodeURIComponent(t.id);
     const path =
       t.hasChat === false
-        ? `/api/alerts/by-incident/${t.id}/resolve`
-        : `/api/alerts/${t.id}/resolve`;
-    await post(path, { note: note.trim() });
-    mutate();
+        ? `/api/alerts/by-incident/${id}/resolve`
+        : `/api/alerts/${id}/resolve`;
+    if (await post(path, { note: note.trim() })) mutate();
   };
   const reopen = async (t: AlertChat) => {
+    const id = encodeURIComponent(t.id);
     const path =
       t.hasChat === false
-        ? `/api/alerts/by-incident/${t.id}/reopen`
-        : `/api/alerts/${t.id}/reopen`;
-    await post(path);
-    mutate();
+        ? `/api/alerts/by-incident/${id}/reopen`
+        : `/api/alerts/${id}/reopen`;
+    if (await post(path)) mutate();
   };
   // Builds the same kind of auto-investigation prompt the Python side's Teams deep-link uses
   // (fabric_audit_agent/automation/sweep_delivery.py:_investigate_query), anchored to when the
@@ -206,7 +271,7 @@ export function NotificationCenter() {
             <div className="flex items-start justify-between gap-3 border-border border-b px-5 py-4">
               <div className="flex items-center gap-2">
                 <span className="text-lg leading-none">
-                  {detail.ticket?.severity === 'warn' ? '⚠️' : 'ℹ️'}
+                  {severityIcon(detail.ticket?.severity)}
                 </span>
                 <h3 className="font-semibold text-sm">{detail.title}</h3>
               </div>
@@ -309,7 +374,7 @@ export function NotificationCenter() {
               onClick={() => setTab('open')}
               className={`rounded-full px-3 py-1 font-medium ${tab === 'open' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : 'text-muted-foreground hover:bg-muted'}`}
             >
-              Open ({openTickets.length})
+              Open ({openCountLabel})
             </button>
             <button
               type="button"
@@ -328,6 +393,16 @@ export function NotificationCenter() {
           </div>
 
           <div className="flex-1 overflow-y-auto">
+            {/* The list is one page; the count is the whole table. Saying so is the point — a
+                silently truncated list under a total that doesn't match it is what made the badge
+                untrustworthy in the first place. */}
+            {tab === 'open' && (notListed > 0 || (totalOpen === null && truncated)) ? (
+              <div className="border-border border-b bg-muted/40 px-4 py-2 text-muted-foreground text-xs">
+                {notListed > 0
+                  ? `Showing the ${openTickets.length} most recent — ${notListed} more open ${notListed === 1 ? 'ticket is' : 'tickets are'} not listed here.`
+                  : 'More open tickets exist than are listed here.'}
+              </div>
+            ) : null}
             {tab === 'resolved' && pausedCount > 0 ? (
               <div className="border-border border-b bg-muted/40 px-4 py-2 text-muted-foreground text-xs">
                 {pausedCount} of these {pausedCount === 1 ? 'is' : 'are'} still open — not firing
@@ -344,7 +419,13 @@ export function NotificationCenter() {
                 {error
                   ? 'Could not load alerts — the alert store is unreachable, so this list may be incomplete. Retrying…'
                   : tab === 'open'
-                    ? 'No open issues right now. 🎉'
+                    ? // An empty PAGE is not an empty backlog: the page holds the newest alert
+                      // chats, so a wholly older backlog leaves it blank. Claiming "no open
+                      // issues" over a non-zero server count is the same false all-clear the
+                      // badge used to give.
+                      totalOpen !== null && totalOpen > 0
+                      ? `${totalOpen} open ${totalOpen === 1 ? 'issue' : 'issues'} — none of them are recent enough to appear in this list.`
+                      : 'No open issues right now. 🎉'
                     : 'Nothing resolved or paused right now.'}
               </div>
             ) : (
@@ -361,7 +442,7 @@ export function NotificationCenter() {
                   >
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 text-base leading-none">
-                        {tk?.severity === 'warn' ? '⚠️' : 'ℹ️'}
+                        {severityIcon(tk?.severity)}
                       </span>
                       <button
                         type="button"
@@ -441,9 +522,9 @@ export function NotificationCenter() {
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
         </svg>
-        {openTickets.length > 0 && (
+        {badgeCount > 0 && (
           <span className="-right-1 -top-1 absolute flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1 font-semibold text-[11px] text-white">
-            {openTickets.length > 9 ? '9+' : openTickets.length}
+            {badgeCount > 9 ? '9+' : badgeCount}
           </span>
         )}
       </button>
