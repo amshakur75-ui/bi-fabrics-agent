@@ -37,6 +37,21 @@ def diagnose_throttle(series, events, *, refreshes=None, has_real_cost=True, bas
     decomp = decompose_throttle(series, events, has_real_cost=has_real_cost)
     stage1 = decomp["stage1"]
 
+    # `timepointsOver == 0` is TRUE for a calm capacity AND for a window where nothing was
+    # measured, so keying off it alone reported "capacity throttling ELIMINATED, confidence high"
+    # for a collection that saw no rows. decompose_throttle distinguishes the two with the
+    # `unknown-no-data` conclusion and an explicit "NOT evidence the capacity was healthy" note;
+    # that was computed here and discarded, and this is the consumer wired to the tool the chat
+    # agent calls. Nothing can be eliminated on evidence that was never gathered.
+    if decomp.get("conclusion") == "unknown-no-data":
+        chain.append(_step("capacity over-utilized?", "CU% exceeded the throttling threshold",
+                            "unknown", {"timepointsOver": stage1["timepointsOver"],
+                                        "maxCuPct": stage1["maxCuPct"],
+                                        "note": decomp.get("note")}))
+        return {"symptom": "throttle", "chain": chain, "rootCause": None,
+                "eliminated": [], "confidence": "none",
+                "note": decomp.get("note")}
+
     step1_verdict = "eliminated" if stage1["timepointsOver"] == 0 else "confirmed"
     chain.append(_step("capacity over-utilized?", "CU% exceeded the throttling threshold",
                         step1_verdict, {"timepointsOver": stage1["timepointsOver"],
@@ -235,9 +250,13 @@ def diagnose_slowness(series, events, *, has_real_cost=True, config=None, system
     stage1 = decomp["stage1"]
     confirmed = 0
 
-    step1_verdict = "eliminated" if stage1["timepointsOver"] == 0 else "confirmed"
+    # Same guard as the throttle path above: an unmeasured window must not eliminate anything.
+    _no_data = decomp.get("conclusion") == "unknown-no-data"
+    step1_verdict = ("unknown" if _no_data
+                     else ("eliminated" if stage1["timepointsOver"] == 0 else "confirmed"))
     chain.append(_step("throttling?", "CU% exceeded the throttling threshold", step1_verdict,
-                        {"timepointsOver": stage1["timepointsOver"], "maxCuPct": stage1["maxCuPct"]}))
+                        {"timepointsOver": stage1["timepointsOver"], "maxCuPct": stage1["maxCuPct"],
+                         **({"note": decomp.get("note")} if _no_data else {})}))
 
     if step1_verdict == "confirmed":
         confirmed += 1

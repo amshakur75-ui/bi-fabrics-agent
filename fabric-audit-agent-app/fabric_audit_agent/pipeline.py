@@ -193,6 +193,15 @@ def run_audit(collector, reasoner, delivery, store=None, findings_store=None,
         d["suppressed"] = [{"key": f.get("key"), "state": f["lifecycle"]["state"], "what": f.get("what")} for f in suppressed]
     if validation["issues"]:
         d["dataQuality"] = validation["issues"]
+    # Surface which SOURCES failed, not just which fields are missing. These are different
+    # questions: dataQuality means "this field was absent from an estate we did collect",
+    # sourcesFailed means "a collector did not run at all", and only the second one makes an
+    # ABSENT finding meaningless rather than fixed. _deliver_sweep_findings gates its stale-marking
+    # on this, and read it off the envelope where it had never been published -- so the gate was
+    # `not None` on every run and marked findings inactive even when half the estate was unseen.
+    _failed = (facts or {}).get("sourcesFailed")
+    if _failed:
+        d["sourcesFailed"] = list(_failed)
     d["narrative"] = exec_narrative(view_for(envelope, "exec"))
     d["runLog"] = build_run_log(facts, envelope, run_at)
 

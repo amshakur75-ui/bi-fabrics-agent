@@ -94,3 +94,63 @@ def test_a_ticket_a_human_resolved_is_not_counted_as_a_finding_today():
         alerts_store=store,
         ack_store=_ack_store({"activity.slow-operation::aaron@newellco.com"}))
     assert one["openTickets"] == 1, "a resolved ticket must stop counting"
+
+
+# ---- round 11: the guards that were unreachable ---------------------------
+
+def test_a_failed_source_reaches_the_envelope_so_the_stale_gate_can_see_it():
+    """_deliver_sweep_findings gates stale-marking on envelope["data"]["sourcesFailed"], which
+    run_audit never published — so the gate read `not None` and was TRUE on every run, including
+    runs where a collector was down. The gate written specifically to stop a half-blind sweep
+    reporting unfixed findings as no longer firing could not fire."""
+    from fabric_audit_agent.pipeline import run_audit
+    from fabric_audit_agent.reasoner_stub import create_stub_reasoner
+
+    def _env(failed):
+        facts = {"capacity": {"peakCuPct": 50.0}, "items": []}
+        if failed:
+            facts["sourcesFailed"] = failed
+        return run_audit({"collect": lambda: facts}, create_stub_reasoner(),
+                         {"deliver": lambda p: {"delivered": True}})["data"]
+
+    degraded = _env(["log-analytics: LA unreachable"])
+    assert degraded["sourcesFailed"] == ["log-analytics: LA unreachable"]
+    assert not (not degraded.get("sourcesFailed")), "the gate must be False on a degraded run"
+    assert not _env(None).get("sourcesFailed"), "a whole run must not claim a failure"
+
+
+def test_an_unmeasured_window_eliminates_nothing():
+    """`timepointsOver == 0` is true both for a calm capacity and for a window where nothing was
+    measured. diagnose.py keyed off it alone, so a zero-row pull answered "capacity throttling
+    ELIMINATED, confidence high" — and this is the consumer wired to the tool the chat agent calls.
+    decompose_throttle's own "NOT evidence the capacity was healthy" note was computed and dropped."""
+    from fabric_audit_agent.investigation.diagnose import run_diagnosis
+
+    out = run_diagnosis("throttle", series=[], events=[])
+    assert out["eliminated"] == [], "nothing can be eliminated on evidence never gathered"
+    assert out["confidence"] == "none"
+    assert "NOT evidence" in (out.get("note") or "")
+
+    calm = run_diagnosis("throttle", series=[{"epoch": i, "cuPct": 40.0} for i in range(12)],
+                         events=[])
+    assert calm["eliminated"] == ["capacity throttling"] and calm["confidence"] == "high"
+
+
+def test_stale_marking_syncs_the_ticket_table_too():
+    """The digest reads currentlyActive off audit_alerts; the APP reads it off alert_ticket. Writing
+    only the first would move ~100 tickets in the 6pm card while the app's badge and detail pane
+    still said Open — the surface a human clicks through being the wrong one."""
+    from fabric_audit_agent.automation.sweep_delivery import deliver_new_findings
+
+    rows = {"model.bidirectional::Ent/Sales": {
+        "incidentKey": "model.bidirectional::Ent/Sales", "checkType": "model", "status": "active",
+        "currentlyActive": True, "severity": "warn", "resource": "Ent / Sales", "chatId": None}}
+    written = []
+    store = {"query_active": lambda: dict(rows),
+             "upsert": lambda r: rows.__setitem__(r["incidentKey"], r)}
+    deliver_new_findings([], alerts_store=store, delivery_sinks={},
+                         ticket_writer=lambda cid, t: written.append(t),
+                         collection_complete=True)
+    assert len(written) == 1, "the ticket table must be updated alongside audit_alerts"
+    assert written[0]["currentlyActive"] is False
+    assert written[0]["incidentKey"] == "model.bidirectional::Ent/Sales"

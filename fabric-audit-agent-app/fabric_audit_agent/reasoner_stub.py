@@ -41,6 +41,12 @@ def _impact_for(flag):
         return "Wasted storage/refresh load; safe to clean up."
     if t == "cost.idle-capacity":
         return "Ongoing spend with little utilization."
+    # THIRD SITE for meta.attribution-unmeasurable: severity and the KB were updated when the
+    # type was added, this one was not, so the coverage-gap finding rendered "Impact not
+    # assessed." -- the same one-site-missed pattern the type was created to report.
+    if t == "meta.attribution-unmeasurable":
+        return ("Concentration analysis is blind for this window: no share can be computed, "
+                "so a hot item would not be detected. Treat any all-clear as unknown.")
     if t == "meta.detector-error":
         return "This check could not run; its findings are missing from this audit."
     return "Impact not assessed."

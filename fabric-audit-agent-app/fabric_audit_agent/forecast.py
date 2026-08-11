@@ -48,9 +48,9 @@ def forecast_capacity(history=None, ceiling=100, min_points=3):
         message = f"At current trend (+{_fmt(slope_per_run)}%/run), peak CU reaches {ceiling}% in ~{runs_to_ceiling} run(s){caveat}."
     elif trend == "flat":
         message = (f"Peak CU is flat ({_fmt(slope_per_run)}%/run over {len(series)} runs); "
-                   "no ceiling breach projected.")
+                   f"no ceiling breach projected{caveat}.")
     else:
-        message = f"Peak CU trend is {trend}; no ceiling breach projected."
+        message = f"Peak CU trend is {trend}; no ceiling breach projected{caveat}."
     return {"trend": trend, "points": len(series), "current": current,
             "slopePerRun": slope_per_run, "runsToCeiling": runs_to_ceiling,
             "r2": round(r2, 3), "weakFit": weak_fit,

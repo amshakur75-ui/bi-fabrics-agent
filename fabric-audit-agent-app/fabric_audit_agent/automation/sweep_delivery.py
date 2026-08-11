@@ -258,6 +258,28 @@ def deliver_new_findings(findings, *, alerts_store, delivery_sinks, app_url="",
                 print(f"[sweep] stale-mark failed for {key}: {type(exc).__name__}: {exc}")
                 if health is not None:
                     health.record_issue(f"stale-mark failed: {type(exc).__name__}: {exc}")
+                continue
+            # BOTH TABLES. The digest reads currentlyActive off audit_alerts; the APP reads it off
+            # ai_chatbot.alert_ticket -- two tables, two ports. Updating only the first would have
+            # made the 6pm card move ~100 tickets into "open but not firing" while the app's badge
+            # still said Open(147) and the detail pane still said "Open", with the surface a human
+            # actually clicks through being the wrong one. tier2's equivalent path already writes
+            # both (_write_ticket right after its upsert); this loop is the twin that did not.
+            if ticket_writer:
+                try:
+                    ticket_writer(row.get("chatId"), {
+                        "incidentKey": key, "checkType": row.get("checkType"),
+                        "severity": row.get("severity"),
+                        "resource": row.get("resource") or key, "workspace": None,
+                        "detail": row.get("detail"),
+                        "firstDetected": row.get("firstAlertedAt") or row.get("runAt"),
+                        "currentlyActive": False})
+                except Exception as exc:
+                    print(f"[sweep] stale ticket sync failed for {key}: "
+                          f"{type(exc).__name__}: {exc}")
+                    if health is not None:
+                        health.record_issue(
+                            f"stale ticket sync failed: {type(exc).__name__}: {exc}")
         if stale:
             print(f"[sweep] marked {stale} finding(s) no longer firing (still open until resolved)")
         out["marked_stale"] = stale
