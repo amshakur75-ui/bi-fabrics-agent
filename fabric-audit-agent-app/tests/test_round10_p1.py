@@ -75,7 +75,10 @@ def test_a_score_with_real_findings_is_not_qualified():
 def test_every_item_unmeasurable_raises_a_coverage_flag():
     """A bare `continue` on sharePct=None treated "we could not measure" as "not concentrated", so a
     cost-column rename would take the flagship 30% feature out in total silence."""
-    items = [{"name": n, "workspace": "Ent", "sharePct": None, "shareBasis": "unavailable"}
+    # Full rollup shape: production always sets userCount/truncated alongside the share.
+    items = [{"name": n, "workspace": "Ent", "sharePct": None, "shareBasis": "unavailable",
+              "cuSeconds": 0, "topUsers": [], "userCount": 0, "truncated": False,
+              "attributionMode": "cost-duration"}
              for n in ("Ent-Reporting-DTC", "Ent-Reporting-Sales")]
     types = [f["type"] for f in detect_concentration({"items": items})]
     assert types == ["meta.attribution-unmeasurable"]
@@ -83,7 +86,9 @@ def test_every_item_unmeasurable_raises_a_coverage_flag():
 
 def test_a_measurable_window_raises_no_coverage_flag():
     items = [{"name": "Ent-Reporting-DTC", "workspace": "Ent", "sharePct": 62.0,
-              "cuSeconds": 4000.0, "attributionMode": "cost-cpu"}]
+              "cuSeconds": 4000.0, "attributionMode": "cost-cpu", "shareBasis": "cost",
+              "topUsers": [{"user": "aaron@newellco.com", "cuSeconds": 3000.0}],
+              "userCount": 1, "truncated": False}]
     types = [f["type"] for f in detect_concentration({"items": items})]
     assert "meta.attribution-unmeasurable" not in types
 

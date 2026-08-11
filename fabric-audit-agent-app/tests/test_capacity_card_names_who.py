@@ -22,8 +22,18 @@ from fabric_audit_agent.automation.incident import primary_metric
 
 
 def _item(name, ws, share, cu, users=None):
+    """One item in the EXACT shape attribution_rollup emits.
+
+    FIXTURE REALISM: rollup_attribution always sets shareBasis, userCount and truncated. Omitting
+    them made these tests exercise a `None` path production never takes -- the mirror image of
+    inventing a field, and the same class of gap that hid two P0s earlier in this audit.
+    detectors/concentration.py reads userCount in two places.
+    """
+    users = users or []
     return {"name": name, "workspace": ws, "sharePct": share, "cuSeconds": cu,
-            "topUsers": users or [], "attributionMode": "cost-cpu"}
+            "topUsers": users, "attributionMode": "cost-cpu",
+            "shareBasis": "cost" if share is not None else "unavailable",
+            "userCount": len(users), "truncated": False}
 
 
 def _facts(peak=210.0, items=None, **cap):
