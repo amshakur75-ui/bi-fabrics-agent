@@ -395,6 +395,43 @@ def _mv_dict_light(name, value, *, confidence, unit=""):
     return d
 
 
+def mark_no_data(payload, *, what, window_label=None, source_configured=True, truncated=False,
+                 reason=None):
+    """Stamp a payload that could not be answered from evidence, so a consumer cannot read an empty
+    result as a clean negative.
+
+    THIS EXISTS BECAUSE THE SAME DEFECT HAS SHIPPED THREE TIMES. `decompose_throttle` concluded
+    "not-throttling" from an empty series (round 9); `investigation/diagnose.py` then eliminated
+    throttling at "high" confidence from the same emptiness (round 11); `capacity_overloads`
+    reported `overloads: []` with a confidently worded note when the capacity stream was not even
+    configured (round 12). Each was fixed in isolation and the next consumer repeated it, so the fix
+    is a shared contract rather than a fourth patch.
+
+    Sets ``noData: True`` plus a ``noDataMessage`` the model is instructed to honour (the system
+    prompt's ZERO-ROWS rule keys off exactly this field), and distinguishes the three cases that an
+    empty list cannot: the source was not configured, the source was configured and returned
+    nothing, and the result is a TRUNCATED view of something larger.
+    """
+    payload = dict(payload or {})
+    payload["noData"] = True
+    where = f" for {window_label}" if window_label else ""
+    if not source_configured:
+        msg = (f"No {what} could be evaluated{where}: the source is NOT CONFIGURED, so this is "
+               "NOT evidence that nothing happened. Do not report a negative finding; say the "
+               "source is unavailable.")
+    elif truncated:
+        msg = (f"The {what} result{where} is TRUNCATED, so any ranking or total here is a partial "
+               "view. Do not present it as complete.")
+    else:
+        msg = (f"ZERO {what} returned{where}. There is nothing to rank or tabulate. DO NOT "
+               "fabricate rows and DO NOT reuse another window's results -- report the empty "
+               "finding, and note it is not proof the condition was absent.")
+    if reason:
+        msg += f" ({reason})"
+    payload["noDataMessage"] = msg
+    return payload
+
+
 def _metrics_catalog(names):
     """Build a ``{metric_name: full KB definition}`` catalog for the given metric names,
     attached ONCE per response (I4 fix) instead of duplicating formula/notes/source prose on
@@ -1545,6 +1582,25 @@ def create_tool_definitions(base_dir=None):
                 out["seriesError"] = series_meta["seriesError"]   # no total series -> no windows
             if meta.get("error"):
                 out["contributorsError"] = meta["error"]   # windows valid; contributors unavailable
+            # An empty `overloads` list meant three different things and said so in none of them:
+            # the capacity genuinely never crossed the threshold, the CU stream is not configured
+            # (_capacity_series_only returns ([], meta) with seriesError=None in that case), or the
+            # window returned nothing. Only the first is a negative FINDING; the others are absences
+            # of evidence. The note below also asserts the interactive/background split is
+            # trustworthy, which it is not when the 5000-event cost-ordered pull truncated.
+            if not windows:
+                out = mark_no_data(
+                    out, what="capacity overload windows",
+                    window_label=out.get("windowLabel") or f"{start} .. {end}",
+                    source_configured=bool(series),
+                    reason=("no CU series was returned" if not series else None))
+            elif meta.get("truncated"):
+                out["splitTruncated"] = True
+                out["splitNote"] = (
+                    (out.get("splitNote", "") + " ").strip() +
+                    "Contributor events were TRUNCATED at the pull cap, so the interactive share is "
+                    "a floor and the background residual absorbs the dropped user operations -- do "
+                    "not read a background-dominated window here as proof no user was involved.")
             return out
         except ValueError as exc:
             return {"error": str(exc), "source": source, "overloads": []}
