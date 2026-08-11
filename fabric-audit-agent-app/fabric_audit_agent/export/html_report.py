@@ -47,29 +47,9 @@ ECHARTS_CDN = "https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"
 
 # ── ExecutingUser normalization (mirrors constants.ts) ──────────────────────
 EXECUTING_USER_COLUMN = "ExecutingUser"
-NEWELL_EMAIL_DOMAIN = "@newellco.com"
+from ..identity_display import (  # noqa: F401  (re-exported: see identity_display)
+    NEWELL_EMAIL_DOMAIN, normalize_executing_user_display)
 _EXECUTING_USER_LOWER = EXECUTING_USER_COLUMN.lower()
-
-
-def normalize_executing_user_display(raw: Any) -> str:
-    """Port of format.ts ``normalizeExecutingUserDisplay``.
-
-    Pure — returns a normalized string, never mutates the input.
-      * ``None`` / empty            -> ``""`` (never synthesize a fake address)
-      * already contains ``@``      -> returned unchanged (any domain)
-      * a bare username             -> ``@newellco.com`` appended, casing kept
-
-    The plugin's contract per the task: a value that already looks like an
-    address is left as-is; a bare username gets the Newell domain. The function
-    MUST exist and be applied on every displayed cell of the ExecutingUser
-    column (defense-in-depth identity display rule).
-    """
-    if raw is None:
-        return ""
-    s = str(raw).strip()
-    if s == "":
-        return ""
-    return s if "@" in s else f"{s}{NEWELL_EMAIL_DOMAIN}"
 
 
 # ── Column shape helpers ────────────────────────────────────────────────────

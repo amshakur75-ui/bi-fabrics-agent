@@ -76,11 +76,25 @@ def user_spike_history(events, user, *, floor_cu=0, multiplier=None):
         e for e in user_events
         if is_spike(e, p95=threshold, floor_cu=effective_floor)
     ]
-    spike_events_sorted = sorted(spike_events, key=lambda e: e.get("cuSeconds", 0), reverse=True)
+    # `.get("cuSeconds", 0)` defaults a MISSING key; a key present and explicitly None still yields
+    # None, and None breaks `sorted`, `sum` and `max` alike. Tier-1 activity events carry
+    # cuSeconds=None on EVERY row -- the codebase documents this in three places -- so this MCP tool,
+    # which the agent quotes directly, raised TypeError on the most ordinary event source it has.
+    # Aggregates skip the unmeasured rows and the result DISCLOSES how many were skipped, because a
+    # total silently computed over a third of the rows is worse than one labelled incomplete.
+    def _cu(e):
+        v = e.get("cuSeconds")
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
-    # totalCuSeconds and peakCuSeconds over ALL user events (not just spikes)
-    total_cu = sum(e.get("cuSeconds", 0) for e in user_events)
-    peak_cu = max((e.get("cuSeconds", 0) for e in user_events), default=0)
+    _costed = [e for e in user_events if _cu(e) is not None]
+    _uncosted = len(user_events) - len(_costed)
+
+    spike_events_sorted = sorted(spike_events, key=lambda e: _cu(e) if _cu(e) is not None else -1.0,
+                                 reverse=True)
+
+    # totalCuSeconds and peakCuSeconds over every MEASURED user event (not just spikes)
+    total_cu = sum(_cu(e) for e in _costed)
+    peak_cu = max((_cu(e) for e in _costed), default=0)
 
     # spikes list — only the needed fields, sorted by cuSeconds desc
     spikes = [
@@ -89,7 +103,7 @@ def user_spike_history(events, user, *, floor_cu=0, multiplier=None):
             "item": e.get("item"),
             "operation": e.get("operation", ""),
             "kind": e.get("kind", ""),
-            "cuSeconds": e.get("cuSeconds", 0),
+            "cuSeconds": _cu(e),          # null, never 0, when the row carries no cost
         }
         for e in spike_events_sorted
     ]
@@ -98,7 +112,7 @@ def user_spike_history(events, user, *, floor_cu=0, multiplier=None):
     item_totals = {}
     for e in user_events:
         item = e.get("item") or ""
-        item_totals[item] = item_totals.get(item, 0.0) + (e.get("cuSeconds", 0) or 0)
+        item_totals[item] = item_totals.get(item, 0.0) + (_cu(e) or 0.0)
     top_items = sorted(
         [{"item": k, "cuSeconds": v} for k, v in item_totals.items()],
         key=lambda x: x["cuSeconds"],
@@ -114,16 +128,16 @@ def user_spike_history(events, user, *, floor_cu=0, multiplier=None):
             by_hour[hour] = by_hour.get(hour, 0) + 1
 
     # interactiveVsRefresh — CU totals by kind across ALL user events
-    interactive_cu = sum(
-        e.get("cuSeconds", 0) for e in user_events if e.get("kind") == "interactive"
-    )
-    refresh_cu = sum(
-        e.get("cuSeconds", 0) for e in user_events if e.get("kind") == "refresh"
-    )
+    interactive_cu = sum(_cu(e) for e in _costed if e.get("kind") == "interactive")
+    refresh_cu = sum(_cu(e) for e in _costed if e.get("kind") == "refresh")
 
     return {
         "user": user,
         "spikeCount": len(spikes),
+        # Load-bearing: every CU aggregate below is over the MEASURED rows only. Without this the
+        # caller cannot tell "this user cost little" from "we could not price most of their work".
+        "eventsWithoutCost": _uncosted,
+        "cuAggregatesComplete": _uncosted == 0,
         # The bar each spike had to clear, so the count can be explained rather than trusted.
         "baselineP95CuSeconds": p95,
         "spikeMultiplier": mult,

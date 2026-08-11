@@ -41,8 +41,17 @@ def create_readings_store_memory(initial=None):
         data.append(dict(reading))
 
     def recent(n=12):
-        # newest-first, like the Delta ORDER BY run_at DESC
-        return [dict(r) for r in sorted(data, key=lambda r: r.get("runAt") or "", reverse=True)[:n]]
+        # newest-first, like the Delta ORDER BY run_at DESC.
+        #
+        # The insertion index is a TIE-BREAK, not decoration. `sorted(..., reverse=True)` is stable,
+        # so rows sharing a runAt came back in INSERTION order -- i.e. oldest-first, the exact inverse
+        # of this function's contract -- and _check_silent_failure reads `readings[:n]` believing the
+        # first element is the newest. Equal timestamps are not exotic: `datetime.now()` has ~15ms
+        # granularity on Windows, so any two appends in the same tick collide, and the blindness
+        # alarm then could not clear after the collector recovered.
+        indexed = list(enumerate(data))
+        indexed.sort(key=lambda pair: (pair[1].get("runAt") or "", pair[0]), reverse=True)
+        return [dict(r) for _i, r in indexed[:n]]
 
     return {"append": append, "recent": recent, "_data": data}
 

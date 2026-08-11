@@ -32,8 +32,14 @@ def investigate_user(collector, reasoner, user, days=30):
     corroborating = 1 + (1 if cap.get("peakCuPct") is not None else 0)
     confidence = assess_confidence(found=True, corroborating_sources=corroborating)
 
+    # `.get(k, 0)` defaults a MISSING key, not a key present with None -- and sharePct is now
+    # deliberately None when no cost column resolved, so round() raised TypeError and took this
+    # whole tool out on exactly the data condition the None was introduced to describe honestly.
+    # Rendering 0% instead would be worse than the crash: it states this user contributed nothing.
+    _share = match.get("sharePct")
+    _share_txt = f"{round(_share, 1)}% of monitored CU" if _share is not None else         "an unmeasured share of monitored CU (no cost signal in this window)"
     ev = [evidence_item("attribution",
-                        f"{match['user']} = {round(match.get('sharePct', 0), 1)}% of monitored CU "
+                        f"{match['user']} = {_share_txt} "
                         f"via {len(match.get('topItems') or [])} item(s)", match)]
     if cap.get("peakCuPct") is not None:
         ev.append(evidence_item("capacity",
@@ -143,8 +149,10 @@ def investigate_capacity_spike(collector, reasoner, when=None, events=None, capa
         # authoritative label for proxy data. Only a MISSING mode may claim true capacity CU.
         label = "capacity CU" if top.get("attributionMode") is None else "monitored CU"
         tu = (top.get("topUsers") or [{}])[0].get("user")
+        _tshare = top.get("sharePct")
+        _tshare_txt = f"{round(_tshare, 1)}% of {label}" if _tshare is not None else             f"an unmeasured share of {label} (no cost signal in this window)"
         ev.append(evidence_item("concentration",
-                                f"\"{top.get('name')}\" = {round(top.get('sharePct', 0), 1)}% of {label}"
+                                f"\"{top.get('name')}\" = {_tshare_txt}"
                                 + (f" (top user {tu})" if tu else ""), top))
 
     if when and (events is not None or capacity_series is not None):

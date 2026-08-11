@@ -573,10 +573,17 @@ def create_tool_definitions(base_dir=None):
         for item in items:
             ws = item.get("workspace") or "Unknown"
             entry = ws_map.setdefault(ws, {"workspace": ws, "items": [], "totalCuSeconds": 0})
-            _item_share = round(item.get("sharePct", 0), 1)
+            # None means "no cost signal resolved", not zero. Rounding it raised TypeError
+            # and took out list_workspaces; coercing it to 0 would claim the item used
+            # nothing. Pass the unknown through as null so the caller can say so.
+            _raw_cu = item.get("cuSeconds")
+            if isinstance(_raw_cu, bool) or not isinstance(_raw_cu, (int, float)):
+                _raw_cu = None
+            _raw_share = item.get("sharePct")
+            _item_share = round(_raw_share, 1) if _raw_share is not None else None
             _ws_item = {
                 "name": item.get("name"),
-                "cuSeconds": item.get("cuSeconds", 0),
+                "cuSeconds": _raw_cu,
                 "sharePct": _item_share,
                 "topUsers": item.get("topUsers", []),
                 "userCount": item.get("userCount", 0),
@@ -588,7 +595,12 @@ def create_tool_definitions(base_dir=None):
             if _share_metric is not None:
                 _ws_item["metrics"] = {"sharePct": _share_metric}
             entry["items"].append(_ws_item)
-            entry["totalCuSeconds"] += item.get("cuSeconds", 0)
+            # Same present-but-None trap as sharePct, one line apart: `+= None` raised TypeError
+            # and coercing to 0 would understate a workspace total without saying so.
+            if _raw_cu is None:
+                entry["itemsWithoutCost"] = entry.get("itemsWithoutCost", 0) + 1
+            else:
+                entry["totalCuSeconds"] += _raw_cu
 
         workspaces = sorted(ws_map.values(), key=lambda x: -x["totalCuSeconds"])
         capped_workspaces, cap_meta = _cap_rows(workspaces)

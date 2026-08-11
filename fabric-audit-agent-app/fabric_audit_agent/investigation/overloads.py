@@ -36,21 +36,26 @@ def _op_window_contributions(op):
     # exonerated of every overload, and watch.py's `inter >= back` was permanently False, so a 420%
     # overage rendered as severity "info" / "peak 420% (no concern) ... nothing to act on". Yield the
     # None so the caller can tell "contributed nothing" from "we do not know what this cost".
+    #
+    # An unknown cost must taint EVERY window the op overlaps, not just the first. The `cu is None`
+    # branch used to `yield window_start(start), None` and then `return`, which skipped the rest of
+    # the walk -- so a single 90-second cost-less op over a 420% overage produced one honest window
+    # ("no cost signal, no user can be credited or cleared") followed by two reading
+    # "0% user / 420% background", which is verbatim the "system/refresh work, do NOT blame a user"
+    # exoneration this function's comment says it closes. One third honest is not fixed. Folding
+    # None through the ordinary walk removes the special case that caused it.
     cu = op.get("cuSeconds")
     if start is None or end is None:
         return
-    if cu is None:
-        yield window_start(start), None
-        return
     if end <= start:
-        yield window_start(start), cu
+        yield window_start(start), cu          # cu may be None; the caller distinguishes it
         return
     total = end - start
     w = window_start(start)
     while w < end:
         seg = min(end, w + _WINDOW_SEC) - max(start, w)
         if seg > 0:
-            yield w, cu * (seg / total)
+            yield w, None if cu is None else cu * (seg / total)
         w += _WINDOW_SEC
 
 

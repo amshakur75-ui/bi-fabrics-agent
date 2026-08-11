@@ -39,18 +39,9 @@ _DATE_NUMBER_FORMAT = "yyyy-mm-dd hh:mm:ss"
 
 # ── ExecutingUser normalization (mirrors constants.ts / format.ts) ──────────
 EXECUTING_USER_COLUMN = "ExecutingUser"
-NEWELL_EMAIL_DOMAIN = "@newellco.com"
+from ..identity_display import (  # noqa: F401  (re-exported: see identity_display)
+    NEWELL_EMAIL_DOMAIN, normalize_executing_user_display)
 _EXECUTING_USER_LOWER = EXECUTING_USER_COLUMN.lower()
-
-
-def normalize_executing_user_display(raw: Any) -> str:
-    """Port of format.ts ``normalizeExecutingUserDisplay`` (see html_report)."""
-    if raw is None:
-        return ""
-    s = str(raw).strip()
-    if s == "":
-        return ""
-    return s if "@" in s else f"{s}{NEWELL_EMAIL_DOMAIN}"
 
 
 # ── Lazy openpyxl import ────────────────────────────────────────────────────

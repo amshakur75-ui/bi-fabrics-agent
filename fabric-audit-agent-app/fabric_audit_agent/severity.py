@@ -67,7 +67,13 @@ def score_severity(flag, config=None):
         return {"level": "Warning", "reason": f"model {e.get('sizeGB')}GB on {e.get('memoryGB')}GB capacity"}
 
     if t == "capacity.concentration":
-        level = "Critical" if e.get("sharePct", 0) >= config["capacity"]["concentrationCritPct"] else "Warning"
+        # Same `.get(k, 0)` trap the two branches above were fixed for: sharePct is now None
+        # when no cost column resolved, and `None >= int` raises TypeError. An unmeasurable
+        # share cannot clear a Critical threshold, so it stays Warning -- and the reason says
+        # so rather than printing "None%".
+        _share = _num(e.get("sharePct"))
+        level = ("Critical" if _share is not None
+                 and _share >= config["capacity"]["concentrationCritPct"] else "Warning")
         # No producer has EVER emitted the literal "cost": attribution_rollup emits "cost-cpu" /
         # "cost-duration" (the N7 split) and a "frequency" mode also exists. So this comparison was
         # always false and every live concentration finding's severity reason read
@@ -75,6 +81,10 @@ def score_severity(flag, config=None):
         # claim gates.true_cu_per_user_gate marks PERMANENTLY BLOCKED. Mirrors the form already
         # fixed in detectors/concentration.py: only a MISSING mode may claim true capacity CU.
         share_label = "capacity CU" if e.get("attributionMode") is None else "monitored CU"
+        if _share is None:
+            return {"level": level,
+                    "reason": f"one item dominated {share_label}, but the share is "
+                              "unmeasured (no cost signal in this window)"}
         return {"level": level, "reason": f"{e.get('sharePct')}% of {share_label} in one item"}
 
     if t == "capacity.user-ranking":
